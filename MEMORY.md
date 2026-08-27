@@ -9,9 +9,12 @@ re-derive.
 A unified **collector → reasoner → action** pipeline on dockerVM. Polls Netdata, Dozzle,
 Dockpeek/Docker-socket, `nvidia-smi`, and VM commands (`df`/`top`/`journalctl`) every 2
 minutes, asks **Qwen 3:14B** (local Ollama) for a structured JSON decision, then executes
-safe remediation through whitelists/dry-run.
+safe remediation through whitelists/dry-run. Storage (TrueNAS), multi-node **federation**,
+manual-stop protection, and a real-time dashboard are all part of this build.
 
 Repo root: `/appdata/OpsBrain` (git repo, `main` branch).
+Docs: **`README.md`** (overview), **`IMPLEMENTATION.md`** (step-by-step deployment guide
+for a fresh system), `ui/README.md` (dashboard), this file (operational memory).
 
 ## Current running state (LAST UPDATED: 2026-08-27)
 
@@ -23,21 +26,34 @@ Repo root: `/appdata/OpsBrain` (git repo, `main` branch).
   dozzle, dockpeek, netdata, caddy, caddy-editor, calibre, calibre-web, dockscope,
   filerise, firefox, flacsentry, grimmory, homelab-hub, homepage-editor,
   last30days-runner, librewolf, yamtrack, youtube-dl-server. Everything else blocked.
-- **Cadence:** cycle every 120s; daily report at `report.time: 23:55` →
-  `reports/YYYY-MM-DD.md`.
+- **Cadence:** cycle every 120s; federation every 2 cycles (4 min); daily report at
+  `report.time: 23:55` → `reports/YYYY-MM-DD.md`.
 - **Model:** `qwen3:14b` (pulled locally). Fallback `qwen2.5-coder:14b`.
+- **Capabilities live in this build:** GPU drift detection, confidence recovery,
+  restart-impact + drift-decay metrics, **Manual Stop Protection (HARD INVARIANT)**,
+  **TrueNAS SCALE panel**, **Federation Layer** (multi-node cluster reasoning;
+  nodes configured at `dockervm:8099`/`truenas:8099`, currently OFFLINE/degrading
+  gracefully on this single VM — test against `127.0.0.1:9120` to see live data).
+- **Dashboard:** `opsbrain-ui` service on `:9120`, published as https://opsbrain.home
+  via Caddy. Panels now include System, Cluster Overview, Node Comparison, TrueNAS,
+  GPU Drift, OpsBrain Decisions, Container Health, Manual Stop Protection, plus the
+  recovery/decay/impact refinements.
 
 ## Pipeline & artifacts
 
 ```
-collector/collector.py      -> logs/collector.json       (unified signal doc)
-reasoner/reasoner.py        -> logs/reasoner_result.json (Qwen decision)
-hermes_actions/actions.py   -> logs/actions_result.json  (executed/skipped/blocked)
-scheduler/scheduler.py      -> daemon loop + daily report
-scheduler/report.py         -> reports/YYYY-MM-DD.md
+collector/collector.py         -> logs/collector.json         (unified signal doc, incl. truenas + manual_stops)
+reasoner/reasoner.py           -> logs/reasoner_result.json   (Qwen decision)
+hermes_actions/actions.py      -> logs/actions_result.json    (executed/skipped/blocked, incl. cluster recs)
+federation/federation_collector.py -> logs/cluster_snapshot.json       (per-node cluster telemetry)
+federation/federation_reasoner.py  -> logs/cluster_reasoner_result.json (score/ranking/correlations/recs)
+scheduler/scheduler.py         -> daemon loop + daily report (+ run_federation every 2 cycles)
+scheduler/report.py            -> reports/YYYY-MM-DD.md
 ```
 Extra runtime files (gitignored): `logs/action_state.json` (sustained-CPU counters &
-memory baselines), `logs/notifications.jsonl`, `logs/opsbrain.log`.
+memory baselines), `logs/gpu_baseline.json`, `logs/gpu_drift_events.jsonl`,
+`logs/gpu_daily_stats.json`, `logs/manual_stops.json` (protected registry),
+`logs/prev_running.json`, `logs/notifications.jsonl`, `logs/opsbrain.log`.
 
 ## CRITICAL — Qwen3 / Ollama quirk (do not "fix" this back)
 
@@ -98,7 +114,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (36 tests, `tests/test_opsbrain.py`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**98 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -106,13 +122,18 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 ## Real-time dashboard (ui/)
 
 Served by `opsbrain-ui` systemd service (FastAPI + WebSocket, port **9120**, binds 0.0.0.0).
-Streams `logs/{collector,reasoner_result,actions_result,gpu_baseline}.json` every 2s on change,
-merged into one doc `{_meta, sources:{...}, collector, reasoner, actions, gpu_baseline}`.
+Streams `logs/{collector,reasoner_result,actions_result,gpu_baseline,manual_stops,
+cluster_snapshot,cluster_reasoner_result}.json` every 2s on change,
+merged into one doc `{_meta, sources:{...}, collector, reasoner, actions, gpu_baseline,
+manual_stops, cluster_snapshot, cluster_reasoner}`.
 - `ui/server.py`: FastAPI app; `GET /` (Jinja2 dashboard.html), `GET /report` (latest md),
   `WS /stream` (push on change + initial snapshot + ping re-push); mtime+size watcher in
   lifespan task. NOTE: `TemplateResponse(request, name)` — newer Starlette arg order.
   Deps: `fastapi`, `uvicorn`, `websockets`, `jinja2`, `pyyaml` (installed globally).
-- `ui/config.yaml`: port 9120 / refresh 2s / watch list. `ui/static/app.js` renders 5 panels.
+- `ui/config.yaml`: port 9120 / refresh 2s / watch list. `ui/static/app.js` renders the
+  panels (System, Cluster Overview, Node Comparison, TrueNAS, Container Health, GPU Drift,
+  OpsBrain Decisions, Manual Stop Protection, Daily Report Preview, plus recovery/decay/
+  impact refinements from `ui_refinements.js`).
 - Service file: `deploy/opsbrain-ui.service` (also installed to `/etc/systemd/system/`);
   `Restart=always` verified. No auth layer — front only via reverse proxy if LAN-exposed.
 
@@ -275,17 +296,21 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **53 tests** covering:
-- `allow_container` / `allow_service` whitelist gate (including case-insensitivity)
-- `deterministic_rules`: CPU sustain window, memory creep, GPU threshold, restart loop,
-  disk prune, Netdata alarms
-- `sanitize` / `extract_json`: Qwen output normalization (accepts `type` or `action` key,
-  drops unknown verbs, clamps confidence, tolerates `null`), `gpu_drift` flag filtering
-- `collector.evaluate_gpu_drift`: all five drift flags + baseline bookkeeping
-- `actions.gpu_drift_actions`: stuck_process kill (conf>0.8) vs notify-only (conf<=0.8),
-  notify-only for the other four flags, Qwen∪deterministic flag union
-- `Engine.dispatch` ollama-restart guard
-- `summarize_collector` digest trimming, `pct` parser, `Cfg.resolve` & JSON round-trip
+`python3 -m pytest` (or `-q`). **98 tests** across `tests/` covering:
+- `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
+  sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
+  `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag
+  filtering), `evaluate_gpu_drift`, `gpu_drift_actions`, ollama-restart guard,
+  digest trimming, `Cfg.resolve` & JSON round-trip.
+- `test_manual_stops.py` (+ `test_collector_manual_stops.py`) — ManualStops registry,
+  classify_manual_stop (exit codes incl. sigkill protect), transition detection,
+  hard-gate dispatch + prune-block.
+- `test_truenas.py` — TrueNAS collector parse, unreachable/disabled degradation, creds.
+- `test_federation.py` — `_num`/`_cnt` coercion, reverse_normalize, cluster stability
+  score (spec math), node stability (null-conf-online credit, offline=0), ranking,
+  recommendations, empty/all-offline, cross-node anomaly + drift correlation.
+- `test_ui_refinements.py` — confidence recovery, drift decay, restart impact.
 
 These caught real bugs during development — `sanitize` crashed on null confidence, and
-run/parse edge cases. GPU tests mock `run()`/`notify` so they never touch docker/kill.
+run/parse edge cases. GPU/kill tests mock `run()`/`notify` so they never touch live
+docker/GPU/Ollama.

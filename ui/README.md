@@ -1,8 +1,9 @@
 # OpsBrain UI — real-time dashboard
 
 Serves a single-page operational dashboard for the OpsBrain pipeline. It streams
-the four live JSON log files over a WebSocket and renders five panels, refreshed
-every 2 seconds.
+the live JSON log files (including the manual-stop registry and the federation
+cluster snapshot/reasoner) over a WebSocket and renders the panels, refreshed every
+2 seconds on change.
 
 ## Layout
 
@@ -12,6 +13,7 @@ ui/
   config.yaml         host / port / refresh interval / watched files
   templates/dashboard.html
   static/app.js       WS client + panel rendering (TailwindCSS via CDN)
+  static/ui_refinements.js   recovery / drift-decay / restart-impact panels
   README.md
 ```
 
@@ -19,15 +21,25 @@ ui/
 
 1. **System Overview** — GPU util, disk, running containers, **confidence score**,
    **last cycle age**, **next scheduled cycle**.
-2. **Container Health** — running/exited, per-container CPU/RAM, restart-loop badge,
+2. **Cluster Overview** — cluster stability score (0–100), nodes online, avg
+   confidence, total anomalies / drift / restart events, cluster recommendations.
+3. **Node Comparison** — per-node confidence / drift / anomalies / restarts /
+   stability table with online/offline health dots.
+4. **TrueNAS** — pool status + health, system version/model/RAM/uptime, disk count,
+   active alerts.
+5. **Container Health** — running/exited, per-container CPU/RAM, restart-loop badge,
    restart count.
-3. **GPU Drift** — VRAM used/total + %, power draw, temperature, drift flags
+6. **GPU Drift** — VRAM used/total + %, power draw, temperature, drift flags
    (color-coded: `stuck_process`/`vram_overload` = red, others = yellow), stuck-PID +
    same-pid cycle count.
-4. **OpsBrain Decisions** — Qwen `warnings[]`, `actions[]`, confidence, **dry-run /
+7. **OpsBrain Decisions** — Qwen `warnings[]`, `actions[]`, confidence, **dry-run /
    live** badge.
-5. **Daily Report Preview** — last-24h summary, anomaly/remediation/drift-event counts,
+8. **Manual Stop Protection** — protected (manually stopped) containers; red
+   "MANUALLY STOPPED" tag on rows.
+9. **Daily Report Preview** — last-24h summary, anomaly/remediation/drift-event counts,
    link to the full report at `/report`.
+10. **Refinements** (from `ui_refinements.js`) — confidence recovery pulse, GPU drift
+    decay graph, container restart-impact bars.
 
 ## Files streamed (WebSocket, every 2s on change)
 
@@ -35,10 +47,14 @@ ui/
 - `logs/reasoner_result.json`
 - `logs/actions_result.json`
 - `logs/gpu_baseline.json`
+- `logs/manual_stops.json`
+- `logs/cluster_snapshot.json`
+- `logs/cluster_reasoner_result.json`
 
 The server reads these only when they change (mtime+size), merges them into a single
-document `{_meta, sources:{...}, collector, reasoner, actions, gpu_baseline}`, and
-broadcasts to every connected client.
+document `{_meta, sources:{...}, collector, reasoner, actions, gpu_baseline,
+manual_stops, cluster_snapshot, cluster_reasoner}`, and broadcasts to every connected
+client.
 
 ## Run
 

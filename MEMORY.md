@@ -178,6 +178,41 @@ scan `grid.innerHTML` for container names will false-fail.
   status/health/capacity, system version/model/RAM/uptime, disk count, active alerts.
 - Watch out: name the alerts array `alerts`, never `alert` (window.alert shadows).
 
+## Federation Layer (multi-node)
+
+- `federation/federation_collector.py` polls each node's collector endpoint and
+  reduces it into `logs/cluster_snapshot.json` (`{timestamp, nodes, cluster_metrics}`).
+  Tolerates two shapes: a raw collector.json doc, and an OpsBrain `/api/status`
+  envelope (`collector:{...}` / `sources.collector.json`). `_num` coerces numeric
+  strings (e.g. disk `"42"`, drops `%`).
+- `federation/federation_reasoner.py` consumes the snapshot deterministically (no
+  LLM) → `logs/cluster_reasoner_result.json`. Stability math is the spec formula:
+  `(conf*0.4 + drift*0.3 + anom*0.2 + restarts*0.1)`, where drift/anomalies/restarts
+  are reverse-normalized (clamp `1 - n/max_bad`, budgets 20/20/10) to 0..1 then
+  scaled to 0..100. An online node with null confidence gets FULL credit (up =
+  healthy); an offline node scores 0.
+- Cross-node correlation: nodes sharing the same Netdata alarm `name` →
+  `anomaly_correlations[]`; same GPU drift flag → `drift_correlations[]`. Signatures
+  are read from `raw.collector.netdata.alarms_active[].name` and
+  `raw.collector.gpu.drift_flags[]`.
+- Deterministic recommendations: any offline node → `cluster_health_warning`;
+  score < 60 → `escalate_cluster`; total_anomalies/drift_events > 0 → `notify_cluster`.
+  **NOTIFY-ONLY** — the federation layer never performs cross-node remediation.
+- `hermes_actions` `federation_decisions()` enqueues these via `Engine.dispatch`
+  cluster verbs (`notify_cluster`/`escalate_cluster`/`cluster_health_warning`), all
+  gated by `federation.enabled` and executed as notify-only (never remediation).
+  Output lands in `actions_result.json` under `cluster.recommendations`.
+- Dashboard: `app.js` `renderClusterOverview()` + `renderNodeComparison()` panels;
+  server exposes `cluster_snapshot` + `cluster_reasoner` in the WS/`/api/status` doc
+  (watch list includes both logs).
+- Daily report: `cluster_summary_section()` renders `## Cluster Summary` (score,
+  rankings, cross-node anomalies/drift, recommended actions, node online status).
+- Scheduler `run_federation(cycle_no)` runs collector+reasoner every
+  `federation.poll_interval_cycles` (default 2 cycles = 4 min), gated by enabled.
+- The configured production endpoints (`dockervm:8099`, `truenas:8099`) are the real
+  multi-node addresses; on the single-VM box they aren't live, so nodes degrade to
+  offline gracefully. Test locally by pointing endpoints at `127.0.0.1:9120`.
+
 ## Manual Stop Protection (HARD INVARIANT)
 
 Rule: **"Manually stopped containers must stay stopped"** — OpsBrain must NEVER

@@ -412,6 +412,8 @@ def refresh_snapshot():
     merged["actions"] = merged["sources"].get("actions_result.json")
     merged["gpu_baseline"] = merged["sources"].get("gpu_baseline.json")
     merged["manual_stops"] = merged["sources"].get("manual_stops.json", {"version": 1, "stops": {}})
+    merged["cluster_snapshot"] = merged["sources"].get("cluster_snapshot.json", {"nodes": {}, "cluster_metrics": {}})
+    merged["cluster_reasoner"] = merged["sources"].get("cluster_reasoner_result.json", {})
 
     if changed:
         rea = merged["reasoner"] or {}

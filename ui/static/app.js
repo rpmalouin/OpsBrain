@@ -61,6 +61,65 @@ function renderSystem(col) {
   return panel("System Overview", `<div class="space-y-1 text-sm">${r}</div>`);
 }
 
+// ------------------------------------------------- Cluster Overview
+function renderClusterOverview() {
+  const snap = state.cluster_snapshot || {};
+  const cr = state.cluster_reasoner || {};
+  const nodes = snap.nodes || {};
+  const metrics = snap.cluster_metrics || {};
+  const score = num(cr.cluster_stability_score);
+  const online = Object.values(nodes).filter(n => n.online).length;
+  const total = Object.keys(nodes).length;
+  const scoreColor = (score === null) ? "#64748b" : (score >= 80 ? "#4ade80" : (score >= 60 ? "#facc15" : "#f87171"));
+  let r = `<div class="flex items-center gap-2 mb-2">` +
+    `<span class="text-2xl mono" style="color:${scoreColor}">${score === null ? "—" : score.toFixed(0)}</span>` +
+    `<span class="text-xs text-slate-400">cluster stability /100</span></div>`;
+  r += `<div class="flex justify-between text-sm"><span>Nodes</span><span>${online}/${total} online</span></div>`;
+  r += `<div class="flex justify-between text-sm"><span>Avg confidence</span><span>${metrics.avg_confidence === 0 ? "0.00" : num(metrics.avg_confidence) === null ? "—" : num(metrics.avg_confidence).toFixed(2)}</span></div>`;
+  r += `<div class="flex justify-between text-sm"><span>Total anomalies</span><span>${num(metrics.total_anomalies) ?? 0}</span></div>`;
+  r += `<div class="flex justify-between text-sm"><span>Drift events</span><span>${num(metrics.drift_events) ?? 0}</span></div>`;
+  r += `<div class="flex justify-between text-sm"><span>Restart events</span><span>${num(metrics.restart_events) ?? 0}</span></div>`;
+  if (cr.recommendations && cr.recommendations.length) {
+    r += `<div class="mt-2 text-xs space-y-0.5">`;
+    for (const rec of cr.recommendations.slice(0, 3)) {
+      const tone = rec.severity === "critical" ? "text-red-300" : rec.severity === "warning" ? "text-amber-300" : "text-slate-400";
+      r += `<div class="${tone}">• [${escapeHtml(rec.type)}] ${escapeHtml(rec.reason)}</div>`;
+    }
+    if (cr.recommendations.length > 3) r += `<div class="text-slate-500">+${cr.recommendations.length - 3} more</div>`;
+    r += `</div>`;
+  }
+  const summary = cr.summary;
+  if (summary) r += `<div class="mt-2 text-xs text-slate-400 italic">${escapeHtml(summary)}</div>`;
+  return panel("Cluster Overview", `<div class="space-y-1">${r}</div>`);
+}
+
+// ------------------------------------------------- Node Comparison
+function renderNodeComparison() {
+  const snap = state.cluster_snapshot || {};
+  const cr = state.cluster_reasoner || {};
+  const nodes = snap.nodes || {};
+  const stab = cr.node_stability || {};
+  const names = Object.keys(nodes);
+  if (!names.length) return panel("Node Comparison", `<div class="text-slate-500 text-sm">No cluster node data yet.</div>`);
+  let rows = "";
+  for (const name of names) {
+    const n = nodes[name] || {};
+    const s = num(stab[name]);
+    const dot = n.online ? "#4ade80" : "#f87171";
+    const sColor = (s === null) ? "#64748b" : (s >= 80 ? "#4ade80" : (s >= 60 ? "#facc15" : "#f87171"));
+    rows += `<tr class="border-t border-slate-800">` +
+      `<td class="py-1"><span class="drift-dot" style="background:${dot}"></span> ${escapeHtml(name)} <span class="text-xs text-slate-500">(${escapeHtml(n.type || "?")})</span></td>` +
+      `<td class="py-1 text-center">${num(n.confidence) === null ? "—" : num(n.confidence).toFixed(2)}</td>` +
+      `<td class="py-1 text-center">${num(n.drift_events) ?? 0}</td>` +
+      `<td class="py-1 text-center">${num(n.anomalies) ?? 0}</td>` +
+      `<td class="py-1 text-center">${num(n.restart_events) ?? 0}</td>` +
+      `<td class="py-1 text-center mono" style="color:${sColor}">${s === null ? "—" : s.toFixed(0)}</td>` +
+      `</tr>`;
+  }
+  let r = `<table class="w-full text-sm"><thead><tr class="text-xs text-slate-400 text-left"><th>Node</th><th class="text-center">Conf</th><th class="text-center">Drift</th><th class="text-center">Anom</th><th class="text-center">Restart</th><th class="text-center">Stab</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return panel("Node Comparison", r);
+}
+
 // ------------------------------------------------- TrueNAS panel
 function renderTruenas(col) {
   const tn = col?.truenas || {};
@@ -344,6 +403,8 @@ function render() {
   const actions = state.actions || {};
   const cards = [
     renderSystem(collector),
+    renderClusterOverview(),
+    renderNodeComparison(),
     renderTruenas(collector),
     renderManualStopPanel(),
     renderGpuPanel(collector),

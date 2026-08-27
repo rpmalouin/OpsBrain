@@ -76,6 +76,23 @@ actions:
   manual_stop_sigkill_protect: true   # treat exit 137 (no OOM) as a manual stop
   notify_webhook: ""            # optional generic webhook (POST JSON), e.g. ntfy/Telegram bot
 
+# --- Federation (multi-node) ---
+federation:
+  enabled: true
+  nodes:
+    - name: dockervm
+      type: linux
+      collector_endpoint: "http://dockervm:8099/api/status"
+    - name: truenas
+      type: storage
+      collector_endpoint: "http://truenas:8099/api/status"
+  cluster_stability_weights:
+    confidence: 0.4
+    drift: 0.3
+    anomalies: 0.2
+    restarts: 0.1
+  poll_interval_cycles: 2        # run federation every N scheduler cycles (4 min at 120s)
+
 # --- Manual Stop Protection (HARD INVARIANT) ---
 # "Manually stopped containers must stay stopped." OpsBrain must NEVER restart
 # (or destroy via prune) a container the user manually stopped — regardless of
@@ -114,6 +131,8 @@ paths:
   gpu_daily_stats: logs/gpu_daily_stats.json
   manual_stops: logs/manual_stops.json
   prev_running: logs/prev_running.json
+  cluster_snapshot: logs/cluster_snapshot.json
+  cluster_reasoner: logs/cluster_reasoner_result.json
 
 logging:
   log_dir: logs

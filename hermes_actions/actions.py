@@ -246,6 +246,21 @@ class Engine:
             rec["detail"] = target
             self.executed.append(rec)
             return rec
+        # ---- federation / cluster-level verbs (NOTIFY ONLY, no remediation) ----
+        if verb in ("notify_cluster", "escalate_cluster", "cluster_health_warning"):
+            if not Cfg.get("federation.enabled", False):
+                rec["state"] = "blocked"
+                rec["detail"] = f"federation disabled; cannot {verb}"
+                self.blocked.append(rec)
+                return rec
+            catmap = {"notify_cluster": "cluster_notify",
+                      "escalate_cluster": "cluster_escalate",
+                      "cluster_health_warning": "cluster_health_warning"}
+            notify(str(target or reason), catmap.get(verb, "cluster"))
+            rec["state"] = "notified"
+            rec["detail"] = target
+            self.executed.append(rec)
+            return rec
         rec["state"] = "blocked"
         rec["detail"] = f"unknown verb {verb}"
         self.blocked.append(rec)
@@ -473,6 +488,30 @@ def _merge_warnings(qwen_warnings, rule_warnings):
     return merged
 
 
+def federation_decisions(engine, rec):
+    """Dispatch cluster-level recommendations (NOTIFY-ONLY: never cross-node
+    remediation). Loads cluster_reasoner_result.json and enqueues every
+    recommendation via the cluster verbs. Federation must be enabled."""
+    if not Cfg.get("federation.enabled", False):
+        return []
+    path = Cfg.resolve("paths.cluster_reasoner") if Cfg.get("paths.cluster_reasoner") else REPO / "logs" / "cluster_reasoner_result.json"
+    if not path.exists():
+        return []
+    try:
+        cr = read_json(path, {})
+    except Exception:
+        return []
+    results = []
+    for r in cr.get("recommendations", []) or []:
+        typ = str(r.get("type", "cluster_health_warning"))
+        if typ not in ("notify_cluster", "escalate_cluster", "cluster_health_warning"):
+            continue
+        target = str(r.get("target") or cr.get("cluster_stability_score") or "cluster")
+        reason = str(r.get("reason") or cr.get("summary") or "cluster signal")
+        results.append(engine.dispatch(typ, target, reason))
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
@@ -525,6 +564,9 @@ def main():
     # GPU drift handling (gated internally: kill needs conf>0.8; else notify only)
     gpu_events, gpu_remediations = gpu_drift_actions(coll, qwen, conf, engine, st)
 
+    # Federation: dispatch cluster-level recommendations (notify-only, gated).
+    cluster_recs = federation_decisions(engine, None)
+
     save_state(st)
     write_json(Cfg.resolve("paths.baseline_json"), baseline)
     write_json(Cfg.resolve("paths.actions_json"), {
@@ -551,6 +593,10 @@ def main():
             "names": protected_names,
             "count": len(protected_names),
             "blocked_this_run": engine.manual_block_count,
+        },
+        "cluster": {
+            "enabled": Cfg.get("federation.enabled", False),
+            "recommendations": cluster_recs,
         },
     })
     log.info("actions: executed=%d skipped=%d blocked=%d gpu_events=%d manual_stop_blocks=%d (dry_run=%s)",

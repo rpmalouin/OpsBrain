@@ -13,6 +13,8 @@ watch:
   - logs/actions_result.json
   - logs/gpu_baseline.json
   - logs/manual_stops.json
+  - logs/cluster_snapshot.json
+  - logs/cluster_reasoner_result.json
 
 # Optional: gateway to a browser-facing URL is not configured here;
 # the dashboard is served plain at http://<host>:9120/

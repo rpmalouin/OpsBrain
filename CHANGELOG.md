@@ -1,13 +1,15 @@
 # Changelog
 
 All notable changes to **Ops Brain** are documented here. Follows [Keep a
-Changelog](https://keepachangelog.com/en/1.1.0/) and **SemVer**.
+Changelog](https://keepachangelog.com/en/1.1.0/) and **SemVer**. Version numbers map to
+git tags (`v0.1.0` … `v0.5.0`); the current release is **v0.5.0** (federation-layer
+milestone).
 
 ## [Unreleased]
 
 - Nothing yet.
 
-## [0.5.0] — 2026-08-27
+## v0.5.0 — 2026-08-27
 
 ### Added
 - **Federation Layer (multi-node)** — reason about many nodes as a unified cluster.
@@ -35,7 +37,7 @@ Changelog](https://keepachangelog.com/en/1.1.0/) and **SemVer**.
 - All-offline cluster no longer scores a misleading "healthy" value — scores 0.
 - Online node with null confidence now gets full stability credit (was 0).
 
-## [0.4.0] — 2026-08-27
+## v0.4.0 — 2026-08-27
 
 ### Added
 - Dashboard refinements: **confidence recovery** pulse + tag, **GPU drift decay** curve,
@@ -47,7 +49,7 @@ Changelog](https://keepachangelog.com/en/1.1.0/) and **SemVer**.
 - Confidence recovery / drift decay / restart impact recompute on any watched-file change,
   not just collector updates.
 
-## [0.3.0] — 2026-08-27
+## v0.3.0 — 2026-08-27
 
 ### Added
 - **Real-time dashboard** (`ui/`, FastAPI + WebSocket, `:9120`) + `opsbrain-ui` systemd
@@ -61,14 +63,14 @@ Changelog](https://keepachangelog.com/en/1.1.0/) and **SemVer**.
 - Documented the Caddy reverse proxy for the dashboard (`opsbrain.home`) + the bind-mount
   inode reload gotcha.
 
-## [0.2.0] — 2026-08-27
+## v0.2.0 — 2026-08-27
 
 ### Added
 - 36 unit tests for decision-critical logic; fixed a `sanitize` null-confidence crash.
 - `allow_restart_containers` whitelist (19 containers), case-insensitive gate.
 - `MEMORY.md` (operational memory, Qwen3/Ollama quirk).
 
-## [0.1.0] — 2026-08-27
+## v0.1.0 — 2026-08-27
 
 ### Added
 - **Core pipeline:** `collector` (Netdata, Dozzle, Dockpeek/Docker-socket, `nvidia-smi`,

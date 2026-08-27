@@ -1,0 +1,45 @@
+# OpsBrain dashboard container group filters.
+# Maps a group label -> list of name substrings (case-insensitive). A container
+# belongs to a group if ANY substring matches its name. "misc" is auto-assigned
+# to containers that match no group. The "all" pseudo-group shows everything.
+#
+# This file is read by the dashboard frontend into the groups object.
+
+media:
+  - jellyfin
+  - emby
+  - plex
+  - tautulli
+  - tdarr
+  - youtube-dl
+  - calibre
+  - grimmory
+
+ai:
+  - ollama
+  - open-webui
+  - hermes
+  - qwen
+
+infra:
+  - caddy
+  - netdata
+  - dozzle
+  - dockpeek
+  - dockhand
+  - dockscope
+  - homepage
+  - homelab-hub
+  - firefox
+  - librewolf
+  - gluetun
+
+databases:
+  - mariadb
+  - postgres
+  - postgresql
+  - redis
+  - immich
+  - valkey
+
+misc: []

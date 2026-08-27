@@ -1,6 +1,8 @@
 [Unit]
-Description=OpsBrain real-time dashboard (FastAPI + WebSocket)
-After=network-online.target
+Description=OpsBrain real-time dashboard (FastAPI + WebSocket, event-driven)
+# Depends on the OpsBrain pipeline daemon: restart if it restarts, and only start after it
+Requires=opsbrain.service
+After=opsbrain.service network-online.target
 Wants=network-online.target
 
 [Service]
@@ -10,8 +12,12 @@ WorkingDirectory=/appdata/OpsBrain
 Environment=PYTHONUNBUFFERED=1
 Environment=OPSBRAIN_UI_CONFIG=/appdata/OpsBrain/ui/config.yaml
 ExecStart=/usr/bin/python3 -m uvicorn server:app --app-dir /appdata/OpsBrain/ui --host 0.0.0.0 --port 9120 --log-level info
+# auto-restart on crash / kill
 Restart=always
 RestartSec=5
+# versioned to journalctl automatically (no explicit redirect needed)
+StandardOutput=journal
+StandardError=journal
 Nice=5
 
 [Install]

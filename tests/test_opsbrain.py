@@ -420,10 +420,45 @@ class TestGpuDriftActions:
     def test_stuck_highconf_dispatches_kill(self, base_config):
         e = A.Engine(False)  # not dry-run
         qwen = {"gpu_drift": ["stuck_process"]}
-        events, rem = A.gpu_drift_actions(_drift_coll(), qwen, 0.9, e, {})
+        coll = _drift_coll(flags=["stuck_process"])
+        coll["gpu"]["baseline"] = {"last_pid": "123"}  # tracked stuck pid == procs[0].pid
+        events, rem = A.gpu_drift_actions(coll, qwen, 0.9, e, {})
         kill = [r for r in rem if isinstance(r, dict) and r.get("verb") == "gpu_kill"]
         assert kill and kill[0].get("target") == "123"
-        assert e.executed  # gpu_kill executed (allow_gpu_kill true, live)
+        assert e.executed  # gpu_kill executed (allow_gpu_kill true, live, run() stubbed)
+
+    def test_stuck_never_kills_ollama(self, base_config):
+        # collector shows ollama's llama-server as the tracked process -> must NOT kill
+        from hermes_actions.actions import _killable_stuck_pid
+        procs = [{"pid": "999", "name": "/usr/lib/ollama/llama-server", "mem_mb": "14000"}]
+        assert _killable_stuck_pid(procs, "999") is None
+        # even with high confidence + live engine, no gpu_kill is dispatched
+        e = A.Engine(False)
+        coll = _drift_coll(flags=["stuck_process"], gpu=_gpu(), procs=procs)
+        # baseline.last_pid must equal the ollama pid so it's the tracked stuck pid
+        coll["gpu"]["baseline"] = {"last_pid": "999"}
+        events, rem = A.gpu_drift_actions(coll, {"gpu_drift": ["stuck_process"]}, 0.95, e, {})
+        assert not any(r.get("verb") == "gpu_kill" for r in e.executed)
+        assert not any(isinstance(r, dict) and r.get("verb") == "gpu_kill" for r in rem)
+
+    def test_stuck_kill_requires_baseline_match(self, base_config):
+        # baseline.last_pid differs from the only current process -> no kill
+        from hermes_actions.actions import _killable_stuck_pid
+        procs = [{"pid": "999", "name": "some-app", "mem_mb": "10"}]
+        assert _killable_stuck_pid(procs, "111") is None  # tracked pid gone
+        e = A.Engine(False)
+        coll = _drift_coll(flags=["stuck_process"], gpu=_gpu(), procs=procs)
+        coll["gpu"]["baseline"] = {"last_pid": "111"}
+        events, rem = A.gpu_drift_actions(coll, {"gpu_drift": ["stuck_process"]}, 0.95, e, {})
+        assert not any(r.get("verb") == "gpu_kill" for r in e.executed)
+
+    def test_stuck_no_none_pid_string(self, base_config):
+        # procs entry without a pid key must not yield the string "None"
+        procs = [{"name": "x", "mem_mb": "5"}]
+        e = A.Engine(False)
+        coll = _drift_coll(flags=["stuck_process"], gpu=_gpu(), procs=procs)
+        events, rem = A.gpu_drift_actions(coll, {"gpu_drift": ["stuck_process"]}, 0.95, e, {})
+        assert not any(r.get("verb") == "gpu_kill" for r in e.executed)
 
     def test_stuck_lowconf_notify_only(self, base_config):
         base_config["actions"]["qwen_confidence_floor"] = 0.6

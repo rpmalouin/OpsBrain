@@ -34,7 +34,6 @@ log = get_logger("actions")
 
 STATE_FILE = REPO / "logs" / "action_state.json"
 NOTIF_FILE = REPO / "logs" / "notifications.jsonl"
-ALLOWED_VERBS = {"docker_restart", "docker_prune", "service_restart", "gpu_kill", "notify"}
 
 
 def run(cmd, timeout=90):
@@ -253,10 +252,13 @@ def deterministic_rules(coll, st, baseline):
         except Exception:
             continue
         if mem > gpu_th:
-            procs = coll.get("gpu", {}).get("compute_processes", [])
+            procs = coll.get("gpu", {}).get("compute_processes", []) or []
             if procs and procs[0].get("pid"):
-                rules.append({"type": "gpu_kill", "target": str(procs[0]["pid"]),
-                              "reason": f"GPU mem {mem:.0f}% > {gpu_th:.0f}% with resident process"})
+                name = str(procs[0].get("name") or "").lower()
+                # never auto-kill the ollama/llama-server runner
+                if not any(m in name for m in OLLAMA_MARKERS):
+                    rules.append({"type": "gpu_kill", "target": str(procs[0]["pid"]),
+                                  "reason": f"GPU mem {mem:.0f}% > {gpu_th:.0f}% with resident process"})
 
     # 4) restart loops
     for name in coll.get("docker", {}).get("restarting", []) or []:
@@ -305,8 +307,31 @@ def record_gpu_event(flags, gpu, pid="", coll_ts=None):
     return ev
 
 
-def update_gpu_daily_stats(gpu, drift_event_count, remediations):
-    """Roll a per-day max-vram/temp + stuck-pid + remediation accumulator."""
+OLLAMA_MARKERS = ("ollama", "llama-server", "llama_server")
+
+
+def _killable_stuck_pid(procs, last_pid):
+    """Return the pid to safely kill for a stuck GPU process, or None.
+
+    Safety: only returns a pid that (a) is the STUCK pid tracked by the baseline
+    (last_pid) — not blindly procs[0] — and (b) is still present in compute
+    processes, and (c) is NOT an ollama/llama-server process (never kill the local
+    inference runner)."""
+    try:
+        last_pid = str(last_pid)
+    except Exception:
+        last_pid = ""
+    for p in procs or []:
+        if str(p.get("pid", "")) == last_pid:
+            name = str(p.get("name", "")).lower()
+            if any(m in name for m in OLLAMA_MARKERS):
+                return None
+            return last_pid
+    return None
+
+
+def update_gpu_daily_stats(gpu, drift_event_count, remediations, stuck_pids=None):
+    """Roll a per-day max-vram/temp + remediations + stuck-pid accumulator."""
     path = _gpu_daily_stats_path()
     stats = read_json(path, {}) or {}
     today = time.strftime("%Y-%m-%d")
@@ -320,6 +345,9 @@ def update_gpu_daily_stats(gpu, drift_event_count, remediations):
         except (TypeError, ValueError):
             pass
     stats["drift_event_count"] = int(stats.get("drift_event_count", 0)) + drift_event_count
+    if stuck_pids:
+        merged = list(dict.fromkeys(list((stats.get("stuck_pids") or [])) + list(stuck_pids)))
+        stats["stuck_pids"] = merged
     for r in remediations:
         stats.setdefault("remediations", []).append(r)
     write_json(path, stats)
@@ -350,18 +378,23 @@ def gpu_drift_actions(coll, qwen, conf, engine, st):
 
     gpu = (coll.get("gpu", {}).get("gpus") or [{}])[0]
     procs = coll.get("gpu", {}).get("compute_processes", []) or []
-    pid = str(procs[0].get("pid")) if procs else ""
+    baseline = coll.get("gpu", {}).get("baseline", {}) or {}
+    pid = str(procs[0].get("pid") or "0") if procs else "0"
     events, remediations = [], []
+    stuck_pids = list(st.get("gpu_stuck_pids") or [])
 
     stuck = "stuck_process" in flags
     if stuck:
-        if conf > 0.8 and pid and pid != "0":
-            rec = engine.dispatch("gpu_kill", pid, "stuck GPU process (drift)")
+        # Kill ONLY the baseline-tracked stuck pid, and only if it's not ollama's
+        # runner and still present (see _killable_stuck_pid).
+        kill_pid = _killable_stuck_pid(procs, baseline.get("last_pid"))
+        if conf > 0.8 and kill_pid:
+            rec = engine.dispatch("gpu_kill", kill_pid, "stuck GPU process (drift)")
             remediations.append(rec)
-            notify(f"GPU stuck_process: killed pid {pid} (conf {conf:.2f})", "gpu_drift")
+            notify(f"GPU stuck_process: killed pid {kill_pid} (conf {conf:.2f})", "gpu_drift")
         else:
             notify(f"GPU stuck_process detected (pid {pid or '?'}, conf {conf:.2f}) "
-                   "-> notify only (conf<=0.8 or unresolved pid)", "gpu_drift")
+                   "-> notify only", "gpu_drift")
 
     for f in sorted(flags & NOTIFY_ONLY):
         notify(f"GPU drift flag: {f}", "gpu_drift")
@@ -369,9 +402,10 @@ def gpu_drift_actions(coll, qwen, conf, engine, st):
 
     event = record_gpu_event(sorted(flags), gpu, pid, coll.get("timestamp"))
     events.append(event)
-    if "stuck_process" in flags and pid:
-        st["gpu_stuck_pids"] = list(dict.fromkeys((st.get("gpu_stuck_pids") or []) + [pid]))
-    update_gpu_daily_stats(gpu, len(events), remediations)
+    if stuck and pid and pid != "0":
+        stuck_pids = list(dict.fromkeys(stuck_pids + [pid]))
+        st["gpu_stuck_pids"] = stuck_pids
+    update_gpu_daily_stats(gpu, len(events), remediations, stuck_pids)
     return events, remediations
 
 

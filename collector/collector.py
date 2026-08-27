@@ -161,8 +161,7 @@ def collect_docker_socket(cfg):
             "running": sum(1 for c in containers if c["state"] == "running"),
             "restarting": [c["name"] for c in containers if c["restarting"]],
             "unhealthy": [c["name"] for c in containers
-                          if c["state"] == "running" and "healthy" not in c["status"]
-                          and "unhealthy" in c["status"].lower() or "unhealthy" in c["status"].lower()],
+                          if c["state"] == "running" and "unhealthy" in (c["status"] or "").lower()],
             "containers": containers}
 
 
@@ -237,8 +236,9 @@ def _to_float(v):
 
 def _reset_baseline(prev):
     """Return a fresh baseline when GPU identity changed or none existed."""
-    return {"last_vram": 0, "last_pid": 0, "last_power": 0, "last_temp": 0,
-            "cycles_with_same_pid": 0}
+    return {"last_vram": 0, "last_pid": "0", "last_power": 0, "last_temp": 0,
+            "cycles_with_same_pid": 0, "gpu_name": (prev or {}).get("gpu_name"),
+            "total_vram": (prev or {}).get("total_vram")}
 
 
 def evaluate_gpu_drift(gpus, processes, prev_baseline, cfg):
@@ -263,10 +263,16 @@ def evaluate_gpu_drift(gpus, processes, prev_baseline, cfg):
     temp = g.get("temp_c", 0)
     power = g.get("power_w", 0)
 
-    pid = processes[0].get("pid", "0") if processes else "0"
-    base = prev_baseline or _reset_baseline(prev_baseline)
-    # if identity changed (e.g. driver/GPU swap), re-baseline
+    pid = str(processes[0].get("pid", "0")) if processes else "0"
+    # Reset baseline when GPU identity changed (name or total VRAM) — avoids a
+    # spurious vram_drift after a driver/GPU swap.
+    identity_change = (
+        prev_baseline.get("gpu_name") not in (None, "") and prev_baseline.get("gpu_name") != g.get("name")
+    ) or ("total_vram" in prev_baseline and prev_baseline.get("total_vram") != total)
+    base = _reset_baseline(prev_baseline) if (identity_change or not prev_baseline) else prev_baseline
     new = dict(base)
+    new["gpu_name"] = g.get("name")
+    new["total_vram"] = total
 
     # cycles_with_same_pid bookkeeping
     if base.get("last_pid") == pid and pid != "0":
@@ -286,11 +292,11 @@ def evaluate_gpu_drift(gpus, processes, prev_baseline, cfg):
     # Stuck process: same PID persisted + util above threshold
     if new["cycles_with_same_pid"] >= stuck_cycles and util > util_thr:
         flags.append("stuck_process")
-    # Power drift: high draw while "idle" util
-    if power > power_idle and util <= util_thr:
+    # Power drift: high draw while strictly "idle" util (< threshold)
+    if power > power_idle and util < util_thr:
         flags.append("power_drift")
-    # Temp drift: high temp while "idle" util
-    if temp > temp_idle and util <= util_thr:
+    # Temp drift: high temp while strictly "idle" util (< threshold)
+    if temp > temp_idle and util < util_thr:
         flags.append("temp_drift")
 
     # persist current as new baseline

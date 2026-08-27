@@ -80,7 +80,10 @@ def notify(message, category="action"):
 
 def allow_container(name):
     wl = Cfg.get("actions.allow_restart_containers", []) or []
-    return (not wl) or name in wl
+    if not wl:
+        return True
+    low = str(name).lower()
+    return any(str(w).lower() == low for w in wl)
 
 
 def allow_service(unit):

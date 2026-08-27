@@ -43,7 +43,28 @@ actions:
   gpu_mem_threshold_percent: 90.0
   disk_threshold_percent: 85.0
   qwen_confidence_floor: 0.6    # below this -> do nothing and log
-  allow_restart_containers: []  # empty = all; fill to whitelist, e.g. ["jellyfin","plex"]
+  # Containers the engine may restart (case-insensitive match against docker name).
+  # Empty = allow all. dockpeek + last30days-runner reflect the real docker names.
+  allow_restart_containers:
+    - homepage
+    - dozzle
+    - dockpeek
+    - netdata
+    - caddy
+    - caddy-editor
+    - calibre
+    - calibre-web
+    - dockscope
+    - filerise
+    - firefox
+    - flacsentry
+    - grimmory
+    - homelab-hub
+    - homepage-editor
+    - last30days-runner
+    - librewolf
+    - yamtrack
+    - youtube-dl-server
   allow_service_restart: []     # systemd units whitelist (shell injection safe)
   allow_gpu_kill: false
   allow_prune: true

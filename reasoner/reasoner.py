@@ -85,10 +85,17 @@ def extract_json(raw):
 
 
 def sanitize(obj):
+    if not isinstance(obj, dict):
+        obj = {}
+    conf_raw = obj.get("confidence", 0.0)
+    try:
+        conf = float(conf_raw) if conf_raw is not None else 0.0
+    except (TypeError, ValueError):
+        conf = 0.0
     out = {
         "warnings": list(obj.get("warnings", [])) if isinstance(obj.get("warnings", []), list) else [],
         "summary": str(obj.get("summary", ""))[:500],
-        "confidence": min(1.0, max(0.0, float(obj.get("confidence", 0.0)))),
+        "confidence": min(1.0, max(0.0, conf)),
         "actions": [],
     }
     for a in obj.get("actions", []) or []:

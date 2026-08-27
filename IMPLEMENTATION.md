@@ -4,6 +4,11 @@ This is the entry point for deploying and operating **Ops Brain**, the homelab
 automation / orchestration engine. It links to the how-to pages that live in the
 [`docs/`](docs/) folder.
 
+> **Maintainership:** this is a **use it / you fix it** project — built for the
+> author's own homelab, maintained to the level they want to add functionality, with no
+> support-schedule promises (see [README](README.md) → Maintainership). It's MIT-licensed,
+> so fork / fix / adapt freely.
+
 > **Safety model up front:** Ops Brain ships with `actions.dry_run: true`. It will
 > *observe*, *reason*, and *recommend* — but it will not touch your containers, services,
 > or GPU until you explicitly disable dry-run ([docs/remediation.md](docs/remediation.md)).

@@ -189,6 +189,16 @@ correlations, dashboard refinements). Run before pushing changes to `actions.py`
   each node must serve an OpsBrain `/api/status` (or raw collector.json) snapshot. Test
   locally by pointing them at a running dashboard `http://<host>:9120/api/status`.
 
+## Maintainership
+
+This is a **use it / you fix it** project. It is built and maintained for my own
+homelab, and new functionality is added when *I* want it — not on a support
+schedule. I make no promises of API stability, issue response times, or roadmap.
+It is released under MIT so you are **free to use, fork, and fix it yourself**;
+contributions and fixes are welcome, but don't expect me to prioritize your use
+case. The docs in `IMPLEMENTATION.md` / `docs/` will get you up and running on
+your own hardware.
+
 ## License
 
 Released under the [MIT License](LICENSE). Free to use, modify, and distribute —

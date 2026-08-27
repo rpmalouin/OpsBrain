@@ -35,7 +35,8 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
   ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
   deploy/             systemd units + installer
   tests/              pytest suite (98 tests)
-  Dockerfile, docker-compose.yml, README.md, IMPLEMENTATION.md, .gitignore
+  docs/               per-feature implementation guides
+  Dockerfile, docker-compose.yml, README.md, IMPLEMENTATION.md, CHANGELOG.md, .gitignore
 ```
 
 ## Real-time dashboard
@@ -65,8 +66,10 @@ python3 scheduler/scheduler.py --once
 sudo ./deploy/install.sh   # installs opsbrain.service; opsbrain-ui.service also available
 ```
 
-**See `IMPLEMENTATION.md` for a complete, step-by-step deployment guide** including
-config, prerequisites, enabling remediation, federation, and troubleshooting.
+**See `IMPLEMENTATION.md` for the entry-point index and `docs/` for full per-feature
+guides** (deployment, configuration, reasoning-LLM, remediation, dashboard, manual-stop
+protection, TrueNAS, federation, security, tests, troubleshooting). Release history in
+`CHANGELOG.md`.
 
 ## How one cycle works
 

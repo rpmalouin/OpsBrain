@@ -13,8 +13,10 @@ safe remediation through whitelists/dry-run. Storage (TrueNAS), multi-node **fed
 manual-stop protection, and a real-time dashboard are all part of this build.
 
 Repo root: `/appdata/OpsBrain` (git repo, `main` branch).
-Docs: **`README.md`** (overview), **`IMPLEMENTATION.md`** (step-by-step deployment guide
-for a fresh system), `ui/README.md` (dashboard), this file (operational memory).
+Docs: **`IMPLEMENTATION.md`** (entry-point index), **`docs/`** (per-feature guides:
+deployment, configuration, reasoning-llm, remediation, dashboard, manual-stop-protection,
+truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.md`
+(overview), `ui/README.md` (dashboard), this file (operational memory).
 
 ## Current running state (LAST UPDATED: 2026-08-27)
 

@@ -16,6 +16,19 @@
   .grid-main { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:0.75rem; }
   table { width:100%; border-collapse:collapse; font-size:0.8rem; }
   th,td { text-align:left; padding:0.2rem 0.4rem; border-bottom:1px solid #334155; }
+  /* group filter buttons (dsh groups.js) */
+  .group-btn { display:inline-flex; align-items:center; gap:0.4rem; padding:0.25rem 0.6rem; font-size:0.75rem;
+    font-weight:600; border-radius:9999px; border:1px solid #334155; background:#0f172a; color:#94a3b8; cursor:pointer; margin-right:0.3rem; }
+  .group-btn.is-active { background:#475569; color:#f1f5f9; border-color:#64748b; }
+  .group-count { font-size:0.65rem; background:#334155; color:#cbd5e1; border-radius:9999px; padding:0 0.35rem; }
+  /* notification ticker */
+  .notif { display:flex; align-items:center; gap:0.5rem; font-size:0.75rem; padding:0.25rem 0.5rem;
+    border-radius:0.375rem; margin-bottom:0.25rem; }
+  .notif.critical { background:rgba(248,113,113,0.12); color:#fca5a5; }
+  .notif.warning { background:rgba(250,204,21,0.10); color:#fde047; }
+  .notif.info { background:rgba(148,163,184,0.10); color:#cbd5e1; }
+  .spark-wrap { display:flex; align-items:center; gap:0.5rem; }
+  .drift-dot { width:0.6rem; height:0.6rem; border-radius:9999px; display:inline-block; }
 </style>
 </head>
 <body class="min-h-screen">
@@ -23,14 +36,20 @@
   <header class="flex items-center justify-between mb-4">
     <h1 class="text-2xl font-bold text-slate-100">OpsBrain <span class="text-slate-400 text-sm font-normal">real-time</span></h1>
     <div class="flex items-center gap-3 text-sm">
+      <span id="notifCount" class="chip bg-slate-700 text-slate-300 hidden"></span>
       <div id="conn" class="chip bg-slate-700 text-slate-300">connecting…</div>
       <div id="mtime" class="text-slate-400 text-xs"></div>
     </div>
   </header>
 
+  <!-- live notifications ticker -->
+  <div id="notifications" class="mb-4"></div>
+
   <div class="grid-main" id="grid"></div>
 </div>
 
+<script src="/static/dsh_modules.js"></script>
+<script src="/static/ui_refinements.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

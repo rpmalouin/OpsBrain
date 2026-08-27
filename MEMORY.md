@@ -141,6 +141,28 @@ never appears. Symptoms: `grep -c opsbrain /appdata/caddy/Caddyfile` = 1 on host
 `docker exec caddy grep -c opsbrain /etc/caddy/Caddyfile` = 1. This is a file-bind-mount (not dir)
 gotcha; applies to any future edit of the Caddyfile.
 
+## Dashboard refinements (recovery / decay / impact)
+
+Server keeps 10-cycle history in `_hist` and broadcasts three extra WS top-level keys:
+- `confidence_recovery` — `{detected, prev, current, delta}`; fires for one cycle when
+  confidence strictly increases (frontend shows a green pulse + "recovery" tag). Delta is
+  `null` when no event; null confidence = "no observation", never 0.0.
+- `drift_decay` — `{vram[], temp[], power[], decay_cycles, status, baselines{}}`. Baselines
+  come from `gpu_baseline.json` (last_vram/last_temp/last_power), NOT fabricated from VRAM.
+  Tolerances: vram 250MB / temp 5°C / power 40W. status = ok/slow/bad (worst of three).
+- `restart_impact` — per-container `{container, score, samples:[{conf_before, conf_1..3}]}`.
+  Restarts detected from BOTH `qwen_actions`/`rule_actions` (type+target) AND
+  executed/skipped/blocked (verb+target) — there is NO top-level `actions` key in
+  actions_result.json (Pro review caught this). conf_before = actions_result.confidence;
+  score = mean(conf_i − conf_before) over 3 cycles, `null` when insufficient data.
+- These refinements recompute on ANY watched-file change (reasoner/actions writes matter),
+  not only collector.json updates.
+
+Frontend: `ui/static/ui_refinements.js` (dsh/Flash-generated) adds `confRecoveryPulse`,
+`driftDecayGraph`, `restartImpactGraphs` + CSS; `app.js` renders 3 new panels. Real restart
+impact render goes into the live `restartImpact` element (not grid HTML) so _tests_ that
+scan `grid.innerHTML` for container names will false-fail.
+
 ## GPU drift detection
 
 Live in collector → reasoner → actions → report. Config under `gpu_drift:`:

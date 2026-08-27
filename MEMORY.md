@@ -97,5 +97,20 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 2. Keep everything dry-run unless you have explicit sign-off to remediate.
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
-4. If you touch `actions.py` allow-list logic, re-run the `allow_container` unit checks
-   (the 8-case PASS/FAIL set used during setup).
+4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
+   RUN THE TESTS: `python3 -m pytest` (36 tests, `tests/test_opsbrain.py`). They cover
+   the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
+   sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
+   needed. pytest + `pytest.ini` are in the repo.
+
+## Tests
+
+`python3 -m pytest` (or `-q`). 36 tests covering:
+- `allow_container` / `allow_service` whitelist gate (including case-insensitivity)
+- `deterministic_rules`: CPU sustain window, memory creep, GPU threshold, restart loop,
+  disk prune, Netdata alarms
+- `sanitize` / `extract_json`: Qwen output normalization (accepts `type` or `action` key,
+  drops unknown verbs, clamps confidence, tolerates `null`)
+- `summarize_collector` digest trimming, `pct` parser, `Cfg.resolve` & JSON round-trip
+
+These caught a real bug during development — `sanitize` crashed on a null confidence value.

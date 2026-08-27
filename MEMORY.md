@@ -1,0 +1,101 @@
+# Ops Brain — MEMORY.md
+
+Operational memory for the Ops Brain project. Read this before changing anything in this
+repo. It captures the decisions, gotchas, and current running state that are expensive to
+re-derive.
+
+## What this is
+
+A unified **collector → reasoner → action** pipeline on dockerVM. Polls Netdata, Dozzle,
+Dockpeek/Docker-socket, `nvidia-smi`, and VM commands (`df`/`top`/`journalctl`) every 2
+minutes, asks **Qwen 3:14B** (local Ollama) for a structured JSON decision, then executes
+safe remediation through whitelists/dry-run.
+
+Repo root: `/appdata/OpsBrain` (git repo, `main` branch).
+
+## Current running state (LAST UPDATED: 2026-08-27)
+
+- **Service:** systemd unit `opsbrain` — ACTIVE, enabled, auto-restarts.
+  `ExecStart: python3 /appdata/OpsBrain/scheduler/scheduler.py --daemon`
+- **Mode:** `actions.dry_run: true` — **observing only, NOT remediating live.**
+  Flip to `false` + `systemctl restart opsbrain` to allow real actions.
+- **Restart whitelist** (`actions.allow_restart_containers`, 19 containers): homepage,
+  dozzle, dockpeek, netdata, caddy, caddy-editor, calibre, calibre-web, dockscope,
+  filerise, firefox, flacsentry, grimmory, homelab-hub, homepage-editor,
+  last30days-runner, librewolf, yamtrack, youtube-dl-server. Everything else blocked.
+- **Cadence:** cycle every 120s; daily report at `report.time: 23:55` →
+  `reports/YYYY-MM-DD.md`.
+- **Model:** `qwen3:14b` (pulled locally). Fallback `qwen2.5-coder:14b`.
+
+## Pipeline & artifacts
+
+```
+collector/collector.py      -> logs/collector.json       (unified signal doc)
+reasoner/reasoner.py        -> logs/reasoner_result.json (Qwen decision)
+hermes_actions/actions.py   -> logs/actions_result.json  (executed/skipped/blocked)
+scheduler/scheduler.py      -> daemon loop + daily report
+scheduler/report.py         -> reports/YYYY-MM-DD.md
+```
+Extra runtime files (gitignored): `logs/action_state.json` (sustained-CPU counters &
+memory baselines), `logs/notifications.jsonl`, `logs/opsbrain.log`.
+
+## CRITICAL — Qwen3 / Ollama quirk (do not "fix" this back)
+
+`qwen3:14b` via `http://localhost:11434/api/generate` **short-circuits to a bare `{}`
+(2 tokens) for large-ish prompts UNLESS**:
+1. you send an **explicit `"think": true`** (or false) field, AND
+2. you **omit `"format": "json"`**.
+
+Sending `format:json` together with `think` makes Qwen3 emit `{}`. The prompt
+(`reasoner/prompt.txt`) already mandates JSON, and `reasoner.extract_json()` recovers the
+object with a balanced-brace regex. `reasoner.py` sets `think` from config
+(`ollama.think: true`) and does not pass `format`. This was the hardest bug on the build —
+leave the call shape alone.
+
+Other calibration notes:
+- `num_ctx` is 32768 in config; a 25k-char dump made earlier versions collapse, so the
+  reasoner feeds Qwen a **compact risk digest** (`summarize_collector`) that only includes
+  anomalies (restarting/exited/over-threshold containers, alarms, GPU, disk), not the full
+  63-container fleet.
+- The model often keys actions as `"action"` not `"type"`; `sanitize()` accepts both.
+
+## Naming / data-source gotchas
+
+- **`dockpeek`** (not "dockpeak") is the real container; its HTTP API returns 404 on the
+  Docker-proxy route, so the collector relies on the **Docker socket/docker CLI** as the
+  primary container-state source (same data dockpeek's UI shows). `collect_dockpeek` is a
+  best-effort probe.
+- **`last30days-runner`** is the real container (user's "last30days").
+- **`Firefox`** is capitalised in Docker; the allow-list gate is **case-insensitive**.
+- Netdata `/api/v1/alarms?all` is huge — fetch with `max_bytes=3_000_000` and filter to
+  CRITICAL/WARNING/ERROR (the `UNDEFINED` status is noise; there can be ~300 of them).
+
+## Action rules (see config/ops_brain.yaml for thresholds)
+
+- container CPU > 80% sustained 5 min → `docker restart`
+- memory creep > 20% over baseline → `docker restart`
+- container restart loop → `docker restart` + notify
+- GPU mem > 90% with resident process → `gpu_kill` (needs `allow_gpu_kill: true`)
+- disk usage > 85% → `docker system prune -af` + notify (needs `allow_prune: true`)
+- Netdata active alarms → surfaced as warnings
+- **Qwen confidence < 0.6** → do nothing, log only
+- Safety: `restart_limit_per_run: 3` caps destructive restarts per cycle.
+
+## Useful commands
+
+```bash
+journalctl -u opsbrain -f                    # live daemon log
+systemctl restart opsbrain                   # reload config changes
+python3 scheduler/scheduler.py --once        # force a single cycle
+python3 scheduler/scheduler.py --report      # generate today's report immediately
+./deploy/install.sh                          # install/reinstall the systemd unit
+```
+
+## Change procedure
+
+1. This is a live service — config edits require `systemctl restart opsbrain`.
+2. Keep everything dry-run unless you have explicit sign-off to remediate.
+3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
+   `reports/` runtime output — do not commit those.
+4. If you touch `actions.py` allow-list logic, re-run the `allow_container` unit checks
+   (the 8-case PASS/FAIL set used during setup).

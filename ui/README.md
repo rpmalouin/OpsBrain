@@ -89,7 +89,7 @@ Published as **https://opsbrain.home** via the homelab `caddy` container
 
 ```
 opsbrain.home {
-    reverse_proxy 10.1.10.10:9120 {
+    reverse_proxy 192.0.2.10:9120 {
         flush_interval -1   # keep the 2s WS /stream alive through the proxy
     }
     tls internal

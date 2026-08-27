@@ -1,16 +1,65 @@
-# runtime state
+# ── Runtime state (never commit) ─────────────────────────────
 logs/
 reports/
 *.log
+*.jsonl
 
-# python
-__pycache__/
-*.pyc
-.venv/
-
-# secrets / local
+# ── Secrets / credentials (never commit) ─────────────────────
 .env
+.env.*
+!*.env.example
 config/secrets.yaml
+*.pem
+*.key
+*.p12
+*.pfx
+*.p8
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+*_rsa
+*_ed25519
+*smbcred*
+.gpg/
+credentials
+credential.json
+service-account*.json
+*.service-account.json
 
-# os
+# ── Local analysis / build caches ──────────────────────────
+.code-review-graph/
+.pytest_cache/
+**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ── IDE / editors ──────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.DS_Store
+**/.DS_Store
+
+# ── OS ─────────────────────────────────────────────────────
+Thumbs.db
 .DS_Store
+
+# ── Misc artifacts ─────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
+core
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal

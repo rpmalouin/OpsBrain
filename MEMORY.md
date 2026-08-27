@@ -145,7 +145,7 @@ The dashboard is published behind the homelab reverse proxy as **https://opsbrai
 - Route added to `/appdata/caddy/Caddyfile` (Admin/Monitoring section):
   ```
   opsbrain.home {
-      reverse_proxy 10.1.10.10:9120 {
+      reverse_proxy 192.0.2.10:9120 {
           flush_interval -1   # keep the 2s WS /stream alive through the proxy
       }
       tls internal
@@ -153,7 +153,7 @@ The dashboard is published behind the homelab reverse proxy as **https://opsbrai
   ```
 - Caddy runs as the `caddy` container in `network_mode: host`, so it reaches the dashboard's
   `0.0.0.0:9120` directly. `caddy reload` picks up Caddyfile changes; WS upgrade is proxied
-  automatically. Verify: `curl -sk --resolve opsbrain.home:443:10.1.10.10 https://opsbrain.home/`
+  automatically. Verify: `curl -sk --resolve opsbrain.home:443:192.0.2.10 https://opsbrain.home/`
   → 200; WS via raw socket → `101 Switching Protocols` + live 182KB snapshot.
 
 **PITFALL — bind-mount inode staleness.** Editing `/appdata/caddy/Caddyfile` with a write-replacing

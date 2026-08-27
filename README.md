@@ -189,6 +189,11 @@ correlations, dashboard refinements). Run before pushing changes to `actions.py`
   each node must serve an OpsBrain `/api/status` (or raw collector.json) snapshot. Test
   locally by pointing them at a running dashboard `http://<host>:9120/api/status`.
 
+## License
+
+Released under the [MIT License](LICENSE). Free to use, modify, and distribute —
+see `LICENSE` for the full terms.
+
 ## Containerized alternative
 
 `docker-compose up -d` provides a metrics/logs-only build (host network reaches Ollama

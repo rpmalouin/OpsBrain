@@ -52,6 +52,8 @@ Protection, Daily Report Preview**, plus confidence-recovery / GPU-drift-decay /
 restart-impact refinements. Served by the `opsbrain-ui` systemd service at
 `http://<host>:9120/` — see `ui/README.md`.
 
+<img width="2020" height="1537" alt="image" src="https://github.com/user-attachments/assets/a8b06a19-7987-483c-836a-0f2a1038c65b" />
+
 ## Quick start (recommended: on a Linux VM with Docker + NVIDIA GPU)
 
 Requires: Python 3.10+, `PyYAML`, the `docker` CLI, `nvidia-smi`, and Ollama with

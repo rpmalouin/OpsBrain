@@ -68,7 +68,18 @@ actions:
   allow_service_restart: []     # systemd units whitelist (shell injection safe)
   allow_gpu_kill: false
   allow_prune: true
+  manual_stop_sigkill_protect: true   # treat exit 137 (no OOM) as a manual stop
   notify_webhook: ""            # optional generic webhook (POST JSON), e.g. ntfy/Telegram bot
+
+# --- Manual Stop Protection (HARD INVARIANT) ---
+# "Manually stopped containers must stay stopped." OpsBrain must NEVER restart
+# (or destroy via prune) a container the user manually stopped — regardless of
+# autonomous remediation, confidence gating, restart caps, anomaly detection,
+# drift remediation, daily report recommendations, or any Qwen-generated action.
+manual_stop_protection:
+  enabled: true
+  track_manual_stops: true
+  block_restart_for_manual_stops: true
 
 # --- GPU drift detection ---
 gpu_drift:
@@ -96,6 +107,8 @@ paths:
   gpu_baseline: logs/gpu_baseline.json
   gpu_drift_events: logs/gpu_drift_events.jsonl
   gpu_daily_stats: logs/gpu_daily_stats.json
+  manual_stops: logs/manual_stops.json
+  prev_running: logs/prev_running.json
 
 logging:
   log_dir: logs

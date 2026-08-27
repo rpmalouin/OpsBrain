@@ -260,7 +260,12 @@ class TestSanitize:
 
     def test_sanitize_tolerates_non_dict(self):
         out = R.sanitize(None)
-        assert out == {"warnings": [], "summary": "", "confidence": 0.0, "gpu_drift": [], "actions": []}
+        assert out == {"warnings": [], "summary": "", "confidence": 0.0,
+                       "gpu_drift": [], "manual_stops": [], "actions": []}
+
+    def test_sanitize_preserves_manual_stops_list(self):
+        out = R.sanitize({"manual_stops": ["web", "db", ""], "confidence": 0.9})
+        assert out["manual_stops"] == ["web", "db"]  # empties dropped
 
     def test_sanitize_preserves_valid_gpu_drift(self):
         out = R.sanitize({"gpu_drift": ["vram_drift", "stuck_process", "bogus"], "confidence": 0.9})

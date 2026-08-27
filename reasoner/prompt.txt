@@ -46,6 +46,11 @@ verbs. Only propose an action when there is concrete evidence in the state.
 A clean / healthy system is a perfectly good answer with empty warnings and
 actions.
 
+HARD RULE — MANUAL STOP PROTECTION:
+If a container appears in the `manual_stops` list of the system state, it was
+manually stopped by the user and classifies as "manual_stop". NEVER recommend
+`docker_restart` (or any restart) for it. These containers must stay stopped.
+
 Output ONLY valid JSON in exactly this shape:
 {
   "warnings": ["..."],
@@ -54,5 +59,6 @@ Output ONLY valid JSON in exactly this shape:
   ],
   "summary": "one concise paragraph, max 3 sentences",
   "confidence": 0.0,
-  "gpu_drift": []
+  "gpu_drift": [],
+  "manual_stops": []
 }

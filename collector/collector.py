@@ -21,6 +21,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import Cfg, REPO, get_logger, now_iso  # noqa: E402
 from common import read_json, write_json  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
+from manual_stops import ManualStops, classify_manual_stop, _norm_name  # noqa: E402
 
 log = get_logger("collector")
 
@@ -124,13 +126,20 @@ def collect_docker_socket(cfg):
                 continue
             try:
                 j = json.loads(line)
+                name = j.get("Names", "").lstrip("/")
+                inst = _inspect_state(name)
                 containers.append({
-                    "name": j.get("Names", "").rstrip("/"),
+                    "id": inst.get("id"),
+                    "name": name,
                     "image": j.get("Image"),
                     "state": j.get("State"),
                     "status": j.get("Status"),
                     "restarting": (j.get("State") == "restarting"),
                     "labels": j.get("Labels", ""),
+                    "exit_code": inst.get("exit_code"),
+                    "oom_killed": inst.get("oom_killed"),
+                    "finished_at": inst.get("finished_at"),
+                    "started_at": inst.get("started_at"),
                 })
             except Exception:
                 continue
@@ -145,7 +154,7 @@ def collect_docker_socket(cfg):
                 continue
             try:
                 j = json.loads(line)
-                stats_map[j.get("Name", "").rstrip("/")] = {
+                stats_map[j.get("Name", "").lstrip("/")] = {
                     "cpu_percent": j.get("CPUPerc"),
                     "mem_percent": j.get("MemPerc"),
                     "mem_usage": j.get("MemUsage"),
@@ -157,12 +166,48 @@ def collect_docker_socket(cfg):
     for c in containers:
         c["stats"] = stats_map.get(c["name"], {})
         c["restart_count"] = _restart_count(c["name"])
-    return {"containers_count": len(containers),
-            "running": sum(1 for c in containers if c["state"] == "running"),
-            "restarting": [c["name"] for c in containers if c["restarting"]],
-            "unhealthy": [c["name"] for c in containers
-                          if c["state"] == "running" and "unhealthy" in (c["status"] or "").lower()],
-            "containers": containers}
+
+    # ---- Manual Stop Protection: detect newly stopped containers ----
+    manual_stops_meta = update_manual_stops(containers, cfg)
+    doc = {
+        "containers_count": len(containers),
+        "running": sum(1 for c in containers if c["state"] == "running"),
+        "restarting": [c["name"] for c in containers if c["restarting"]],
+        "unhealthy": [c["name"] for c in containers
+                      if c["state"] == "running" and "unhealthy" in (c["status"] or "").lower()],
+        "containers": containers,
+        "manual_stops": manual_stops_meta.get("names", []),
+        "manual_stop_protected_count": manual_stops_meta.get("count", 0),
+    }
+    # mark each container's protected flag (for the dashboard)
+    protected = set(manual_stops_meta.get("names", []))
+    for c in containers:
+        c["manual_stop_protected"] = c["name"].lower() in protected
+    doc["containers"] = containers
+    return doc
+
+
+def _inspect_state(name):
+    """Get a container's exit fingerprint via docker inspect.
+    Returns {id, exit_code, oom_killed, finished_at, started_at, restart_count}."""
+    fmt = "{{.Id}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{.State.FinishedAt}}|{{.State.StartedAt}}|{{.RestartCount}}"
+    try:
+        r = subprocess.run(["docker", "inspect", name, "--format", fmt],
+                           capture_output=True, text=True, timeout=6)
+        parts = r.stdout.strip().split("|")
+        while len(parts) < 6:
+            parts.append("")
+        return {
+            "id": parts[0],
+            "exit_code": _to_int(parts[1]),
+            "oom_killed": str(parts[2]).strip().lower() == "true",
+            "finished_at": parts[3],
+            "started_at": parts[4],
+            "restart_count": _to_int(parts[5]),
+        }
+    except Exception:
+        return {"id": "", "exit_code": None, "oom_killed": False,
+                "finished_at": None, "started_at": None, "restart_count": 0}
 
 
 def _restart_count(name):
@@ -172,6 +217,91 @@ def _restart_count(name):
         return int(r.stdout.strip() or 0)
     except Exception:
         return 0
+
+
+def _manual_stops_path():
+    if Cfg.get("paths.manual_stops"):
+        return Cfg.resolve("paths.manual_stops")
+    return REPO / "logs" / "manual_stops.json"
+
+
+def _prev_running_path():
+    if Cfg.get("paths.prev_running"):
+        return Cfg.resolve("paths.prev_running")
+    return REPO / "logs" / "prev_running.json"
+
+
+def update_manual_stops(containers, cfg):
+    """Detect newly-manually-stopped containers and persist manual_stops.json.
+
+    Transition-based detection: a container that WAS running last cycle and is now
+    stopped (exited) with a clean/manual exit signature qualifies as a manual stop.
+    First run (no prev_running) seeds and classifies nothing to avoid false protects.
+
+    Returns {names: [..], count: N} for embedding in collector.json.
+    """
+    if not Cfg.get("manual_stop_protection.track_manual_stops", True):
+        return {"names": [], "count": 0}
+
+    reg = ManualStops(_manual_stops_path())
+    if not _manual_stops_path().exists():
+        reg.save()  # create an empty registry file so consumers can rely on it
+    prev_path = _prev_running_path()
+    prev_running = read_json(prev_path, {}) or {}
+    prev_ids = set(prev_running.get("ids", []))
+    prev_names = {str(n).lower() for n in prev_running.get("names", [])}
+
+    now_run_ids = set()
+    now_run_names = set()
+    for c in containers:
+        cid = (c.get("id") or "").strip()
+        name = (c.get("name") or "").strip()
+        is_running = (c.get("state") == "running")
+        if cid and is_running:
+            now_run_ids.add(cid)
+        if name and is_running:
+            now_run_names.add(name.lower())
+
+    sigkill_protect = bool(Cfg.get("actions.manual_stop_sigkill_protect", True))
+
+    newly_stopped = []
+    if prev_ids or prev_names:
+        # containers that were running before and are not running now
+        for c in containers:
+            cid = (c.get("id") or "").strip()
+            name = (c.get("name") or "").strip()
+            if c.get("state") == "exited":
+                was_running = (cid and cid in prev_ids) or (name and name.lower() in prev_names)
+                if was_running:
+                    newly_stopped.append(c)
+
+    detected_at = now_iso()
+    for c in newly_stopped:
+        cid = (c.get("id") or "").strip()
+        name = (c.get("name") or "").strip()
+        manual = classify_manual_stop(c.get("exit_code"), c.get("oom_killed"),
+                                      sigkill_protect)
+        if manual and cid:
+            reg.add(cid, name, c.get("exit_code"), c.get("oom_killed"),
+                    c.get("finished_at"), detected_at)
+        elif manual and name:
+            reg.add(name, name, c.get("exit_code"), c.get("oom_killed"),
+                    c.get("finished_at"), detected_at)
+
+    # User re-arm: a protected container now RUNNING again clears protection.
+    # A container is "re-run" if its ID is currently running, OR its recorded name
+    # is currently running under a (possibly new) ID. Still-stopped/absent persist.
+    for cid, rec in list(reg.stops().items()):
+        name_key = _norm_name(rec.get("name", ""))
+        running_now = (cid in now_run_ids) or (name_key and name_key in now_run_names)
+        if running_now:
+            reg.rearm(cid, rec.get("name", ""))
+
+    # persist prev_running (RUNNING ids + lowercased names) for the next cycle
+    write_json(prev_path, {"ids": sorted(now_run_ids), "names": sorted(now_run_names)})
+
+    names = reg.protected_names()
+    return {"names": names, "count": len(names)}
 
 
 def collect_gpu(cfg):

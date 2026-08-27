@@ -118,20 +118,64 @@ function renderContainers(col) {
 
   const filtered = groupContainers(containers, groups, activeGroup);
 
+  // Manual Stop Protection: protected containers (from WS snapshot)
+  const ms = state.manual_stops || {};
+  const msStops = ms.stops || {};
+  const protectedCount = Object.keys(msStops).length;
+
   let b = `<div id="groupBtns" class="mb-2"></div>`;
   b += `<div class="mb-2 text-xs text-slate-400">Restart loop: ${capStr}</div>`;
+  // Manual Stop Protection header
+  b += `<div class="mb-2 text-xs flex flex-wrap gap-2 items-center">` +
+    `<span>Manual Stop Protection: <b class="${protectedCount ? 'text-red-400' : 'text-green-400'}">${protectedCount ? 'ENABLED (' + protectedCount + ' protected)' : 'enabled · 0 protected'}</b></span>` +
+    `</div>`;
   if (!filtered.length) b += `<div class="text-slate-500 text-sm">no containers in this group</div>`;
   else {
     const rows = filtered.slice(0, 40).map(c => {
       const st = c.stats || {};
       const cpu = num(st.cpu_percent), mem = num(st.mem_percent);
       const exited = c.state === "exited" ? "text-red-400" : "";
-      return `<tr><td>${escapeHtml(c.name)}</td><td class="${exited}">${escapeHtml(c.state)}</td><td>${fmtPct(cpu)}</td>` +
+      // manual-stop protected badge
+      let badge = "";
+      if (c.manual_stop_protected || c.protected) {
+        badge = ` <span class="chip bg-red-900 text-red-100" title="OpsBrain will not restart this container.">MANUALLY STOPPED</span>`;
+      }
+      return `<tr><td>${escapeHtml(c.name)}${badge}</td><td class="${exited}">${escapeHtml(c.state)}</td><td>${fmtPct(cpu)}</td>` +
              `<td>${fmtPct(mem)}</td><td>${c.restart_count ?? 0}</td></tr>`;
     }).join("");
     b += `<table><thead><tr class="text-slate-400 text-xs"><th>Container</th><th>State</th><th>CPU</th><th>RAM</th><th>Restarts</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
   return panel("Container Health", b);
+}
+
+// ------------------------------------------------- Manual Stop Protection
+function renderManualStopPanel() {
+  const ms = state.manual_stops || {};
+  const msStops = ms.stops || {};
+  const names = Object.keys(msStops);
+  // protected names resolved via /api/containers list is authoritative, but the
+  // snapshot's manual_stops json names are good enough; prefer registry names.
+  let status = "enabled";
+  let b = `<div class="text-sm mb-2">Manual Stop Protection</div>`;
+  b += `<div class="flex items-center gap-2 mb-2">` +
+    `<span class="chip ${names.length ? 'bg-red-900 text-red-100' : 'bg-green-900 text-green-200'}">${status} · ${names.length} protected</span>` +
+    `</div>`;
+  if (!names.length) {
+    b += `<div class="text-slate-500 text-sm">No manually-stopped containers are protected.</div>`;
+  } else {
+    b += `<ul class="text-sm text-slate-300 space-y-1">`;
+    const now = Date.now();
+    for (const cid of names) {
+      const rec = msStops[cid] || {};
+      const name = rec.name || cid;
+      const stoppedAt = rec.stopped_at || rec.detected_at || "?";
+      b += `<li>• <span class="text-red-300 font-semibold">${escapeHtml(name)}</span>` +
+           `<span class="text-slate-400 text-xs"> (stopped ${escapeHtml(String(stoppedAt))})</span></li>`;
+    }
+    b += `</ul>`;
+    b += `<div class="mt-2 text-xs text-slate-400">OpsBrain will not restart or prune these containers.</div>`;
+  }
+  return panel("Manual Stop Protection", b);
 }
 
 function renderConfidencePanel(reasoner) {
@@ -247,6 +291,7 @@ function render() {
   const actions = state.actions || {};
   const cards = [
     renderSystem(collector),
+    renderManualStopPanel(),
     renderGpuPanel(collector),
     renderDriftTimeline(collector),
     renderConfidencePanel(reasoner),

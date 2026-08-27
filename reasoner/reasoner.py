@@ -19,12 +19,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import Cfg, REPO, get_logger, read_json, write_json  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
+from manual_stops import ManualStops  # noqa: E402
 
 log = get_logger("reasoner")
 
 TEMPLATE_PATH = REPO / "reasoner" / "prompt.txt"
 ALLOWED_VERBS = {"docker_restart", "docker_prune", "service_restart", "gpu_kill", "notify"}
 GPU_DRIFT_FLAGS = {"vram_drift", "vram_overload", "stuck_process", "power_drift", "temp_drift"}
+
+
+def load_manual_stop_names():
+    path = Cfg.resolve("paths.manual_stops") if Cfg.get("paths.manual_stops") else REPO / "logs" / "manual_stops.json"
+    if not path.exists():
+        return []
+    try:
+        return ManualStops(path).protected_names()
+    except Exception:
+        return []
 
 
 def resolve_model():
@@ -98,12 +110,17 @@ def sanitize(obj):
         "summary": str(obj.get("summary", ""))[:500],
         "confidence": min(1.0, max(0.0, conf)),
         "gpu_drift": [],
+        "manual_stops": [],
         "actions": [],
     }
     # carry only known GPU-drift flags
     gd = obj.get("gpu_drift", [])
     if isinstance(gd, list):
         out["gpu_drift"] = [str(f) for f in gd if str(f) in GPU_DRIFT_FLAGS]
+    # carry the manual-stop list if the model echoed it (list of names)
+    ms = obj.get("manual_stops", [])
+    if isinstance(ms, list):
+        out["manual_stops"] = [str(n) for n in ms if str(n).strip()]
     for a in obj.get("actions", []) or []:
         if not isinstance(a, dict):
             continue
@@ -139,6 +156,11 @@ def main():
         return 2
 
     risk_summary = summarize_collector(collector)
+    # HARD INVARIANT: surface protected (manually-stopped) containers to Qwen so it
+    # never proposes restarting them. (Enforcement is authoritative in hermes_actions.)
+    manual_names = load_manual_stop_names()
+    risk_summary["manual_stops"] = manual_names
+
     model = args.model or os.environ.get("OPSBRAIN_MODEL") or resolve_model()
     if not model:
         log.error("no ollama model available; cannot reason")
@@ -162,6 +184,21 @@ def main():
         decision = {"warnings": ["reasoner failed to parse Qwen output"],
                     "actions": [], "gpu_drift": [],
                     "summary": f"parse error: {e}", "confidence": 0.0}
+
+    # HARD INVARIANT (defense-in-depth): never let Qwen propose a restart of a
+    # manually-stopped container. The authoritative block lives in hermes_actions,
+    # but self-censoring here keeps the decision doc clean too.
+    if manual_names:
+        protected = {n.lower() for n in manual_names}
+        kept = []
+        for a in decision.get("actions", []):
+            tgt = str(a.get("target", "")).lower()
+            if a.get("type") == "docker_restart" and tgt in protected:
+                continue  # drop the proposal
+            kept.append(a)
+        decision["actions"] = kept
+
+    decision["manual_stops"] = sorted(manual_names)
     decision["model"] = model
     decision["timestamp"] = collector.get("timestamp")
     out = Cfg.resolve("paths.reasoner_json")

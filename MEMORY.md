@@ -163,6 +163,45 @@ Frontend: `ui/static/ui_refinements.js` (dsh/Flash-generated) adds `confRecovery
 impact render goes into the live `restartImpact` element (not grid HTML) so _tests_ that
 scan `grid.innerHTML` for container names will false-fail.
 
+## Manual Stop Protection (HARD INVARIANT)
+
+Rule: **"Manually stopped containers must stay stopped"** — OpsBrain must NEVER
+restart a container the user manually stopped, overriding autonomous remediation,
+confidence gating, restart caps, allow-lists, anomaly/drift remediation, daily
+report recommendations, and any Qwen-generated action. Also must not destroy one
+via `docker prune`.
+
+Architecture:
+- `common/manual_stops.py` — shared `ManualStops` registry (keyed by container ID,
+  never auto-forgets; atomic writes; corrupt read fails CLOSED so the invariant is
+  never silently dropped) + `classify_manual_stop(exit_code, oom_killed, ...)`.
+  Manual = exit 0/143/137 (137-without-OOM favours protection via
+  `actions.manual_stop_sigkill_protect`); crash = OOM or other nonzero exits.
+  `restart_count` is deliberately NOT part of the rule (Pro review: too narrow).
+- `collector/collector.py` — extends the per-container inspect fingerprint
+  (`_inspect_state`: id/exit_code/oom_killed/finished_at/started_at) and does
+  transition-based detection in `update_manual_stops`: a container that WAS running
+  (prev_running.json) and is now exited with a manual exit signature is added.
+  First run seeds prev_running (no false protects). Re-arm (running again) clears.
+  Emits `manual_stops`/`manual_stop_protected`/`manual_stop_protected_count` in
+  collector.json.
+- `hermes_actions/actions.py` — `Engine.dispatch` for `docker_restart` checks the
+  manual-stop gate FIRST (before ollama guard / allow-list / cap). Blocked records
+  carry `reason:"blocked_manual_stop"` + `proposed_reason`. `docker_prune` blocks
+  whenever any protected container is currently stopped (docker prune has no per-name
+  exclusion). Summary in actions_result.json `manual_stops.{names,count,blocked}`.
+- `reasoner/` — injects `manual_stops` into the prompt digest + result; prompt has a
+  HARD RULE never to propose restart for them; `sanitize` carries the list. Defense-in-
+  depth also drops protected restart proposals in main().
+- `ui/` — watches manual_stops.json; `/api/containers` returns `protected` +
+  `protected_count`; app.js renders a "MANUALLY STOPPED" red tag (tooltip: "OpsBrain
+  will not restart this container.") + a Manual Stop Protection panel.
+- `scheduler/report.py` — "Manual Stop Protection Summary" section (count, protected
+  list, blocked count, still-stopped list).
+
+Verified live: created a throwaway container, `docker stop`'d it (exit 137, no OOM) →
+correctly recorded as manual_stop → reasoner carried it and Qwen proposed 0 restarts.
+
 ## GPU drift detection
 
 Live in collector → reasoner → actions → report. Config under `gpu_drift:`:

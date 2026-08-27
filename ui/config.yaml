@@ -12,6 +12,7 @@ watch:
   - logs/reasoner_result.json
   - logs/actions_result.json
   - logs/gpu_baseline.json
+  - logs/manual_stops.json
 
 # Optional: gateway to a browser-facing URL is not configured here;
 # the dashboard is served plain at http://<host>:9120/

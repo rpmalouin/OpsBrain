@@ -29,11 +29,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import Cfg, REPO, get_logger, read_json, write_json  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
+from manual_stops import ManualStops  # noqa: E402
 
 log = get_logger("actions")
 
 STATE_FILE = REPO / "logs" / "action_state.json"
 NOTIF_FILE = REPO / "logs" / "notifications.jsonl"
+
+
+def _manual_stops_path():
+    if Cfg.get("paths.manual_stops"):
+        return Cfg.resolve("paths.manual_stops")
+    return REPO / "logs" / "manual_stops.json"
+
+
+def load_manual_stops() -> ManualStops:
+    return ManualStops(_manual_stops_path())
+
+
+def manual_stop_enabled() -> bool:
+    return bool(Cfg.get("manual_stop_protection.block_restart_for_manual_stops", True))
 
 
 def run(cmd, timeout=90):
@@ -93,20 +109,43 @@ def allow_service(unit):
 class Engine:
     """Per-run executor with safety gates."""
 
-    def __init__(self, dry_run):
+    def __init__(self, dry_run, manual_stops=None, protected_stopped=None):
         self.dry_run = dry_run
         self.cap = int(Cfg.get("actions.restart_limit_per_run", 3))
         self.used = 0
         self.executed = []
         self.skipped = []
         self.blocked = []
+        self.manual_stops = manual_stops   # ManualStops registry or None
+        self.manual_stop_enabled = manual_stop_enabled()
+        self.manual_block_count = 0
+        # names of protected containers that are CURRENTLY stopped (avoids prune
+        # deleting them — docker prune has no per-name exclusion)
+        self.protected_stopped = set(protected_stopped or [])
 
     def _rec(self, verb, target, reason):
         return {"verb": verb, "target": target, "reason": reason}
 
+    def _is_manual_stop(self, target):
+        if not self.manual_stop_enabled or self.manual_stops is None:
+            return False
+        return self.manual_stops.is_protected(target)
+
     def dispatch(self, verb, target, reason):
         rec = self._rec(verb, target, reason)
         if verb == "docker_restart":
+            # HARD INVARIANT (step 1, before every other gate): never restart a
+            # container the user manually stopped. Overrides allow-list, cap,
+            # confidence gating, and Qwen/deterministic recommendations.
+            if self._is_manual_stop(target):
+                rec["state"] = "blocked"
+                rec["reason"] = "blocked_manual_stop"
+                rec["proposed_reason"] = str(reason or "")
+                rec["detail"] = f"manually stopped container {target} is protected — restart suppressed"
+                self.blocked.append(rec)
+                self.manual_block_count += 1
+                notify(f"Manual-stop protection BLOCKED restart of {target}", "manual_stop_protection")
+                return rec
             # Hard guard: never auto-restart ollama (would drop local inference).
             if str(target).lower() == "ollama":
                 rec["state"] = "blocked"
@@ -173,6 +212,19 @@ class Engine:
             self.executed.append(rec)
             return rec
         if verb == "docker_prune":
+            # HARD INVARIANT: `docker system prune -af` deletes stopped containers,
+            # including manually-stopped (protected) ones. Docker prune has no
+            # per-name exclusion, so block when any protected container is stopped.
+            if self.manual_stop_enabled and self.protected_stopped:
+                rec["state"] = "blocked"
+                rec["reason"] = "blocked_manual_stop"
+                rec["detail"] = (f"prune blocked: {len(self.protected_stopped)} manually-stopped "
+                                 f"container(s) protected: {', '.join(sorted(self.protected_stopped))}")
+                self.blocked.append(rec)
+                self.manual_block_count += 1
+                notify(f"Prune blocked — {len(self.protected_stopped)} manually-stopped "
+                       f"container(s) protected", "manual_stop_protection")
+                return rec
             if not Cfg.get("actions.allow_prune", True):
                 rec["state"] = "blocked"
                 rec["detail"] = "prune disabled"
@@ -431,7 +483,7 @@ def main():
 
     coll = read_json(Cfg.resolve("paths.collector_json"), {})
     qwen = read_json(Cfg.resolve("paths.reasoner_json"),
-                     {"warnings": [], "actions": [], "summary": "", "confidence": 0.0})
+                     {"warnings": [], "actions": [], "summary": "", "confidence": 0.0, "manual_stops": []})
     st = load_state()
     baseline = read_json(Cfg.resolve("paths.baseline_json"), {}) or {}
 
@@ -440,7 +492,15 @@ def main():
 
     rule_actions, rule_warnings = deterministic_rules(coll, st, baseline)
 
-    engine = Engine(dry)
+    # ---- Manual Stop Protection: load the protected set once for this run ----
+    reg = load_manual_stops()
+    protected_names = reg.protected_names()
+    # which protected containers are currently stopped (for the prune guard)?
+    now_containers = coll.get("docker", {}).get("containers", [])
+    protected_stopped = {c["name"] for c in now_containers
+                         if c.get("manual_stop_protected") and c.get("state") == "exited"}
+
+    engine = Engine(dry, manual_stops=reg, protected_stopped=protected_stopped)
 
     if conf >= floor:
         proposed = list(qwen.get("actions", [])) or []
@@ -487,10 +547,15 @@ def main():
                             if isinstance(r, dict) and r.get("verb") == "gpu_kill"
                             and r.get("state") == "executed"],
         },
+        "manual_stops": {
+            "names": protected_names,
+            "count": len(protected_names),
+            "blocked_this_run": engine.manual_block_count,
+        },
     })
-    log.info("actions: executed=%d skipped=%d blocked=%d gpu_events=%d (dry_run=%s)",
+    log.info("actions: executed=%d skipped=%d blocked=%d gpu_events=%d manual_stop_blocks=%d (dry_run=%s)",
              len(engine.executed), len(engine.skipped), len(engine.blocked),
-             len(gpu_events), dry)
+             len(gpu_events), engine.manual_block_count, dry)
     return 0
 
 

@@ -411,6 +411,7 @@ def refresh_snapshot():
     merged["reasoner"] = merged["sources"].get("reasoner_result.json")
     merged["actions"] = merged["sources"].get("actions_result.json")
     merged["gpu_baseline"] = merged["sources"].get("gpu_baseline.json")
+    merged["manual_stops"] = merged["sources"].get("manual_stops.json", {"version": 1, "stops": {}})
 
     if changed:
         rea = merged["reasoner"] or {}
@@ -563,13 +564,19 @@ async def api_containers():
         for k in ("cpu_percent", "mem_percent"):
             st[k] = _pct(st.get(k))
         out["stats"] = st
+        # per-container manual-stop flag (from collector)
+        out["protected"] = bool(c.get("manual_stop_protected"))
         return out
+    ms = _snapshot.get("manual_stops") or {}
+    ms_names = sorted({r.get("name", k) for k, r in (ms.get("stops", {}) or {}).items()})
     return JSONResponse({
         "containers_count": col.get("docker", {}).get("containers_count"),
         "running": col.get("docker", {}).get("running"),
         "restarting": col.get("docker", {}).get("restarting", []),
         "unhealthy": col.get("docker", {}).get("unhealthy", []),
         "containers": [_norm(c) for c in containers],
+        "protected": ms_names,
+        "protected_count": len(ms_names),
         "history": {n: {"cpu": list(r["cpu"]), "mem": list(r["mem"])}
                     for n, r in _hist["containers"].items()},
     })

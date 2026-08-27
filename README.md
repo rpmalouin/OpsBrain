@@ -65,7 +65,9 @@ sudo ./deploy/install.sh          # or: ./deploy/install.sh --no-systemd (cronta
 | container memory creep > 20% over baseline    | `docker restart`            | cap/allow-list  |
 | container in restart loop                   | `docker restart` + notify | cap/allow-list  |
 | GPU memory > 90% with resident process       | `gpu_kill`                  | `allow_gpu_kill`|
-| disk usage > 85%                             | `docker system prune -af` + notify | `allow_prune`  |
+| **GPU drift**: stuck_process + conf>0.8    | `gpu_kill` + notify         | conf>0.8 + pid  |
+| **GPU drift**: vram/power/temp/overload    | notify only                | —              |
+| disk usage > 85%                            | `docker system prune -af` + notify | `allow_prune`  |
 | Netdata ACTIVE alarm                        | surfaced as warnings       | —              |
 | Qwen confidence < 0.6        | **do nothing, log only**   | —              |
 

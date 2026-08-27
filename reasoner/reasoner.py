@@ -24,6 +24,7 @@ log = get_logger("reasoner")
 
 TEMPLATE_PATH = REPO / "reasoner" / "prompt.txt"
 ALLOWED_VERBS = {"docker_restart", "docker_prune", "service_restart", "gpu_kill", "notify"}
+GPU_DRIFT_FLAGS = {"vram_drift", "vram_overload", "stuck_process", "power_drift", "temp_drift"}
 
 
 def resolve_model():
@@ -96,8 +97,13 @@ def sanitize(obj):
         "warnings": list(obj.get("warnings", [])) if isinstance(obj.get("warnings", []), list) else [],
         "summary": str(obj.get("summary", ""))[:500],
         "confidence": min(1.0, max(0.0, conf)),
+        "gpu_drift": [],
         "actions": [],
     }
+    # carry only known GPU-drift flags
+    gd = obj.get("gpu_drift", [])
+    if isinstance(gd, list):
+        out["gpu_drift"] = [str(f) for f in gd if str(f) in GPU_DRIFT_FLAGS]
     for a in obj.get("actions", []) or []:
         if not isinstance(a, dict):
             continue
@@ -154,7 +160,8 @@ def main():
     except Exception as e:
         log.error("decision parse failed: %s", e)
         decision = {"warnings": ["reasoner failed to parse Qwen output"],
-                    "actions": [], "summary": f"parse error: {e}", "confidence": 0.0}
+                    "actions": [], "gpu_drift": [],
+                    "summary": f"parse error: {e}", "confidence": 0.0}
     decision["model"] = model
     decision["timestamp"] = collector.get("timestamp")
     out = Cfg.resolve("paths.reasoner_json")

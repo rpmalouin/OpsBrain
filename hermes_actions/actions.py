@@ -108,6 +108,12 @@ class Engine:
     def dispatch(self, verb, target, reason):
         rec = self._rec(verb, target, reason)
         if verb == "docker_restart":
+            # Hard guard: never auto-restart ollama (would drop local inference).
+            if str(target).lower() == "ollama":
+                rec["state"] = "blocked"
+                rec["detail"] = "ollama restart forbidden by policy"
+                self.blocked.append(rec)
+                return rec
             if not allow_container(target):
                 rec["state"] = "blocked"
                 rec["detail"] = "container not in allow list"
@@ -273,6 +279,102 @@ def deterministic_rules(coll, st, baseline):
     return rules, warnings
 
 
+def _gpu_drift_events_path():
+    return Cfg.resolve("paths.gpu_drift_events") if Cfg.get("paths.gpu_drift_events") else REPO / "logs" / "gpu_drift_events.jsonl"
+
+
+def _gpu_daily_stats_path():
+    return Cfg.resolve("paths.gpu_daily_stats") if Cfg.get("paths.gpu_daily_stats") else REPO / "logs" / "gpu_daily_stats.json"
+
+
+def record_gpu_event(flags, gpu, pid="", coll_ts=None):
+    """Append a GPU-drift event to the rolling 24h log. Returns the event dict."""
+    ev = {
+        "ts": time.time(),
+        "timestamp": coll_ts,
+        "flags": list(flags),
+        "vram_mb": (gpu or {}).get("mem_used_mb"),
+        "temp_c": (gpu or {}).get("temp_c"),
+        "power_w": (gpu or {}).get("power_w"),
+        "pid": pid or "",
+    }
+    path = _gpu_drift_events_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as fh:
+        fh.write(json.dumps(ev) + "\n")
+    return ev
+
+
+def update_gpu_daily_stats(gpu, drift_event_count, remediations):
+    """Roll a per-day max-vram/temp + stuck-pid + remediation accumulator."""
+    path = _gpu_daily_stats_path()
+    stats = read_json(path, {}) or {}
+    today = time.strftime("%Y-%m-%d")
+    if stats.get("date") != today:
+        stats = {"date": today, "max_vram_mb": 0, "max_temp_c": 0,
+                 "drift_event_count": 0, "stuck_pids": [], "remediations": []}
+    if gpu:
+        try:
+            stats["max_vram_mb"] = max(stats.get("max_vram_mb", 0), int(gpu.get("mem_used_mb") or 0))
+            stats["max_temp_c"] = max(stats.get("max_temp_c", 0), int(gpu.get("temp_c") or 0))
+        except (TypeError, ValueError):
+            pass
+    stats["drift_event_count"] = int(stats.get("drift_event_count", 0)) + drift_event_count
+    for r in remediations:
+        stats.setdefault("remediations", []).append(r)
+    write_json(path, stats)
+    return stats
+
+
+def gpu_drift_actions(coll, qwen, conf, engine, st):
+    """GPU-drift remediation per policy.
+
+    - stuck_process + confidence>0.8  -> kill the GPU PID + notify
+    - vram_drift | power_drift | temp_drift | vram_overload -> notify only
+    - ollama is never restarted (enforced in Engine.dispatch).
+
+    Returns (events logged this cycle, remediations applied)."""
+    NOTIFY_ONLY = {"vram_drift", "power_drift", "temp_drift", "vram_overload"}
+
+    # Union of Qwen's reasoned flags and the collector's deterministic flags.
+    flags = set()
+    for f in list(qwen.get("gpu_drift", [])) or []:
+        flags.add(str(f))
+    for f in (coll.get("gpu", {}).get("drift_flags", []) or []):
+        flags.add(str(f))
+    # drop unknown flags defensively
+    flags = {f for f in flags if f in NOTIFY_ONLY | {"stuck_process"}}
+
+    if not flags:
+        return [], []
+
+    gpu = (coll.get("gpu", {}).get("gpus") or [{}])[0]
+    procs = coll.get("gpu", {}).get("compute_processes", []) or []
+    pid = str(procs[0].get("pid")) if procs else ""
+    events, remediations = [], []
+
+    stuck = "stuck_process" in flags
+    if stuck:
+        if conf > 0.8 and pid and pid != "0":
+            rec = engine.dispatch("gpu_kill", pid, "stuck GPU process (drift)")
+            remediations.append(rec)
+            notify(f"GPU stuck_process: killed pid {pid} (conf {conf:.2f})", "gpu_drift")
+        else:
+            notify(f"GPU stuck_process detected (pid {pid or '?'}, conf {conf:.2f}) "
+                   "-> notify only (conf<=0.8 or unresolved pid)", "gpu_drift")
+
+    for f in sorted(flags & NOTIFY_ONLY):
+        notify(f"GPU drift flag: {f}", "gpu_drift")
+        remediations.append({"verb": "notify", "target": f})
+
+    event = record_gpu_event(sorted(flags), gpu, pid, coll.get("timestamp"))
+    events.append(event)
+    if "stuck_process" in flags and pid:
+        st["gpu_stuck_pids"] = list(dict.fromkeys((st.get("gpu_stuck_pids") or []) + [pid]))
+    update_gpu_daily_stats(gpu, len(events), remediations)
+    return events, remediations
+
+
 def _merge_warnings(qwen_warnings, rule_warnings):
     # dedupe: combine qwen and rule warnings in stable order
     seen = set()
@@ -326,6 +428,9 @@ def main():
         seen.add(dedup)
         engine.dispatch(verb, target, a.get("reason", ""))
 
+    # GPU drift handling (gated internally: kill needs conf>0.8; else notify only)
+    gpu_events, gpu_remediations = gpu_drift_actions(coll, qwen, conf, engine, st)
+
     save_state(st)
     write_json(Cfg.resolve("paths.baseline_json"), baseline)
     write_json(Cfg.resolve("paths.actions_json"), {
@@ -340,9 +445,18 @@ def main():
         "executed": engine.executed,
         "skipped": engine.skipped,
         "blocked": engine.blocked,
+        "gpu_drift": {
+            "flags": gpu_events[0]["flags"] if gpu_events else [],
+            "events": gpu_events,
+            "remediations": gpu_remediations,
+            "killed_pids": [r["target"] for r in gpu_remediations
+                            if isinstance(r, dict) and r.get("verb") == "gpu_kill"
+                            and r.get("state") == "executed"],
+        },
     })
-    log.info("actions: executed=%d skipped=%d blocked=%d (dry_run=%s)",
-             len(engine.executed), len(engine.skipped), len(engine.blocked), dry)
+    log.info("actions: executed=%d skipped=%d blocked=%d gpu_events=%d (dry_run=%s)",
+             len(engine.executed), len(engine.skipped), len(engine.blocked),
+             len(gpu_events), dry)
     return 0
 
 

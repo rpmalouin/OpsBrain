@@ -70,6 +70,16 @@ actions:
   allow_prune: true
   notify_webhook: ""            # optional generic webhook (POST JSON), e.g. ntfy/Telegram bot
 
+# --- GPU drift detection ---
+gpu_drift:
+  enabled: true
+  vram_creep_mb: 250           # VRAM increase between cycles that flags vram_drift
+  vram_max_percent: 90         # VRAM usage % of total that flags vram_overload
+  stuck_pid_cycles: 5          # same GPU PID cycled this many times + util>util_thr -> stuck_process
+  util_threshold: 10            # GPU util % treated as "idle" for power/temp drift; stuck needs util>this
+  power_idle_max_watts: 40      # power draw above this while util<thr -> power_drift
+  temp_idle_max_c: 55           # temp above this while util<thr -> temp_drift
+
 # --- Daily report ---
 report:
   time: "23:55"
@@ -83,6 +93,9 @@ paths:
   reasoner_json: logs/reasoner_result.json
   actions_json: logs/actions_result.json
   baseline_json: logs/baseline.json
+  gpu_baseline: logs/gpu_baseline.json
+  gpu_drift_events: logs/gpu_drift_events.jsonl
+  gpu_daily_stats: logs/gpu_daily_stats.json
 
 logging:
   log_dir: logs

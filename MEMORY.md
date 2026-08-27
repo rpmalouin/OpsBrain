@@ -103,14 +103,40 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
 
+## GPU drift detection
+
+Live in collector → reasoner → actions → report. Config under `gpu_drift:`:
+- `collector` queries nvidia-smi incl. **power.draw**, writes a persistent baseline to
+  `logs/gpu_baseline.json`, and computes deterministic `drift_flags` (primary GPU index 0):
+  `vram_drift` (> `vram_creep_mb` jump), `vram_overload` (> `vram_max_percent`),
+  `stuck_process` (same pid >= `stuck_pid_cycles` AND util > `util_threshold`),
+  `power_drift` / `temp_drift` (high power/temp while util <= threshold). Baseline fields:
+  `last_vram, last_pid, last_power, last_temp, cycles_with_same_pid`.
+- `reasoner` prompt includes the same five rules + `"gpu_drift": []` in the output schema;
+  `sanitize()` keeps only known flags (constant `GPU_DRIFT_FLAGS`).
+- `actions.gpu_drift_actions(coll, qwen, conf, engine, st)` unions Qwen's `gpu_drift` with
+  the deterministic collector flags:
+  - **stuck_process AND conf > 0.8 AND resolvable pid → `gpu_kill` pid + notify**
+  - vram_drift | power_drift | temp_drift | vram_overload → **notify only**
+  - **ollama restart is hard-blocked** in `Engine.dispatch` (policy guard) even if allow-listed.
+  Drift events append to `logs/gpu_drift_events.jsonl`; daily maxima/remediations roll into
+  `logs/gpu_daily_stats.json` (reset each UTC date).
+- `report` renders a `## GPU drift` section (24h events, peak VRAM/temp, stuck pids, current
+  state, remediation actions) via `render_gpu_drift_section` (dsh/Flash-generated).
+
 ## Tests
 
-`python3 -m pytest` (or `-q`). 36 tests covering:
+`python3 -m pytest` (or `-q`). **53 tests** covering:
 - `allow_container` / `allow_service` whitelist gate (including case-insensitivity)
 - `deterministic_rules`: CPU sustain window, memory creep, GPU threshold, restart loop,
   disk prune, Netdata alarms
 - `sanitize` / `extract_json`: Qwen output normalization (accepts `type` or `action` key,
-  drops unknown verbs, clamps confidence, tolerates `null`)
+  drops unknown verbs, clamps confidence, tolerates `null`), `gpu_drift` flag filtering
+- `collector.evaluate_gpu_drift`: all five drift flags + baseline bookkeeping
+- `actions.gpu_drift_actions`: stuck_process kill (conf>0.8) vs notify-only (conf<=0.8),
+  notify-only for the other four flags, Qwen∪deterministic flag union
+- `Engine.dispatch` ollama-restart guard
 - `summarize_collector` digest trimming, `pct` parser, `Cfg.resolve` & JSON round-trip
 
-These caught a real bug during development — `sanitize` crashed on a null confidence value.
+These caught real bugs during development — `sanitize` crashed on null confidence, and
+run/parse edge cases. GPU tests mock `run()`/`notify` so they never touch docker/kill.

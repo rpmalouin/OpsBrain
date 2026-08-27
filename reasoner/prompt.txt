@@ -14,6 +14,26 @@ Your job:
 - detect log error patterns
 - recommend safe remediation actions
 
+EVALUATE GPU DRIFT using the following rules. The state's GPU section carries
+`gpus` (current per-GPU stats incl. mem_used_mb, mem_total_mb, util_gpu_percent,
+temp_c, power_w), `compute_processes` (pid/name/mem_mb) and `baseline` (last cycle's
+last_vram, last_pid, last_power, last_temp, cycles_with_same_pid), plus deterministic
+`drift_flags`:
+
+- VRAM Drift: if current VRAM usage is more than gpu_drift.vram_creep_mb higher than
+  the baseline last_vram, append "vram_drift".
+- VRAM Overload: if VRAM usage exceeds gpu_drift.vram_max_percent of total VRAM,
+  append "vram_overload".
+- Stuck Process: if the same GPU PID has appeared for gpu_drift.stuck_pid_cycles and
+  GPU-Util > gpu_drift.util_threshold, append "stuck_process".
+- Power Drift: if GPU power draw exceeds gpu_drift.power_idle_max_watts while
+  GPU-Util < gpu_drift.util_threshold, append "power_drift".
+- Temperature Drift: if GPU temperature exceeds gpu_drift.temp_idle_max_c while
+  GPU-Util < gpu_drift.util_threshold, append "temp_drift".
+
+When you detect drift, reflect the flags in the `gpu_drift` array of your output AND
+raise matching warnings/actions per the vocabulary below.
+
 ACTION VOCABULARY (use ONLY these verbs):
 - docker_restart: <container-name>
 - docker_prune
@@ -33,5 +53,6 @@ Output ONLY valid JSON in exactly this shape:
     { "type": "<one of the verbs>", "target": "<arg>", "reason": "..." }
   ],
   "summary": "one concise paragraph, max 3 sentences",
-  "confidence": 0.0
+  "confidence": 0.0,
+  "gpu_drift": []
 }

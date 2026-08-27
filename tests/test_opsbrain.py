@@ -26,6 +26,7 @@ os.environ.setdefault("OPSBRAIN_REPO", str(REPO))
 from common import Cfg, write_json, read_json          # noqa: E402
 import hermes_actions.actions as A                     # noqa: E402
 import reasoner.reasoner as R                          # noqa: E402
+import collector.collector as C                        # noqa: E402
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -44,12 +45,30 @@ def base_config(tmp_path, monkeypatch):
             "qwen_confidence_floor": 0.6,
             "restart_limit_per_run": 3,
             "allow_restart_containers": ["homepage", "dozzle", "netdata"],
-            "allow_gpu_kill": False,
+            "allow_gpu_kill": True,
             "allow_prune": True,
         },
-        "paths": {"collector_json": str(tmp_path / "collector.json")},
+        "gpu_drift": {
+            "enabled": True,
+            "vram_creep_mb": 250,
+            "vram_max_percent": 90,
+            "stuck_pid_cycles": 5,
+            "util_threshold": 10,
+            "power_idle_max_watts": 40,
+            "temp_idle_max_c": 55,
+        },
+        "paths": {
+            "collector_json": str(tmp_path / "collector.json"),
+            "gpu_baseline": str(tmp_path / "gpu_baseline.json"),
+            "gpu_drift_events": str(tmp_path / "gpu_drift_events.jsonl"),
+            "gpu_daily_stats": str(tmp_path / "gpu_daily_stats.json"),
+        },
     }
     monkeypatch.setattr(Cfg, "data", cfg)
+    # keep notifications out of the real repo during drift tests
+    monkeypatch.setattr(A, "notify", lambda *a, **k: None)
+    # stub subprocess execution so unit tests never touch docker/kill/systemctl
+    monkeypatch.setattr(A, "run", lambda *a, **k: {"ok": True, "rc": 0, "out": "ok", "err": ""})
     return cfg
 
 
@@ -241,7 +260,15 @@ class TestSanitize:
 
     def test_sanitize_tolerates_non_dict(self):
         out = R.sanitize(None)
-        assert out == {"warnings": [], "summary": "", "confidence": 0.0, "actions": []}
+        assert out == {"warnings": [], "summary": "", "confidence": 0.0, "gpu_drift": [], "actions": []}
+
+    def test_sanitize_preserves_valid_gpu_drift(self):
+        out = R.sanitize({"gpu_drift": ["vram_drift", "stuck_process", "bogus"], "confidence": 0.9})
+        assert out["gpu_drift"] == ["vram_drift", "stuck_process"]  # unknown flag dropped
+
+    def test_sanitize_defaults_gpu_drift_empty(self):
+        out = R.sanitize({"confidence": 0.5})
+        assert out["gpu_drift"] == []
 
 
 class TestExtractJson:
@@ -310,3 +337,128 @@ class TestCommon:
         write_json(p, {"k": [1, 2, 3]})
         assert read_json(p) == {"k": [1, 2, 3]}
         assert read_json(tmp_path / "missing.json", "fallback") == "fallback"
+
+
+# --------------------------------------------------------------------------- GPU drift (collector)
+def _gpu(mem_used=500, total=16303, util=0, temp=40, power=20):
+    return [{"index": 0, "name": "GPU", "mem_used_mb": mem_used, "mem_total_mb": total,
+             "util_gpu_percent": util, "temp_c": temp, "power_w": power}]
+
+
+def _procs(pid="123"):
+    return [{"pid": str(pid), "name": "proc", "mem_mb": "100"}] if pid else []
+
+
+def _drift_cfg(**over):
+    base = {"vram_creep_mb": 250, "vram_max_percent": 90, "stuck_pid_cycles": 5,
+            "util_threshold": 10, "power_idle_max_watts": 40, "temp_idle_max_c": 55}
+    base.update(over)
+    return base
+
+
+class TestGpuDriftCollector:
+    def test_no_drift_healthy(self, base_config):
+        g = _gpu(mem_used=500, util=5, temp=40, power=15)
+        flags, newb = C.evaluate_gpu_drift(g, _procs(), {}, {"gpu_drift": _drift_cfg()})
+        assert flags == []
+        assert newb["last_vram"] == 500
+
+    def test_vram_drift_when_creep_exceeds(self, base_config):
+        prev = {"last_vram": 500, "last_pid": "123", "last_power": 15, "last_temp": 40, "cycles_with_same_pid": 1}
+        g = _gpu(mem_used=900)  # +400 > 250 creep
+        flags, _ = C.evaluate_gpu_drift(g, _procs(), prev, {"gpu_drift": _drift_cfg()})
+        assert "vram_drift" in flags
+
+    def test_no_vram_drift_within_limit(self, base_config):
+        prev = {"last_vram": 500, "last_pid": "123", "last_power": 15, "last_temp": 40, "cycles_with_same_pid": 1}
+        g = _gpu(mem_used=600)  # +100 < 250
+        flags, _ = C.evaluate_gpu_drift(g, _procs(), prev, {"gpu_drift": _drift_cfg()})
+        assert "vram_drift" not in flags
+
+    def test_vram_overload_over_90pct(self, base_config):
+        g = _gpu(mem_used=16000, total=16303)  # 98%
+        flags, _ = C.evaluate_gpu_drift(g, _procs(), {}, {"gpu_drift": _drift_cfg()})
+        assert "vram_overload" in flags
+
+    def test_stuck_process_after_cycles_and_busy(self, base_config):
+        prev = {"last_vram": 500, "last_pid": "123", "last_power": 15, "last_temp": 40, "cycles_with_same_pid": 4}
+        g = _gpu(util=90)
+        flags, newb = C.evaluate_gpu_drift(g, _procs("123"), prev, {"gpu_drift": _drift_cfg()})
+        assert "stuck_process" in flags
+        assert newb["cycles_with_same_pid"] == 5
+
+    def test_stuck_process_gate_idle_util(self, base_config):
+        # same pid many cycles but util idle (2 < 10) -> NOT stuck
+        prev = {"last_vram": 500, "last_pid": "123", "last_power": 15, "last_temp": 40, "cycles_with_same_pid": 10}
+        g = _gpu(util=2)
+        flags, _ = C.evaluate_gpu_drift(g, _procs("123"), prev, {"gpu_drift": _drift_cfg()})
+        assert "stuck_process" not in flags
+
+    def test_power_drift_when_idle_but_high_power(self, base_config):
+        g = _gpu(util=2, power=150)  # idle util, high draw
+        flags, _ = C.evaluate_gpu_drift(g, _procs(), {}, {"gpu_drift": _drift_cfg()})
+        assert "power_drift" in flags
+
+    def test_temp_drift_when_idle_but_hot(self, base_config):
+        g = _gpu(util=2, temp=80)  # idle util, hot
+        flags, _ = C.evaluate_gpu_drift(g, _procs(), {}, {"gpu_drift": _drift_cfg()})
+        assert "temp_drift" in flags
+
+
+# --------------------------------------------------------------------------- GPU drift (actions)
+def _drift_coll(flags=None, gpu=None, procs=None):
+    return {"gpu": {"drift_flags": flags or [], "gpus": gpu or _gpu(), "compute_processes": procs or _procs()},
+            "timestamp": "t"}
+
+
+class TestGpuDriftActions:
+    def test_no_flags_noop(self, base_config):
+        e = A.Engine(True)
+        events, rem = A.gpu_drift_actions(_drift_coll(), {"gpu_drift": []}, 0.9, e, {})
+        assert events == [] and rem == []
+
+    def test_stuck_highconf_dispatches_kill(self, base_config):
+        e = A.Engine(False)  # not dry-run
+        qwen = {"gpu_drift": ["stuck_process"]}
+        events, rem = A.gpu_drift_actions(_drift_coll(), qwen, 0.9, e, {})
+        kill = [r for r in rem if isinstance(r, dict) and r.get("verb") == "gpu_kill"]
+        assert kill and kill[0].get("target") == "123"
+        assert e.executed  # gpu_kill executed (allow_gpu_kill true, live)
+
+    def test_stuck_lowconf_notify_only(self, base_config):
+        base_config["actions"]["qwen_confidence_floor"] = 0.6
+        e = A.Engine(False)
+        qwen = {"gpu_drift": ["stuck_process"], "confidence": 0.7}
+        events, rem = A.gpu_drift_actions(_drift_coll(), qwen, 0.7, e, {})
+        # conf 0.7 <= 0.8 -> NO kill dispatched
+        assert not any(isinstance(r, dict) and r.get("verb") == "gpu_kill" for r in rem)
+        assert not any(r.get("verb") == "gpu_kill" for r in e.executed)
+
+    def test_vram_overload_notify_only(self, base_config):
+        e = A.Engine(False)
+        qwen = {"gpu_drift": ["vram_overload"]}
+        events, rem = A.gpu_drift_actions(_drift_coll(), qwen, 0.3, e, {})
+        assert not any(r.get("verb") == "gpu_kill" for r in e.executed)
+        # pure overload must not attempt a kill, only notify
+        assert not any(isinstance(r, dict) and r.get("verb") == "gpu_kill" for r in rem)
+
+    def test_flag_union_of_qwen_and_deterministic(self, base_config):
+        # qwen silent, collector deterministic says vram_drift -> handled
+        e = A.Engine(False)
+        coll = _drift_coll(flags=["vram_drift"])
+        events, rem = A.gpu_drift_actions(coll, {"gpu_drift": []}, 0.9, e, {})
+        assert events and "vram_drift" in events[0]["flags"]
+
+
+class TestOllamaGuard:
+    def test_never_restarts_ollama(self, base_config):
+        base_config["actions"]["allow_restart_containers"] = ["ollama"]  # even if allow-listed
+        e = A.Engine(False)
+        rec = e.dispatch("docker_restart", "ollama", "x")
+        assert rec["state"] == "blocked"
+        assert not e.executed
+
+    def test_allowlisted_other_container_ok(self, base_config):
+        e = A.Engine(False)
+        rec = e.dispatch("docker_restart", "homepage", "x")
+        assert rec["state"] in ("executed",)  # dry_run False, allow-listed

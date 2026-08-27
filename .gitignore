@@ -1,0 +1,16 @@
+# runtime state
+logs/
+reports/
+*.log
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# secrets / local
+.env
+config/secrets.yaml
+
+# os
+.DS_Store

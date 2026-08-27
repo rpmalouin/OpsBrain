@@ -1,0 +1,68 @@
+# Ops Brain - central configuration
+# Runtime reads this file with PyYAML (python3 -c "import yaml").
+# Paths are relative to the repo root unless absolute.
+
+# --- Identity ---
+hostname: dockerVM               # used in reports/notifications
+interval_seconds: 120            # scheduler poll cadence (2 minutes)
+
+# --- Inference (Ollama local) ---
+ollama:
+  url: http://localhost:11434/api/generate
+  model: qwen3:14b                # requested model (Qwen3 14B)
+  fallback_model: qwen2.5-coder:14b   # used if primary unavailable
+  timeout: 120
+  think: true                  # Qwen3 thinking mode; MUST be explicit (default path returns {} in this ollama)
+  options:                     # passed verbatim to Ollama /api/generate options
+    temperature: 0.2
+    num_ctx: 32768
+    keep_alive: 5m
+
+# --- Data sources ---
+sources:
+  netdata:
+    base_url: http://localhost:19999
+    enabled: true
+  dozzle:
+    base_url: http://localhost:8080
+    enabled: true
+  dockpeek:
+    base_url: http://localhost:8081
+    enabled: true
+  docker_socket: /var/run/docker.sock     # primary container-state source
+  gpu_query: whitelisted                  # nvidia-smi interprets the query below
+  journalctl_since: "2 min ago"
+
+# --- Action engine ---
+actions:
+  dry_run: true                 # SAFETY: set false to actually execute remediation
+  restart_limit_per_run: 3      # cap docker/systemctl restarts per cycle
+  cpu_restart_threshold_percent: 80.0
+  cpu_restart_minutes: 5        # sustained CPU needed before restart
+  mem_creep_threshold_percent: 20.0   # memory growth vs baseline
+  gpu_mem_threshold_percent: 90.0
+  disk_threshold_percent: 85.0
+  qwen_confidence_floor: 0.6    # below this -> do nothing and log
+  allow_restart_containers: []  # empty = all; fill to whitelist, e.g. ["jellyfin","plex"]
+  allow_service_restart: []     # systemd units whitelist (shell injection safe)
+  allow_gpu_kill: false
+  allow_prune: true
+  notify_webhook: ""            # optional generic webhook (POST JSON), e.g. ntfy/Telegram bot
+
+# --- Daily report ---
+report:
+  time: "23:55"
+  dir: reports
+  retention_days: 30
+
+# --- Paths (defaults to repo layout) ---
+paths:
+  repo: /appdata/OpsBrain
+  collector_json: logs/collector.json
+  reasoner_json: logs/reasoner_result.json
+  actions_json: logs/actions_result.json
+  baseline_json: logs/baseline.json
+
+logging:
+  log_dir: logs
+  file: logs/opsbrain.log

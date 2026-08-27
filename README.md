@@ -19,6 +19,9 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
 - **Report:** daily ops digest at `23:55`
 - **Watch:** real-time dashboard over WebSocket (`:9120`)
 
+<img width="2752" height="1536" alt="image" src="https://github.com/user-attachments/assets/cb66a2de-b5ae-4df6-bd89-6d0e3d18dc48" />
+
+
 ## Layout
 
 ```

@@ -116,6 +116,31 @@ merged into one doc `{_meta, sources:{...}, collector, reasoner, actions, gpu_ba
 - Service file: `deploy/opsbrain-ui.service` (also installed to `/etc/systemd/system/`);
   `Restart=always` verified. No auth layer — front only via reverse proxy if LAN-exposed.
 
+### Access via Caddy
+
+The dashboard is published behind the homelab reverse proxy as **https://opsbrain.home**:
+- Route added to `/appdata/caddy/Caddyfile` (Admin/Monitoring section):
+  ```
+  opsbrain.home {
+      reverse_proxy 10.1.10.10:9120 {
+          flush_interval -1   # keep the 2s WS /stream alive through the proxy
+      }
+      tls internal
+  }
+  ```
+- Caddy runs as the `caddy` container in `network_mode: host`, so it reaches the dashboard's
+  `0.0.0.0:9120` directly. `caddy reload` picks up Caddyfile changes; WS upgrade is proxied
+  automatically. Verify: `curl -sk --resolve opsbrain.home:443:10.1.10.10 https://opsbrain.home/`
+  → 200; WS via raw socket → `101 Switching Protocols` + live 182KB snapshot.
+
+**PITFALL — bind-mount inode staleness.** Editing `/appdata/caddy/Caddyfile` with a write-replacing
+tool (e.g. `patch`/`write_file`) creates a NEW inode, but the running caddy bind-mounts the OLD
+inode — so `caddy reload` (and even the admin `/load` API) applies the STALE config and the new site
+never appears. Symptoms: `grep -c opsbrain /appdata/caddy/Caddyfile` = 1 on host but 0 inside
+`docker exec caddy`. Fix: `docker restart caddy` to re-bind the file, then verify
+`docker exec caddy grep -c opsbrain /etc/caddy/Caddyfile` = 1. This is a file-bind-mount (not dir)
+gotcha; applies to any future edit of the Caddyfile.
+
 ## GPU drift detection
 
 Live in collector → reasoner → actions → report. Config under `gpu_drift:`:

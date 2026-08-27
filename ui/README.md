@@ -66,6 +66,26 @@ tail -f /var/log/opsbrain-ui.log   # optional: see service file
 `server.host` (default 0.0.0.0), and `watch[]` (the log files). Change and
 `systemctl restart opsbrain-ui`.
 
+## Behind Caddy
+
+Published as **https://opsbrain.home** via the homelab `caddy` container
+(`network_mode: host`). Route in `/appdata/caddy/Caddyfile`:
+
+```
+opsbrain.home {
+    reverse_proxy 10.1.10.10:9120 {
+        flush_interval -1   # keep the 2s WS /stream alive through the proxy
+    }
+    tls internal
+}
+```
+
+WS upgrade is proxied automatically. **Gotcha:** the caddy container bind-mounts a single
+file, so editing the Caddyfile with a write-replacing tool (patch/write_file) creates a new
+inode the running container won't see — `caddy reload` will silently apply the stale config.
+Run `docker restart caddy` after editing, then confirm
+`docker exec caddy grep -c <sitename> /etc/caddy/Caddyfile` shows the change.
+
 ## Notes
 
 - The dashboard binds `0.0.0.0` for LAN access. If it's exposed beyond a trusted

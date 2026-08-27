@@ -103,6 +103,19 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
 
+## Real-time dashboard (ui/)
+
+Served by `opsbrain-ui` systemd service (FastAPI + WebSocket, port **9120**, binds 0.0.0.0).
+Streams `logs/{collector,reasoner_result,actions_result,gpu_baseline}.json` every 2s on change,
+merged into one doc `{_meta, sources:{...}, collector, reasoner, actions, gpu_baseline}`.
+- `ui/server.py`: FastAPI app; `GET /` (Jinja2 dashboard.html), `GET /report` (latest md),
+  `WS /stream` (push on change + initial snapshot + ping re-push); mtime+size watcher in
+  lifespan task. NOTE: `TemplateResponse(request, name)` — newer Starlette arg order.
+  Deps: `fastapi`, `uvicorn`, `websockets`, `jinja2`, `pyyaml` (installed globally).
+- `ui/config.yaml`: port 9120 / refresh 2s / watch list. `ui/static/app.js` renders 5 panels.
+- Service file: `deploy/opsbrain-ui.service` (also installed to `/etc/systemd/system/`);
+  `Restart=always` verified. No auth layer — front only via reverse proxy if LAN-exposed.
+
 ## GPU drift detection
 
 Live in collector → reasoner → actions → report. Config under `gpu_drift:`:

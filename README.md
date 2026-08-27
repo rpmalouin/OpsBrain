@@ -20,9 +20,17 @@ Qwen-verified remediation actions.
   config/             ops_brain.yaml (all settings/thresholds)
   logs/               runtime JSON + opsbrain.log + notifications.jsonl
   reports/            daily markdown reports
+  ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
   deploy/             systemd unit + installer
   Dockerfile, docker-compose.yml, README.md, .gitignore
 ```
+
+## Real-time dashboard
+
+A live single-page dashboard streams the collector/reasoner/actions/gpu-baseline logs
+over WebSockets and refreshes every 2 seconds (5 panels: System Overview, Container
+Health, GPU Drift, OpsBrain Decisions, Daily Report Preview). Served by the `opsbrain-ui`
+systemd service at `http://<host>:9120/` — see `ui/README.md`.
 
 ## Quick start (on dockerVM, recommended)
 

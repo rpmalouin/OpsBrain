@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpsBrain Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background:#0f172a; }
+  .panel { background:#1e293b; border:1px solid #334155; border-radius:0.75rem; }
+  .chip { display:inline-block; padding:0.1rem 0.5rem; border-radius:9999px; font-size:0.7rem; font-weight:600; }
+  .ok { color:#4ade80; }
+  .warn { color:#facc15; }
+  .crit { color:#f87171; }
+  .mono { font-family:ui-monospace,monospace; }
+  .grid-main { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:0.75rem; }
+  table { width:100%; border-collapse:collapse; font-size:0.8rem; }
+  th,td { text-align:left; padding:0.2rem 0.4rem; border-bottom:1px solid #334155; }
+</style>
+</head>
+<body class="min-h-screen">
+<div class="max-w-[1800px] mx-auto p-4">
+  <header class="flex items-center justify-between mb-4">
+    <h1 class="text-2xl font-bold text-slate-100">OpsBrain <span class="text-slate-400 text-sm font-normal">real-time</span></h1>
+    <div class="flex items-center gap-3 text-sm">
+      <div id="conn" class="chip bg-slate-700 text-slate-300">connecting…</div>
+      <div id="mtime" class="text-slate-400 text-xs"></div>
+    </div>
+  </header>
+
+  <div class="grid-main" id="grid"></div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

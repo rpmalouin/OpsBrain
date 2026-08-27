@@ -1,0 +1,18 @@
+[Unit]
+Description=OpsBrain real-time dashboard (FastAPI + WebSocket)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/appdata/OpsBrain
+Environment=PYTHONUNBUFFERED=1
+Environment=OPSBRAIN_UI_CONFIG=/appdata/OpsBrain/ui/config.yaml
+ExecStart=/usr/bin/python3 -m uvicorn server:app --app-dir /appdata/OpsBrain/ui --host 0.0.0.0 --port 9120 --log-level info
+Restart=always
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

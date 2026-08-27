@@ -1,0 +1,17 @@
+# OpsBrain real-time dashboard configuration
+# Read by ui/server.py at startup (PyYAML).
+
+server:
+  host: 0.0.0.0            # bind all interfaces (patch LAN only, see README)
+  port: 9120               # dashboard port
+  refresh_seconds: 2       # WebSocket push interval for log-file ticks
+
+# JSON log files the dashboard streams (relative to repo root)
+watch:
+  - logs/collector.json
+  - logs/reasoner_result.json
+  - logs/actions_result.json
+  - logs/gpu_baseline.json
+
+# Optional: gateway to a browser-facing URL is not configured here;
+# the dashboard is served plain at http://<host>:9120/

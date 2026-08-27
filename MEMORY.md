@@ -163,6 +163,21 @@ Frontend: `ui/static/ui_refinements.js` (dsh/Flash-generated) adds `confRecovery
 impact render goes into the live `restartImpact` element (not grid HTML) so _tests_ that
 scan `grid.innerHTML` for container names will false-fail.
 
+## TrueNAS panel (real dashboard)
+
+- Collector `collect_truenas()` polls the TrueNAS SCALE REST API
+  (`http://truenas/api/v2.0`) via Basic auth from `~/.smbcred` (username=/password=
+  lines). `_truenas_creds` expands the home dir directly with `Path(raw).expanduser()`
+  (Cfg.resolve would wrongly prefix REPO onto `~`).
+- Polls `/pool`, `/system/info`, `/alert/list`, `/disk`. `system/info` exposes
+  `cores`/`physical_cores` directly (NOT `system_product` — that is a string like
+  "MS-7D53", not a dict).
+- `up` is derived from pool data (array reachable + authed). Degrades gracefully.
+- Merged into collector.json as `truenas`; dashboard server passes it through the
+  snapshot (whole collector is merged), and `app.js` `renderTruenas()` shows pool
+  status/health/capacity, system version/model/RAM/uptime, disk count, active alerts.
+- Watch out: name the alerts array `alerts`, never `alert` (window.alert shadows).
+
 ## Manual Stop Protection (HARD INVARIANT)
 
 Rule: **"Manually stopped containers must stay stopped"** — OpsBrain must NEVER

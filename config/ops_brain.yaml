@@ -29,6 +29,11 @@ sources:
   dockpeek:
     base_url: http://localhost:8081
     enabled: true
+  truenas:
+    base_url: http://truenas/api/v2.0
+    creds_file: ~/.smbcred     # username= / password= lines
+    enabled: true
+    timeout_s: 8
   docker_socket: /var/run/docker.sock     # primary container-state source
   gpu_query: whitelisted                  # nvidia-smi interprets the query below
   journalctl_since: "2 min ago"

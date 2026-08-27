@@ -61,6 +61,59 @@ function renderSystem(col) {
   return panel("System Overview", `<div class="space-y-1 text-sm">${r}</div>`);
 }
 
+// ------------------------------------------------- TrueNAS panel
+function renderTruenas(col) {
+  const tn = col?.truenas || {};
+  if (!tn.enabled) return panel("TrueNAS", `<div class="text-slate-500 text-sm">TrueNAS collection disabled.</div>`);
+  const up = tn.up;
+  const pools = tn.pools || [];
+  const alerts = tn.alerts_active || [];
+  const age = tsAge(col?.timestamp);
+  let r = `<div class="flex items-center gap-2 mb-1">` +
+    `<span class="drift-dot" style="background:${up ? "#4ade80" : "#f87171"}"></span>` +
+    `<span class="text-sm ${up ? "text-green-300" : "text-red-300"}">${up ? "ONLINE" : "UNREACHABLE"}</span>` +
+    `<span class="text-slate-400 text-xs ml-auto">${escapeHtml(tn.hostname)}</span></div>`;
+  r += `<div class="text-xs text-slate-400 mb-2">${escapeHtml(tn.version || "—")}</div>`;
+  // pools
+  for (const p of pools) {
+    const h = p.healthy ? "text-green-300" : "text-red-300";
+    const dot = p.healthy ? "#4ade80" : "#f87171";
+    r += `<div class="flex justify-between text-sm"><span class="text-slate-300">Pool ${escapeHtml(p.name)}</span>` +
+      `<span class="${h}"><span class="drift-dot" style="background:${dot}"></span> ${escapeHtml(p.status)}</span></div>`;
+    if (p.free || p.size) {
+      const usedPct = (p.size && p.free) ? Math.round((1 - p.free / p.size) * 100) : null;
+      r += `<div class="flex justify-between text-xs text-slate-400"><span>capacity</span><span>${usedPct ?? "—"}% used · ${fmtMb(p.free)} free of ${fmtMb(p.size)}</span></div>`;
+    }
+  }
+  if (!pools.length) r += `<div class="text-xs text-slate-500">no pool data (${age === null ? "no timestamp" : age + "s ago"})</div>`;
+  r += `<div class="flex justify-between text-xs text-slate-400 mt-1"><span>System</span>` +
+    `<span>${escapeHtml(tn.model || "—")}</span></div>`;
+  r += `<div class="flex justify-between text-xs text-slate-400"><span>RAM&nbsp;/&nbsp;uptime</span>` +
+    `<span>${fmtMb(tn.physmem)} / ${ageDays(tn.uptime_seconds)}</span></div>`;
+  // row: disks + alerts
+  r += `<div class="flex justify-between text-xs text-slate-400"><span>Disks</span><span>${tn.disk_count ?? "—"}</span></div>`;
+  const alertTone = alerts.length ? "text-red-300" : "text-slate-400";
+  const alertDot = alerts.length ? "#f87171" : "#4ade80";
+  r += `<div class="flex justify-between text-xs mt-1"><span class="text-slate-400">Active alerts</span>` +
+    `<span class="${alertTone}"><span class="drift-dot" style="background:${alertDot}"></span> ${alerts.length ?? 0}</span></div>`;
+  if (alerts.length) {
+    r += `<ul class="mt-1 space-y-0.5 text-xs text-red-200/80">`;
+    for (const a of alerts.slice(0, 3)) {
+      r += `<li>• ${escapeHtml(a.formatted)}</li>`;
+    }
+    if (alerts.length > 3) r += `<li class="text-slate-500">+${alerts.length - 3} more</li>`;
+    r += `</ul>`;
+  }
+  return panel("TrueNAS", `<div class="space-y-1">${r}</div>`);
+}
+
+function ageDays(seconds) {
+  const n = num(seconds);
+  if (n === null) return "—";
+  const d = n / 86400;
+  return d >= 1 ? d.toFixed(1) + " days" : (n / 3600).toFixed(1) + " h";
+}
+
 function renderGpuPanel(col) {
   const g = (col?.gpu?.gpus || [])[0] || {};
   const base = col?.gpu?.baseline || {};
@@ -291,6 +344,7 @@ function render() {
   const actions = state.actions || {};
   const cards = [
     renderSystem(collector),
+    renderTruenas(collector),
     renderManualStopPanel(),
     renderGpuPanel(collector),
     renderDriftTimeline(collector),

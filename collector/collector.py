@@ -56,6 +56,111 @@ def http_get(url, timeout=10, max_bytes=200000):
         return {"ok": False, "err": str(e)}
 
 
+def _truenas_creds(cfg):
+    """Read username/password from the configured creds file (username= / password= lines)."""
+    raw = cfg.get("sources.truenas.creds_file", "~/.smbcred")
+    path = Path(raw).expanduser()
+    user = passwd = ""
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == "username":
+                user = v.strip()
+            elif k.strip() == "password":
+                passwd = v.strip()
+    except Exception:
+        pass
+    return user, passwd
+
+
+def truenas_get(url, user, passwd, timeout=8, max_bytes=2_000_000):
+    """Authed GET to the TrueNAS REST API. Returns {ok, json} on success."""
+    import base64
+    import urllib.request
+    try:
+        token = base64.b64encode(f"{user}:{passwd}".encode()).decode()
+        req = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json", "User-Agent": "opsbrain/1.0",
+                     "Authorization": f"Basic {token}"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read(max_bytes + 1)[:max_bytes]
+            try:
+                return {"ok": True, "json": json.loads(body.decode("utf-8"))}
+            except Exception:
+                return {"ok": True, "json": None}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "err": f"HTTP {e.code}", "code": e.code}
+    except Exception as e:
+        return {"ok": False, "err": str(e)}
+
+
+def collect_truenas(cfg):
+    """Collect TrueNAS SCALE status: pools, system info, active alerts, disk summary.
+    Degrades gracefully (returns up:false) if the array is unreachable or auth fails."""
+    t = cfg.get("sources.truenas", {})
+    if not t.get("enabled", True):
+        return {"enabled": False}
+    base = str(t.get("base_url", "http://truenas/api/v2.0")).rstrip("/")
+    timeout = float(t.get("timeout_s", 8))
+    user, passwd = _truenas_creds(cfg)
+    out = {"enabled": True, "up": False, "hostname": "truenas"}
+
+    pool = truenas_get(f"{base}/pool", user, passwd, timeout)
+    sysi = truenas_get(f"{base}/system/info", user, passwd, timeout)
+    alerts = truenas_get(f"{base}/alert/list", user, passwd, timeout)
+    disks = truenas_get(f"{base}/disk", user, passwd, timeout)
+
+    # pools
+    pools = []
+    if pool.get("ok") and isinstance(pool.get("json"), list):
+        for p in pool["json"]:
+            if isinstance(p, dict):
+                pools.append({
+                    "name": p.get("name"),
+                    "status": p.get("status"),
+                    "healthy": p.get("healthy"),
+                    "size": p.get("size"),
+                    "allocated": p.get("allocated"),
+                    "free": p.get("free"),
+                    "topology": (p.get("topology") or {}).get("data"),
+                })
+    out["pools"] = pools
+    out["pool_count"] = len(pools)
+    out["pools_healthy"] = sum(1 for p in pools if p.get("healthy"))
+    out["up"] = bool(pools)  # pool data -> array reachable & authed
+
+    # system info
+    if sysi.get("ok") and isinstance(sysi.get("json"), dict):
+        s = sysi["json"]
+        out["version"] = s.get("version")
+        out["model"] = s.get("model")
+        out["cores"] = s.get("cores")
+        out["physical_cores"] = s.get("physical_cores")
+        out["physmem"] = s.get("physmem")
+        out["uptime_seconds"] = s.get("uptime_seconds")
+        out["hostname"] = s.get("hostname", out.get("hostname"))
+
+    # active alerts
+    act = []
+    if alerts.get("ok") and isinstance(alerts.get("json"), list):
+        for a in alerts["json"]:
+            if isinstance(a, dict) and not a.get("dismissed"):
+                act.append({"level": a.get("level"), "klass": a.get("klass"),
+                            "formatted": (a.get("formatted") or "")[:160]})
+    out["alerts_active"] = act[:30]
+    out["alerts_count"] = len(act)
+
+    # disk summary (count + first few for visibility)
+    if disks.get("ok") and isinstance(disks.get("json"), list):
+        ds = disks["json"]
+        out["disk_count"] = len(ds)
+    return out
+
+
 def collect_netdata(cfg):
     if not Cfg.get("sources.netdata.enabled", True):
         return {"enabled": False}
@@ -481,7 +586,8 @@ def collect_all(cfg):
     doc["docker"] = collect_docker_socket(cfg)
     doc["gpu"] = collect_gpu(cfg)
     doc["vm"] = collect_vm(cfg)
-    doc["sources_healthy"] = sum(1 for k in ("netdata", "dozzle", "dockpeek", "docker", "gpu", "vm")
+    doc["truenas"] = collect_truenas(cfg)
+    doc["sources_healthy"] = sum(1 for k in ("netdata", "dozzle", "dockpeek", "docker", "gpu", "vm", "truenas")
                                  if doc.get(k, {}).get("up") or k in ("docker", "gpu", "vm"))
     return doc
 

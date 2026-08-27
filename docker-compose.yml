@@ -1,0 +1,34 @@
+# Ops Brain - docker-compose (optional containerized deployment).
+#
+# RECOMMENDED: run the scheduler directly on the HOST (python3 scheduler/scheduler.py --daemon
+# under systemd) for full fidelity: nvidia-smi (GPU), journalctl/top/df (VM) and live docker/
+# systemctl remediation all need host access. This compose gives a metrics/logs-only
+# alternative that still reaches Ollama, Netdata, Dozzle and the Docker socket for reads.
+#
+# Requirements to be useful inside the container:
+#   - Ollama + Netdata + Dozzle reachable (host network does this automatically)
+#   - docker socket mounted for container-state via the docker CLI
+#   - (GPU/VM/actions need extra host access — see comments)
+services:
+  opsbrain:
+    build: .
+    container_name: opsbrain
+    restart: unless-stopped
+    # Host networking reaches localhost:11434 (ollama), :19999 (netdata), :8080 (dozzle)
+    network_mode: host
+    # Bind the repo so code/config edits are live in the container,
+    # and persist logs/reports on the host.
+    volumes:
+      - ./:/etc/opsbrain:ro         # read-only code (keeps workers honest)
+      - ./logs:/etc/opsbrain/logs
+      - ./reports:/etc/opsbrain/reports
+      # Full remediation needs the docker socket + nvidia-smi:
+      # - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      OPSBRAIN_REPO: /etc/opsbrain
+    # GPU + systemd remediation inside the container additionally require:
+    #   NVIDIA_VISIBLE_DEVICES=all; --gpus all (via compose gpus:) and the
+    #   NVIDIA container toolkit; and mounting the host's nvidia-smi binary path.
+    # Simpler: run on the host (./opsbrain install).
+
+networks: {}

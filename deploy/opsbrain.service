@@ -1,0 +1,19 @@
+[Unit]
+Description=Ops Brain - homelab monitor/reasoner/remediator (Qwen3 14B via Ollama)
+After=docker.service ollama.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/appdata/OpsBrain
+Environment=OPSBRAIN_REPO=/appdata/OpsBrain
+Environment=PYTHONUNBUFFERED=1
+# NOTE: actions remain DRY-RUN unless you set actions.dry_run:false in config/ops_brain.yaml
+ExecStart=/usr/bin/python3 /appdata/OpsBrain/scheduler/scheduler.py --daemon
+Restart=always
+RestartSec=15
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

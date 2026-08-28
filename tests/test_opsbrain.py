@@ -547,3 +547,51 @@ class TestOllamaGuard:
         e = A.Engine(False)
         rec = e.dispatch("docker_restart", "homepage", "x")
         assert rec["state"] in ("executed",)  # dry_run False, allow-listed
+
+
+# --------------------------------------------------------------------------- source collectors (dozzle / dockpeek)
+class TestSourceCollectors:
+    """Probe logic for the log-viewer / dashboard sources. Network is stubbed:
+    the collector must stay truthful about up/down and survive version drift."""
+
+    def test_dozzle_v10_version_fallback(self, base_config, monkeypatch):
+        # dozzle v10 removed /api/config -> must fall back to /api/version
+        # (which answers "<pre>v10.7.4</pre>") and report up.
+        def fake_get(url, timeout=10, max_bytes=200000):
+            if url.endswith("/api/config"):
+                return {"ok": False, "err": "HTTP 404", "code": 404}
+            return {"ok": True, "text": "<pre>v10.7.4</pre>"}
+        monkeypatch.setattr(C, "http_get", fake_get)
+        out = C.collect_dozzle(base_config)
+        assert out["up"] is True
+        assert out["version"] == "10.7.4"
+
+    def test_dozzle_legacy_config_probe(self, base_config, monkeypatch):
+        # older dozzle still answers /api/config with name/version/features
+        def fake_get(url, timeout=10, max_bytes=200000):
+            return {"ok": True, "json": {"name": "dozzle", "version": "v7",
+                                         "features": {"auth": True}}}
+        monkeypatch.setattr(C, "http_get", fake_get)
+        out = C.collect_dozzle(base_config)
+        assert out["up"] is True and out["version"] == "v7" and out["auth"] is True
+
+    def test_dozzle_down_when_both_routes_fail(self, base_config, monkeypatch):
+        monkeypatch.setattr(C, "http_get", lambda *a, **k: {"ok": False, "err": "conn refused"})
+        out = C.collect_dozzle(base_config)
+        assert out["up"] is False and "conn refused" in out["err"]
+
+    def test_dockpeek_health_probe(self, base_config, monkeypatch):
+        # dockpeek has no docker-API proxy: /health is the liveness route
+        def fake_get(url, timeout=10, max_bytes=200000):
+            assert url.endswith("/health")
+            return {"ok": True, "json": {"status": "ok", "version": "1.7.2"}}
+        monkeypatch.setattr(C, "http_get", fake_get)
+        monkeypatch.setattr(C, "run", lambda *a, **k: {"ok": True, "rc": 0, "out": "true\n", "err": ""})
+        out = C.collect_dockpeek(base_config)
+        assert out["up"] is True and out["api_http_ok"] is True
+        assert out["container_running"] is True
+
+    def test_dockpeek_down(self, base_config, monkeypatch):
+        monkeypatch.setattr(C, "http_get", lambda *a, **k: {"ok": False, "err": "HTTP 500"})
+        out = C.collect_dockpeek(base_config)
+        assert out["up"] is False and out["api_http_ok"] is False

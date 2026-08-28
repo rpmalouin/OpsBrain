@@ -10,6 +10,7 @@ Usage:
 """
 import argparse
 import json
+import re
 import shlex
 import subprocess
 import time
@@ -196,27 +197,35 @@ def collect_netdata(cfg):
 
 def collect_dozzle(cfg):
     base = Cfg.get("sources.dozzle.base_url", "http://localhost:8080")
+    # Dozzle v10 removed /api/config; /api/version is the stable liveness probe.
     r = http_get(f"{base}/api/config")
-    if not r.get("ok"):
-        return {"enabled": True, "up": False, "err": r.get("err")}
-    return {"enabled": True, "up": True,
-            "image": r["json"].get("name"), "version": r["json"].get("version"),
-            "auth": r["json"].get("features", {}).get("auth")}
+    if r.get("ok"):
+        return {"enabled": True, "up": True,
+                "image": r["json"].get("name"), "version": r["json"].get("version"),
+                "auth": r["json"].get("features", {}).get("auth")}
+    r2 = http_get(f"{base}/api/version")
+    if r2.get("ok"):
+        # v10 answers with "<pre>v10.7.4</pre>" — extract the bare version.
+        m = re.search(r"[vV]?([0-9][0-9.]*)", str(r2.get("text") or ""))
+        return {"enabled": True, "up": True, "image": "dozzle",
+                "version": m.group(1) if m else None, "auth": False}
+    err = r2.get("err") or r.get("err")
+    return {"enabled": True, "up": False, "err": err}
 
 
 def collect_dockpeek(cfg):
-    base = Cfg.get("sources.dockpeek.base_url", "http://localhost:8081")
-    # Dockpeek proxies the Docker API; probe several common routes.
-    r = http_get(f"{base}/api/v1/containers?all=1")
-    status = "ok" if r.get("ok") else f"err:{r.get('err')}"
-    n = len(r.get("json", [])) if r.get("ok") and isinstance(r.get("json"), list) else None
+    base = Cfg.get("sources.dockpeek.base_url", "http://localhost:8001")
+    # Dockpeek is a Flask app — /health is the unauthenticated liveness route;
+    # container data lives at /data behind the login wall. There is NO
+    # docker-API proxy (the old /api/v1/containers probe always 404'd).
+    r = http_get(f"{base}/health")
     try:
         vitals = run(["docker", "inspect", "dockpeek", "--format", "{{.State.Running}}"], timeout=8)
         running = vitals.get("out", "").strip() == "true"
     except Exception:
         running = None
     return {"enabled": True, "up": r.get("ok", False), "api_http_ok": r.get("ok", False),
-            "containers_seen": n, "err": r.get("err"), "container_running": running}
+            "containers_seen": None, "err": r.get("err"), "container_running": running}
 
 
 def collect_docker_socket(cfg):

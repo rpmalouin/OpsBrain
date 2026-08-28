@@ -24,10 +24,10 @@ sources:
     base_url: http://localhost:19999
     enabled: true
   dozzle:
-    base_url: http://localhost:8080
+    base_url: http://localhost:8081
     enabled: true
   dockpeek:
-    base_url: http://localhost:8081
+    base_url: http://localhost:8001
     enabled: true
   truenas:
     base_url: http://truenas/api/v2.0
@@ -40,7 +40,7 @@ sources:
 
 # --- Action engine ---
 actions:
-  dry_run: true                 # SAFETY: set false to actually execute remediation
+  dry_run: false                # LIVE: remediation now executes (gated by allow-list/cap)
   restart_limit_per_run: 3      # cap docker/systemctl restarts per cycle
   cpu_restart_threshold_percent: 80.0
   cpu_restart_minutes: 5        # sustained CPU needed before restart

@@ -79,10 +79,17 @@ Other calibration notes:
 
 ## Naming / data-source gotchas
 
-- **`dockpeek`** (not "dockpeak") is the real container; its HTTP API returns 404 on the
-  Docker-proxy route, so the collector relies on the **Docker socket/docker CLI** as the
-  primary container-state source (same data dockpeek's UI shows). `collect_dockpeek` is a
-  best-effort probe.
+- **`dockpeek`** (not "dockpeak") is the real container. It is a Flask app: `/health` is
+  the unauthenticated liveness route (the collector's up-check); container data lives at
+  `/data` behind the **login wall** (USERNAME/PASSWORD envs). There is **no docker-API
+  proxy** — `/api/v1/containers` (and every `/api/*` route) 404s. Container state comes
+  from the Docker CLI (`docker inspect dockpeek`).
+- **`dozzle`** is published on host port **8081** (compose `8081:8080`); **`dockpeek`** on
+  **8001** (`8001:8000`). Host **8080 is open-webui** (usually manually stopped) — the
+  old `dozzle.base_url: 8080` config probed a stopped container. Ports documented in
+  `/appdata/A--docker_stacks/PORTS.md`.
+- **dozzle v10 removed `/api/config`** (404). `collect_dozzle` tries `/api/config` first
+  (legacy), then falls back to `/api/version`, which answers `<pre>v10.7.4</pre>`.
 - **`last30days-runner`** is the real container (user's "last30days").
 - **`Firefox`** is capitalised in Docker; the allow-list gate is **case-insensitive**.
 - Netdata `/api/v1/alarms?all` is huge — fetch with `max_bytes=3_000_000` and filter to

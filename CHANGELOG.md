@@ -8,6 +8,16 @@ milestone).
 ## [Unreleased]
 
 ### Fixed
+- **Dozzle/Dockpeek false "not running" alerts.** Both containers were running but the
+  collector probed the wrong hosts: `dozzle.base_url` pointed at host 8080 (actually
+  **open-webui**, manually stopped -> connection refused) and `dockpeek.base_url` at 8081
+  (actually **dozzle** -> HTTP 404), because the stack publishes dozzle on **8081** and
+  dockpeek on **8001**. Config updated to the real ports. Probe routes also fixed for
+  version drift: dozzle v10 removed `/api/config` (fallback to `/api/version`, which
+  answers `<pre>v10.7.4</pre>`), and dockpeek is a Flask app with **no docker-API proxy**
+  — its liveness route is `/health` (container data lives at `/data` behind the login
+  wall). Qwen went from "Dozzle and Dockpeek services are not running" (conf 0.9x) every
+  cycle to "System is healthy" (conf 1.00). +5 tests (106 total).
 - **Ollama llama-server no longer flagged as a stuck GPU process.** The GPU-drift
   detector treated any long-lived GPU PID as `stuck_process`, but ollama's
   `llama-server` is a *permanent* resident (the local inference backend this pipeline

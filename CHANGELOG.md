@@ -7,7 +7,17 @@ milestone).
 
 ## [Unreleased]
 
-- Nothing yet.
+### Fixed
+- **Ollama llama-server no longer flagged as a stuck GPU process.** The GPU-drift
+  detector treated any long-lived GPU PID as `stuck_process`, but ollama's
+  `llama-server` is a *permanent* resident (the local inference backend this pipeline
+  calls every cycle) — same PID forever, so it fired `stuck_process` every few minutes
+  (40+ notifications/day, 30 of 47 drift events in 24h, dead PIDs accumulating in
+  `gpu_stuck_pids` state). The collector now tracks only the first **non-ollama**
+  compute PID (`last_pid` becomes `"0"` when only ollama holds the GPU), and
+  `gpu_drift_actions` defensively drops/suppresses the flag (no notify, no drift event,
+  no state accumulation) if a stale collector still surfaces it. A genuine stuck job
+  sitting next to ollama is still tracked and killed as before. +3 tests (101 total).
 
 ## v0.5.0 — 2026-08-27
 

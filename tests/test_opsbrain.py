@@ -399,6 +399,30 @@ class TestGpuDriftCollector:
         flags, _ = C.evaluate_gpu_drift(g, _procs("123"), prev, {"gpu_drift": _drift_cfg()})
         assert "stuck_process" not in flags
 
+    def test_ollama_llama_server_never_stuck(self, base_config):
+        # ollama's llama-server is a PERMANENT GPU resident: same pid forever with
+        # busy util — must NEVER be flagged stuck_process or counted in cycles.
+        procs = [{"pid": "999", "name": "/usr/lib/ollama/llama-server", "mem_mb": "14000"}]
+        prev = {"last_vram": 14000, "last_pid": "999", "last_power": 20, "last_temp": 40, "cycles_with_same_pid": 20}
+        g = _gpu(mem_used=14000, util=90)
+        flags, newb = C.evaluate_gpu_drift(g, procs, prev, {"gpu_drift": _drift_cfg()})
+        assert "stuck_process" not in flags
+        assert newb["cycles_with_same_pid"] == 0   # ollama pid never counted
+        assert newb["last_pid"] == "0"             # nothing trackable on the GPU
+
+    def test_stuck_tracks_real_pid_alongside_ollama(self, base_config):
+        # a genuine stuck job sitting next to ollama is still tracked + flagged
+        procs = [
+            {"pid": "999", "name": "/usr/lib/ollama/llama-server", "mem_mb": "14000"},
+            {"pid": "777", "name": "ffmpeg", "mem_mb": "300"},
+        ]
+        prev = {"last_vram": 14000, "last_pid": "777", "last_power": 20, "last_temp": 40, "cycles_with_same_pid": 4}
+        g = _gpu(mem_used=14100, util=90)
+        flags, newb = C.evaluate_gpu_drift(g, procs, prev, {"gpu_drift": _drift_cfg()})
+        assert "stuck_process" in flags
+        assert newb["last_pid"] == "777"
+        assert newb["cycles_with_same_pid"] == 5
+
     def test_power_drift_when_idle_but_high_power(self, base_config):
         g = _gpu(util=2, power=150)  # idle util, high draw
         flags, _ = C.evaluate_gpu_drift(g, _procs(), {}, {"gpu_drift": _drift_cfg()})
@@ -445,6 +469,27 @@ class TestGpuDriftActions:
         events, rem = A.gpu_drift_actions(coll, {"gpu_drift": ["stuck_process"]}, 0.95, e, {})
         assert not any(r.get("verb") == "gpu_kill" for r in e.executed)
         assert not any(isinstance(r, dict) and r.get("verb") == "gpu_kill" for r in rem)
+
+    def test_stuck_ollama_notify_spam_suppressed(self, base_config):
+        # a stale collector that still lists stuck_process for ollama's llama-server
+        # must NOT notify, must NOT record a drift event, must NOT accumulate its
+        # pid in gpu_stuck_pids state (this was the constant false-positive loop).
+        procs = [{"pid": "999", "name": "/usr/lib/ollama/llama-server", "mem_mb": "14000"}]
+        coll = _drift_coll(flags=["stuck_process"], gpu=_gpu(), procs=procs)
+        # post-fix collector baseline: ollama excluded -> last_pid "0"
+        coll["gpu"]["baseline"] = {"last_pid": "0"}
+        st = {"gpu_stuck_pids": ["976644"]}
+        e = A.Engine(False)
+        events, rem = A.gpu_drift_actions(coll, {"gpu_drift": ["stuck_process"]}, 0.95, e, {})
+        assert events == []                      # flag dropped, nothing logged
+        assert rem == []                         # no notify-only remediation either
+        assert st["gpu_stuck_pids"] == ["976644"]  # stale pid NOT appended/replaced
+        # and the tracked-pid path (last_pid still naming the llama-server) is
+        # suppressed too, instead of falling into the notify-only branch
+        coll2 = _drift_coll(flags=["stuck_process"], gpu=_gpu(), procs=procs)
+        coll2["gpu"]["baseline"] = {"last_pid": "999"}
+        events2, rem2 = A.gpu_drift_actions(coll2, {"gpu_drift": ["stuck_process"]}, 0.95, e, {})
+        assert events2 == [] and rem2 == []
 
     def test_stuck_kill_requires_baseline_match(self, base_config):
         # baseline.last_pid differs from the only current process -> no kill

@@ -377,6 +377,19 @@ def record_gpu_event(flags, gpu, pid="", coll_ts=None):
 OLLAMA_MARKERS = ("ollama", "llama-server", "llama_server")
 
 
+def _ollama_owned(procs, pid):
+    """True if `pid` belongs to ollama's runner (a permanent GPU resident)."""
+    try:
+        pid = str(pid)
+    except Exception:
+        return False
+    for p in procs or []:
+        if str(p.get("pid", "")) == pid:
+            name = str(p.get("name", "")).lower()
+            return any(m in name for m in OLLAMA_MARKERS)
+    return False
+
+
 def _killable_stuck_pid(procs, last_pid):
     """Return the pid to safely kill for a stuck GPU process, or None.
 
@@ -451,26 +464,37 @@ def gpu_drift_actions(coll, qwen, conf, engine, st):
     stuck_pids = list(st.get("gpu_stuck_pids") or [])
 
     stuck = "stuck_process" in flags
+    tracked = pid
     if stuck:
         # Kill ONLY the baseline-tracked stuck pid, and only if it's not ollama's
         # runner and still present (see _killable_stuck_pid).
         kill_pid = _killable_stuck_pid(procs, baseline.get("last_pid"))
-        if conf > 0.8 and kill_pid:
+        tracked = kill_pid or pid
+        if _ollama_owned(procs, tracked):
+            # Ollama's llama-server is a PERMANENT GPU resident (the local
+            # inference backend) — never a stuck process. Defensive drop: a stale
+            # collector or a baseline predating the collector-side exclusion can
+            # still surface the flag; suppress it here so we never notify/spam or
+            # accumulate its pid as "stuck".
+            flags.discard("stuck_process")
+            stuck = False
+        elif conf > 0.8 and kill_pid:
             rec = engine.dispatch("gpu_kill", kill_pid, "stuck GPU process (drift)")
             remediations.append(rec)
             notify(f"GPU stuck_process: killed pid {kill_pid} (conf {conf:.2f})", "gpu_drift")
         else:
-            notify(f"GPU stuck_process detected (pid {pid or '?'}, conf {conf:.2f}) "
+            notify(f"GPU stuck_process detected (pid {tracked or '?'}, conf {conf:.2f}) "
                    "-> notify only", "gpu_drift")
 
     for f in sorted(flags & NOTIFY_ONLY):
         notify(f"GPU drift flag: {f}", "gpu_drift")
         remediations.append({"verb": "notify", "target": f})
 
-    event = record_gpu_event(sorted(flags), gpu, pid, coll.get("timestamp"))
-    events.append(event)
-    if stuck and pid and pid != "0":
-        stuck_pids = list(dict.fromkeys(stuck_pids + [pid]))
+    if flags:  # all flags may have been dropped (e.g. ollama-owned stuck_process)
+        event = record_gpu_event(sorted(flags), gpu, tracked if stuck else pid, coll.get("timestamp"))
+        events.append(event)
+    if stuck and tracked and tracked != "0":
+        stuck_pids = list(dict.fromkeys(stuck_pids + [tracked]))
         st["gpu_stuck_pids"] = stuck_pids
     update_gpu_daily_stats(gpu, len(events), remediations, stuck_pids)
     return events, remediations

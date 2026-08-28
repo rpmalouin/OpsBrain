@@ -476,6 +476,26 @@ def _reset_baseline(prev):
             "total_vram": (prev or {}).get("total_vram")}
 
 
+OLLAMA_MARKERS = ("ollama", "llama-server", "llama_server")
+
+
+def _is_ollama_process(procs, pid):
+    """True if `pid` (from nvidia-smi compute-apps) belongs to ollama's runner.
+
+    Mirrors hermes_actions.OLLAMA_MARKERS: the local inference backend is a
+    PERMANENT GPU resident (this pipeline calls it every cycle), so it is never
+    a stuck-process candidate."""
+    try:
+        pid = str(pid)
+    except Exception:
+        return False
+    for p in procs or []:
+        if str(p.get("pid", "")) == pid:
+            name = str(p.get("name", "")).lower()
+            return any(m in name for m in OLLAMA_MARKERS)
+    return False
+
+
 def evaluate_gpu_drift(gpus, processes, prev_baseline, cfg):
     """Deterministic GPU-drift evaluation. Pure function (testable).
 
@@ -498,7 +518,15 @@ def evaluate_gpu_drift(gpus, processes, prev_baseline, cfg):
     temp = g.get("temp_c", 0)
     power = g.get("power_w", 0)
 
-    pid = str(processes[0].get("pid", "0")) if processes else "0"
+    # Tracked pid: the first NON-ollama compute process. Ollama's llama-server is
+    # a permanent GPU resident (the local inference backend this pipeline calls
+    # every cycle) — by design the same pid persists forever, so it must never be
+    # counted as a stuck process. "0" when only ollama holds the GPU.
+    pid = "0"
+    for p in processes or []:
+        if not _is_ollama_process(processes, p.get("pid")):
+            pid = str(p.get("pid") or "0")
+            break
     # Reset baseline when GPU identity changed (name or total VRAM) — avoids a
     # spurious vram_drift after a driver/GPU swap.
     identity_change = (

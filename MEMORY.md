@@ -281,9 +281,15 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 - `collector` queries nvidia-smi incl. **power.draw**, writes a persistent baseline to
   `logs/gpu_baseline.json`, and computes deterministic `drift_flags` (primary GPU index 0):
   `vram_drift` (> `vram_creep_mb` jump), `vram_overload` (> `vram_max_percent`),
-  `stuck_process` (same pid >= `stuck_pid_cycles` AND util > `util_threshold`),
+  `stuck_process` (same NON-ollama pid >= `stuck_pid_cycles` AND util > `util_threshold`),
   `power_drift` / `temp_drift` (high power/temp while util <= threshold). Baseline fields:
   `last_vram, last_pid, last_power, last_temp, cycles_with_same_pid`.
+- **Ollama exclusion (do not regress):** ollama's `llama-server` is a *permanent* GPU
+  resident (the local inference backend this pipeline calls every cycle) — by design the
+  same PID persists forever. The collector's tracked pid is the first **non-ollama**
+  compute process (`last_pid` = `"0"` when only ollama holds the GPU), so it can never be
+  counted toward `stuck_process`; `gpu_drift_actions` re-checks via `_ollama_owned` and
+  silently drops the flag (no notify/event/state) if a stale collector surfaces it.
 - `reasoner` prompt includes the same five rules + `"gpu_drift": []` in the output schema;
   `sanitize()` keeps only known flags (constant `GPU_DRIFT_FLAGS`).
 - `actions.gpu_drift_actions(coll, qwen, conf, engine, st)` unions Qwen's `gpu_drift` with

@@ -305,7 +305,12 @@ def deterministic_rules(coll, st, baseline):
             continue
         base = baseline.get(name, {}).get("mem_percent")
         if base:
-            creep = 100.0 * (mem - base) / max(base, 1e-3)
+            # Floor the baseline at 1% of RAM: sub-1% baselines (e.g. dozzle at
+            # 0.01%) amplify tiny fluctuations into noise restarts (0.02% vs 0.01%
+            # = 100% "creep" → docker restart every 2-min cycle). With the floor,
+            # creep means "growth of at least N percentage points of RAM", which is
+            # the meaningful signal on a 94 GiB box. Baselines >= 1% are unaffected.
+            creep = 100.0 * (mem - base) / max(base, 1.0)
             if creep > mem_th:
                 rules.append({"type": "docker_restart", "target": name,
                               "reason": f"memory creep {creep:.0f}% over baseline {base:.1f}%"})

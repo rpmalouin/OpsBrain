@@ -261,6 +261,13 @@ class Engine:
             rec["detail"] = target
             self.executed.append(rec)
             return rec
+        # ---- Dockhand desired-state drift (NOTIFY ONLY, no remediation) ----
+        if verb == "notify_dockhand_drift":
+            notify(str(target) or str(reason) or "Dockhand drift", "dockhand_drift")
+            rec["state"] = "notified"
+            rec["detail"] = target
+            self.executed.append(rec)
+            return rec
         rec["state"] = "blocked"
         rec["detail"] = f"unknown verb {verb}"
         self.blocked.append(rec)
@@ -517,6 +524,45 @@ def _merge_warnings(qwen_warnings, rule_warnings):
     return merged
 
 
+def dockhand_drift_actions(coll, engine):
+    """Surface Dockhand desired-state drift as NOTIFY-ONLY events.
+
+    Dockhand tells us the desired state vs what's actually running (image /
+    state / volume / policy drift, restart storms, health flaps, orphans). These
+    are informational — the module ends at dashboard/reasoner context and never
+    proposes a docker_restart, so Manual-Stop Protection and the allow-list are
+    not circumnavigated. Returns a list of {verb, target, reason} records.
+    """
+    dh = coll.get("dockhand", {}) if isinstance(coll, dict) else {}
+    if not isinstance(dh, dict) or not dh.get("up"):
+        return []
+    classified = dh.get("classify", {}) or {}
+    correlated = dh.get("correlate", {}) or {}
+    dash = dh.get("dashboard", {}) or {}
+    results = []
+    drift_count = int(classified.get("drift_count") or 0)
+    if drift_count > 0:
+        items = []
+        for kind in ("state", "health", "image", "volume", "network", "dependency", "policy", "replica"):
+            for it in classified.get(f"{kind}_drift_items") or []:
+                svc = str(it.get("service") or "")
+                cause = str(it.get("cause") or kind)
+                items.append(f"{svc}:{cause}" if svc else cause)
+        msg = f"Dockhand drift ({drift_count}): " + "; ".join(items[:6])
+        results.append(engine.dispatch("notify_dockhand_drift", dash.get("stack_drift", []), msg))
+        notify(msg, "dockhand_drift")
+    for s in correlated.get("restart_storms") or []:
+        results.append(engine.dispatch("notify_dockhand_drift", s.get("service"), f"restart storm: {s.get('count')} in {s.get('window_min')}m"))
+        notify(f"Dockhand restart storm {s.get('service')}: {s.get('count')} in {s.get('window_min')}m", "dockhand_drift")
+    for f in correlated.get("health_flaps") or []:
+        results.append(engine.dispatch("notify_dockhand_drift", f.get("service"), f"health flap: {f.get('toggle_count')} toggles in {f.get('window_min')}m"))
+        notify(f"Dockhand health flap {f.get('service')}: {f.get('toggle_count')} toggles in {f.get('window_min')}m", "dockhand_drift")
+    for name in (dash.get("orphaned_containers") or [])[:5]:
+        results.append(engine.dispatch("notify_dockhand_drift", name, f"orphan: container not in any stack"))
+        notify(f"Dockhand orphan: {name} not in any stack", "dockhand_drift")
+    return results
+
+
 def federation_decisions(engine, rec):
     """Dispatch cluster-level recommendations (NOTIFY-ONLY: never cross-node
     remediation). Loads cluster_reasoner_result.json and enqueues every
@@ -596,6 +642,9 @@ def main():
     # Federation: dispatch cluster-level recommendations (notify-only, gated).
     cluster_recs = federation_decisions(engine, None)
 
+    # Dockhand desired-state drift (notify-only, never remediate).
+    dockhand_recs = dockhand_drift_actions(coll, engine)
+
     save_state(st)
     write_json(Cfg.resolve("paths.baseline_json"), baseline)
     write_json(Cfg.resolve("paths.actions_json"), {
@@ -626,6 +675,10 @@ def main():
         "cluster": {
             "enabled": Cfg.get("federation.enabled", False),
             "recommendations": cluster_recs,
+        },
+        "dockhand": {
+            "enabled": bool((coll.get("dockhand", {}) or {}).get("up")),
+            "notifications": dockhand_recs,
         },
     })
     log.info("actions: executed=%d skipped=%d blocked=%d gpu_events=%d manual_stop_blocks=%d (dry_run=%s)",

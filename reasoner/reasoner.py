@@ -258,6 +258,24 @@ def summarize_collector(c):
                                or (co.get("restart_count") or 0) >= 2][:30],
     }
     out["gpu"] = c.get("gpu", {})
+    # Dockhand desired-state drift — compact so it stays out of the token budget.
+    dh = c.get("dockhand", {})
+    if isinstance(dh, dict) and dh.get("up"):
+        ctx = dh.get("context_nodes", {}) or {}
+        dash = dh.get("dashboard", {}) or {}
+        out["dockhand"] = {
+            "up": True,
+            "attention": ctx.get("attention"),
+            "drift_summary": ctx.get("drift_summary"),
+            "drift_count": dh.get("classify", {}).get("drift_count", 0),
+            "state_drift": (dh.get("classify", {}) or {}).get("state_drift_items", [])[:10],
+            "image_drift": (dh.get("classify", {}) or {}).get("image_drift_items", [])[:5],
+            "restart_storms": (dh.get("correlate", {}) or {}).get("restart_storms", [])[:5],
+            "health_flaps": (dh.get("correlate", {}) or {}).get("health_flaps", [])[:5],
+            "orphaned": dash.get("orphaned_containers", [])[:10],
+        }
+    else:
+        out["dockhand"] = {"up": bool(isinstance(dh, dict) and dh.get("up"))}
     vm = c.get("vm", {})
     out["vm"] = {"uptime_load": vm.get("uptime_load"), "disk_used_percent": vm.get("disk_used_percent"),
                  "memory": (vm.get("memory") or "")[:160],

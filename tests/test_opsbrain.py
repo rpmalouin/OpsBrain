@@ -325,6 +325,35 @@ class TestSummarizeCollector:
         assert pct("80%") == 80.0
         assert pct("n/a") is None
 
+    def test_summarize_collector_dockhand_digest(self):
+        c = {
+            "host": "vm", "timestamp": "t", "netdata": {"up": True, "alarms_active": []},
+            "dozzle": {"up": True}, "dockpeek": {"up": True},
+            "docker": {"containers": [], "containers_count": 0, "running": 0},
+            "gpu": {"gpus": [], "compute_processes": []},
+            "vm": {"disk_used_percent": "27"},
+            "dockhand": {
+                "up": True,
+                "context_nodes": {"attention": "high", "drift_summary": "1 stack drifting: yamtrack (state)"},
+                "classify": {"drift_count": 1,
+                             "state_drift_items": [{"stack": "yamtrack", "service": "yamtrack", "cause": "missing"}],
+                             "image_drift_items": []},
+                "correlate": {"restart_storms": [{"service": "web", "count": 4}], "health_flaps": []},
+                "dashboard": {"orphaned_containers": ["Firefox"]},
+            },
+        }
+        out = R.summarize_collector(c)
+        dh = out["dockhand"]
+        assert dh["up"] is True
+        assert dh["attention"] == "high"
+        assert "yamtrack" in dh["drift_summary"]
+        assert dh["drift_count"] == 1
+        assert dh["orphaned"] == ["Firefox"]
+        # up:false propagates a minimal digest, never crashes
+        out2 = R.summarize_collector({"netdata": {}, "dozzle": {}, "dockpeek": {}, "docker": {},
+                                      "gpu": {}, "vm": {}, "dockhand": {"up": False}})
+        assert out2["dockhand"] == {"up": False}
+
 
 # --------------------------------------------------------------------------- common
 class TestCommon:
@@ -595,3 +624,63 @@ class TestSourceCollectors:
         monkeypatch.setattr(C, "http_get", lambda *a, **k: {"ok": False, "err": "HTTP 500"})
         out = C.collect_dockpeek(base_config)
         assert out["up"] is False and out["api_http_ok"] is False
+
+
+# --------------------------------------------------------------------------- Dockhand drift actions
+class TestDockhandDriftActions:
+    def _dh_coll(self, drift=True, storms=0, flaps=0, orphans=0, up=True):
+        if not up:
+            return {"dockhand": {"up": False}}
+        return {"dockhand": {
+            "up": True,
+            "classify": {
+                "drift_count": 2 if drift else 0,
+                "state_drift_items": [{"stack": "yamtrack", "service": "yamtrack",
+                                       "cause": "missing container"}],
+                "image_drift_items": [{"stack": "immich", "service": "server",
+                                       "cause": "image mismatch old vs new"}],
+                "dependency_drift_items": [],
+                "health_drift_items": [],
+            },
+            "correlate": {
+                "restart_storms": [{"service": "web", "count": 4, "window_min": 30}]
+                                   if storms else [],
+                "health_flaps": [{"service": "db", "toggle_count": 3}] if flaps else [],
+            },
+            "dashboard": {
+                "stack_drift": ["yamtrack", "immich"],
+                "orphaned_containers": ["Firefox"] if orphans else [],
+            },
+        }}
+
+    def test_notify_only_when_drift(self, base_config):
+        e = A.Engine(True)  # dry run (still notifies)
+        recs = A.dockhand_drift_actions(self._dh_coll(), e)
+        # drift always yields a notify record, never a docker_restart
+        assert recs
+        assert all(r["verb"] == "notify_dockhand_drift" for r in recs)
+        assert all(r["state"] == "notified" for r in recs)
+        assert "Dockhand drift" in str(recs[0].get("reason"))
+
+    def test_noop_when_dockhand_down(self, base_config):
+        e = A.Engine(True)
+        assert A.dockhand_drift_actions(self._dh_coll(up=False), e) == []
+
+    def test_noop_when_no_drift(self, base_config):
+        e = A.Engine(True)
+        assert A.dockhand_drift_actions(self._dh_coll(drift=False), e) == []
+
+    def test_storms_flaps_orphans_notify(self, base_config):
+        e = A.Engine(True)
+        recs = A.dockhand_drift_actions(
+            self._dh_coll(storms=True, flaps=True, orphans=True), e)
+        msgs = [str(r.get("reason")) for r in recs]
+        assert any("storm" in m for m in msgs)
+        assert any("flap" in m for m in msgs)
+        assert any("orphan" in m for m in msgs)
+
+    def test_engine_accepts_dockhand_verb(self, base_config):
+        # notify_dockhand_drift is a registered notify-only verb, not "unknown"
+        e = A.Engine(True)
+        e.dispatch("notify_dockhand_drift", "web", "storm")
+        assert e.executed and e.blocked == []

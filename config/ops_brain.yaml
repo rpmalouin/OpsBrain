@@ -34,6 +34,14 @@ sources:
     creds_file: ~/.smbcred     # username= / password= lines
     enabled: true
     timeout_s: 8
+  dockhand:
+    enabled: true
+    db_path: /appdata/dockhand/sqlite/db/dockhand.db   # dockerVM's Dockhand SQLite (WAL, read-only)
+    compose_root: /appdata/A--docker_stacks            # host prefix mapped from /app/data/stacks in compose_path
+    environment_id: 1                                  # 1 = DockerVM (local desired-state)
+    storm_min_events: 3                                # die/destroy/restart in window -> restart storm
+    storm_window_s: 1800
+    flap_min_transitions: 2                            # healthy<->unhealthy toggles -> health flap
   docker_socket: /var/run/docker.sock     # primary container-state source
   gpu_query: whitelisted                  # nvidia-smi interprets the query below
   journalctl_since: "2 min ago"

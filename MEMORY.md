@@ -25,28 +25,29 @@ truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.
 - **Mode:** `actions.dry_run: false` — **LIVE, remediating.** Restarts execute for
   allow-listed containers (cap `restart_limit_per_run: 3`/cycle). Flip to `true` +
   `systemctl restart opsbrain` to observe only.
-- **Restart whitelist** (`actions.allow_restart_containers`, 5 containers): homepage,
-  dozzle, dockpeek, netdata, caddy. Everything else blocked. Note: blocked rule actions
+- **Restart whitelist** (`actions.allow_restart_containers`, 19 containers incl. homepage,
+  dozzle, dockpeek, netdata, caddy). Everything else blocked. Note: blocked rule actions
   do NOT notify — they only show up in `logs/actions_result.json`.
 - **Cadence:** cycle every 120s; federation every 2 cycles (4 min); daily report at
   `report.time: 23:55` → `reports/YYYY-MM-DD.md`.
 - **Model:** `qwen3:14b` (pulled locally). Fallback `qwen2.5-coder:14b`.
 - **Capabilities live in this build:** GPU drift detection, confidence recovery,
   restart-impact + drift-decay metrics, **Manual Stop Protection (HARD INVARIANT)**,
-  **TrueNAS SCALE panel**, **Federation Layer** (multi-node cluster reasoning;
-  nodes configured at `dockervm:8099`/`truenas:8099`, currently OFFLINE/degrading
-  gracefully on this single VM — test against `127.0.0.1:9120` to see live data).
+  **Dockhand desired-state drift** (notify-only), **TrueNAS SCALE panel**,
+  **Federation Layer** (multi-node cluster reasoning; nodes configured at
+  `dockervm:8099`/`truenas:8099`, currently OFFLINE/degrading gracefully on this single VM
+  — test against `127.0.0.1:9120` to see live data).
 - **Dashboard:** `opsbrain-ui` service on `:9120`, published as https://opsbrain.home
   via Caddy. Panels now include System, Cluster Overview, Node Comparison, TrueNAS,
-  GPU Drift, OpsBrain Decisions, Container Health, Manual Stop Protection, plus the
-  recovery/decay/impact refinements.
+  **Dockhand**, GPU Drift, OpsBrain Decisions, Container Health, Manual Stop Protection,
+  plus the recovery/decay/impact refinements.
 
 ## Pipeline & artifacts
 
 ```
-collector/collector.py         -> logs/collector.json         (unified signal doc, incl. truenas + manual_stops)
+collector/collector.py         -> logs/collector.json         (unified signal doc, incl. truenas + dockhand + manual_stops)
 reasoner/reasoner.py           -> logs/reasoner_result.json   (Qwen decision)
-hermes_actions/actions.py      -> logs/actions_result.json    (executed/skipped/blocked, incl. cluster recs)
+hermes_actions/actions.py      -> logs/actions_result.json    (executed/skipped/blocked, incl. cluster + dockhand recs)
 federation/federation_collector.py -> logs/cluster_snapshot.json       (per-node cluster telemetry)
 federation/federation_reasoner.py  -> logs/cluster_reasoner_result.json (score/ranking/correlations/recs)
 scheduler/scheduler.py         -> daemon loop + daily report (+ run_federation every 2 cycles)
@@ -127,7 +128,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**106 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**132 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -286,6 +287,37 @@ Architecture:
 Verified live: created a throwaway container, `docker stop`'d it (exit 137, no OOM) →
 correctly recorded as manual_stop → reasoner carried it and Qwen proposed 0 restarts.
 
+## Dockhand desired-state ingestion
+
+New source (Aug 2026): `collector/dockhand_ingest.py` reads **Dockhand's local SQLite**
+(`/appdata/dockhand/sqlite/db/dockhand.db`) **read-only** (`mode=ro`, safe with its live WAL
+writes) as a **desired-state** registry and merges it against actual Docker state. The HTTP
+API (`/api/stacks`, `/api/events`) is session-gated and returns `[]`/`"No environment
+selected"` — do NOT switch to it; the DB is the source of truth.
+
+- Config under `sources.dockhand`: `db_path`, `compose_root` (maps Dockhand's in-container
+  `/app/data/stacks/` → host `/appdata/A--docker_stacks`), `environment_id` (1 = DockerVM),
+  `storm_min_events`/`storm_window_s`/`flap_min_transitions`.
+- Pipeline: pull → normalize (parse each stack's compose → desired services) →
+  `merge_with_docker_actual` → `classify_drift` (8 flags: state/health/replica/image/
+  volume/network/dependency/policy + derived compose) → `correlate` (restart storms ≥3
+  die/destroy/restart per container in window; health flaps ≥2 toggles, from Dockhand's
+  archived `container_events`, ~10k rows) → `create_context_nodes` → `update_dashboard_snapshot`.
+  Merged into collector.json under `dockhand`.
+- **NOTIFY-ONLY** (deliberate): `actions.dockhand_drift_actions()` emits
+  `notify_dockhand_drift` (registered notify-only verb) for drift/storms/flaps/orphans. It
+  NEVER proposes `docker_restart`, so it can't override Manual-Stop Protection or the
+  allow-list. Reasoner digest carries a compact `dockhand` object.
+- Gotchas fixed during build: the matched `actual` record must carry **`labels`** so
+  restart-policy inference can see `com.docker.compose.*` (else every compose-managed
+  container reads as `no` → policy-drift flood — 11 false positives before this fix);
+  matching and orphan detection are **case-insensitive** (Docker capitalises `Firefox`);
+  `restart: no` in compose YAML parses to boolean `False` — normalized back to `"no"`;
+  service matching is `<stack>_<service>`-scoped so multi-service stacks don't all match
+  the same container.
+- Tests: `tests/test_dockhand_ingest.py` (20) + 6 in `test_opsbrain.py` = 26 new.
+- Live verify: `python3 collector/collector.py` then inspect `logs/collector.json["dockhand"]`.
+
 ## GPU drift detection
 
 Live in collector → reasoner → actions → report. Config under `gpu_drift:`:
@@ -315,12 +347,13 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **106 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **132 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag
   filtering), `evaluate_gpu_drift`, `gpu_drift_actions`, ollama-restart guard,
-  digest trimming, `Cfg.resolve` & JSON round-trip.
+  digest trimming, `Cfg.resolve` & JSON round-trip, `dockhand_drift_actions`,
+  `summarize_collector` dockhand digest.
 - `test_manual_stops.py` (+ `test_collector_manual_stops.py`) — ManualStops registry,
   classify_manual_stop (exit codes incl. sigkill protect), transition detection,
   hard-gate dispatch + prune-block.
@@ -329,6 +362,10 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
   score (spec math), node stability (null-conf-online credit, offline=0), ranking,
   recommendations, empty/all-offline, cross-node anomaly + drift correlation.
 - `test_ui_refinements.py` — confidence recovery, drift decay, restart impact.
+- `test_dockhand_ingest.py` (20) — Dockhand DB pull (host path mapping, missing-DB /
+  missing-table), compose `normalize`, service-matching (exact/prefix/case-insensitive),
+  all 8 drift classifications, restart-storm / health-flap correlate, context nodes cap,
+  dashboard snapshot.
 
 These caught real bugs during development — `sanitize` crashed on null confidence, and
 run/parse edge cases. GPU/kill tests mock `run()`/`notify` so they never touch live

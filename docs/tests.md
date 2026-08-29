@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 98 tests
+python3 -m pytest        # 132 tests
 python3 -m pytest -q     # quiet
 ```
 
@@ -27,6 +27,14 @@ python3 -m pytest -q     # quiet
   (spec math), node stability (null-conf-online credit, offline=0), ranking,
   recommendations, empty/all-offline, cross-node correlation.
 - **Dashboard refinements** — confidence recovery, drift decay, restart impact.
+- **Dockhand desired-state ingest** (`tests/test_dockhand_ingest.py`, 20 tests) — DB pull
+  (ok / missing-DB / missing-table, host path mapping), `normalize` (compose parse,
+  grouped by stack, unreadable-file degradation), `merge_with_docker_actual` (exact /
+  prefix / case-insensitive matching, image mismatch, health + resources),
+  `classify_drift` (every drift kind), `correlate` (restart storm, health flap,
+  below-threshold/outside-window), context nodes cap + drift summary, and the dashboard
+  snapshot. `tests/test_opsbrain.py` also covers `dockhand_drift_actions` (notify-only
+  verbs, down/noop/storms-flaps-orphans) and the `summarize_collector` dockhand digest.
 
 Run it after touching `actions.py`, `reasoner.py`, `common/`, `collector/`, or
 `federation/`.
@@ -35,5 +43,5 @@ Run it after touching `actions.py`, `reasoner.py`, `common/`, `collector/`, or
 
 `pytest.ini` sets `testpaths = tests` and quiet output. The test files live in `tests/`
 (`test_opsbrain.py`, `test_manual_stops.py`, `test_collector_manual_stops.py`,
-`test_truenas.py`, `test_federation.py`, `test_ui_refinements.py`, plus the dashboard
-tests).
+`test_truenas.py`, `test_federation.py`, `test_ui_refinements.py`,
+`test_dockhand_ingest.py`, plus the dashboard tests).

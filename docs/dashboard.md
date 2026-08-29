@@ -29,9 +29,14 @@ list of log files streamed on change).
 7. **OpsBrain Decisions** — Qwen warnings/actions, confidence, **dry-run / live** badge.
 8. **Manual Stop Protection** — protected (manually stopped) containers; red
    "MANUALLY STOPPED" tag on rows.
-9. **Daily Report Preview** — last-24h summary, anomaly/remediation/drift-event counts,
-   link to the full report at `/report`.
-10. **Refinements** (from `ui_refinements.js`) — confidence recovery pulse, GPU drift
+9. **Dockhand** — desired-state drift: drift count (colour-coded), attention level,
+   one-line summary, and counts/listings for stacks drifting, restart storms, health
+   flaps, orphaned containers, and missing resources. Status reflects `dockhand.up` /
+   `enabled`, so a down DB is visible immediately. (Source: the `dockhand` key in
+   `logs/collector.json`.)
+10. **Daily Report Preview** — last-24h summary, anomaly/remediation/drift-event counts,
+    link to the full report at `/report`.
+11. **Refinements** (from `ui_refinements.js`) — confidence recovery pulse, GPU drift
     decay graph, container restart-impact bars.
 
 ## Files streamed (WebSocket, every 2s on change)

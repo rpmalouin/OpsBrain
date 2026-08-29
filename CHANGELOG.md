@@ -7,6 +7,20 @@ milestone).
 
 ## [Unreleased]
 
+### Added
+- **Dockhand desired-state drift ingestion.** New `collector/dockhand_ingest.py` reads
+  Dockhand's local SQLite registry (read-only; the HTTP API is session-gated) as a
+  **desired-state** source, merges it against actual Docker state, and classifies drift
+  across `state` / `health` / `replica` / `image` / `volume` / `network` / `dependency` /
+  `policy` (+ derived `compose`). It also **correlates** Dockhand's archived
+  `container_events` into **restart storms** and **health flaps** (signals the 2-min
+  collector can't see itself). Feeds the reasoner digest, a notify-only
+  `notify_dockhand_drift` action verb (never auto-restarts — keeps Manual-Stop Protection
+  intact), and a new **Dockhand** dashboard panel. `sources.dockhand` config section.
+  +26 tests (132 total): 20 in `tests/test_dockhand_ingest.py`, 6 across
+  `tests/test_opsbrain.py`.
+- `docs/dockhand.md` — feature guide.
+
 ### Fixed
 - **Dozzle/Dockpeek false "not running" alerts.** Both containers were running but the
   collector probed the wrong hosts: `dozzle.base_url` pointed at host 8080 (actually

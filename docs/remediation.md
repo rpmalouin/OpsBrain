@@ -29,6 +29,9 @@
 - The **ollama restart hard-block** — the engine never restarts or kills Ollama, even if
   allow-listed (it is the reasoning backend).
 - **Federation remains notify-only** (docs/federation.md).
+- **Dockhand drift remains notify-only** (docs/dockhand.md) — it surfaces desired-state
+  drift / storms / orphans as notifications and context, and never proposes a restart, so
+  it can't override the manual-stop / allow-list protections above.
 
 ## Recommended adoption order
 

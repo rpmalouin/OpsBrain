@@ -11,6 +11,9 @@
 | A container you stopped keeps getting restarted | With manual-stop protection on this is a hard block — verify it's recorded in `logs/manual_stops.json`. A *crashing* container (OOM / nonzero exit) is NOT protected; that's by design (docs/manual-stop-protection.md). |
 | Dashboard WS not updating | Check `opsbrain-ui` is active; the server watches the log files in `ui/config.yaml` `watch[]`. Ensure the watched logs exist and are being written. |
 | `actions_result.json` `cluster.recommendations` empty | Federation `enabled: false` or no cluster output yet. Run `python3 federation/federation_collector.py && python3 federation/federation_reasoner.py` once. |
+| Dockhand shows **unreachable** / `dockhand.up: false` | `sources.dockhand.db_path` doesn't exist or is unreadable (OpsBrain opens it read-only; Dockhand holds it under WAL). Verify the file, then run `python3 collector/collector.py` once. Degrades gracefully otherwise. |
+| Dockhand shows **drift for every stack** (policy flood) | The matched container record is missing `labels` (restart-policy inference needs `com.docker.compose.*`). Confirm `dockhand.merged[].actual.labels` is populated; the collector's `docker.containers` must carry `labels`. |
+| Dockhand flags `Firefox` as orphaned/state-drift | Name matching is case-insensitive, but only if the container name matches a stack/service. Confirm the stack exists in `stack_sources` for `environment_id`; else it's a genuinely unmanaged container. |
 | Caddy site won't appear after editing Caddyfile | Bind-mount inode staleness — `docker restart caddy` to re-bind the file (docs/dashboard.md). |
 
 ## Quick diagnostics

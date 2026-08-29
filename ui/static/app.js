@@ -166,6 +166,59 @@ function renderTruenas(col) {
   return panel("TrueNAS", `<div class="space-y-1">${r}</div>`);
 }
 
+function renderDockhandPanel(col) {
+  const dh = col?.dockhand || {};
+  if (!dh.enabled) return panel("Dockhand", `<div class=\"text-slate-500 text-sm\">Dockhand ingestion disabled.</div>`);
+  if (!dh.up) return panel("Dockhand", `<div class=\"text-slate-500 text-sm\">Dockhand DB unreachable (docker hand desired-state source down).</div>`);
+  const cl = dh.classify || {};
+  const corr = dh.correlate || {};
+  const dash = dh.dashboard || {};
+  const ctx = dh.context_nodes || {};
+  const driftCount = cl.drift_count || 0;
+  const tone = driftCount > 0 ? "#f87171" : "#4ade80";
+  const toneText = driftCount > 0 ? "text-red-300" : "text-green-300";
+  let b = `<div class=\"flex items-center gap-2 mb-1\">` +
+    `<span class=\"drift-dot\" style=\"background:${tone}\"></span>` +
+    `<span class=\"text-sm ${toneText}\">${driftCount} drift</span>` +
+    `<span class=\"text-slate-400 text-xs ml-auto\">${ctx.attention || "normal"}</span></div>`;
+  b += `<div class=\"text-xs text-slate-400 mb-2\">${escapeHtml(ctx.drift_summary || "no drift")}</div>`;
+
+  const storms = corr.restart_storms || [];
+  const flaps = corr.health_flaps || [];
+  const orphans = dash.orphaned_containers || [];
+  const miss = dash.missing_resources || [];
+
+  const row = (label, list) => list && list.length
+    ? `<div class=\"flex justify-between text-sm\"><span class=\"text-slate-300\">${label}</span>` +
+      `<span class=\"text-red-300\">${list.length}</span></div>`
+    : `<div class=\"flex justify-between text-sm\"><span class=\"text-slate-400\">${label}</span>` +
+      `<span class=\"text-slate-500\">0</span></div>`;
+  b += `<div class=\"space-y-0.5 text-xs\">` +
+    row("Stacks drifting", dash.stack_drift) +
+    row("Restart storms", storms) +
+    row("Health flaps", flaps) +
+    row("Orphaned containers", orphans) +
+    row("Missing resources", miss) +
+    `</div>`;
+
+  if (storms.length) {
+    b += `<ul class=\"mt-1 space-y-0.5 text-xs text-red-200/80\">`;
+    for (const s of storms.slice(0, 4)) b += `<li>• ${escapeHtml(s.service)} · ${s.count} restarts / ${s.window_min}m</li>`;
+    b += `</ul>`;
+  }
+  if (flaps.length) {
+    b += `<ul class=\"mt-1 space-y-0.5 text-xs text-amber-200/80\">`;
+    for (const f of flaps.slice(0, 3)) b += `<li>• ${escapeHtml(f.service)} · ${f.toggle_count} toggles / ${f.window_min}m</li>`;
+    b += `</ul>`;
+  }
+  if (orphans.length) {
+    b += `<ul class=\"mt-1 space-y-0.5 text-xs text-slate-400\">`;
+    for (const o of orphans.slice(0, 5)) b += `<li>• ${escapeHtml(o)}</li>`;
+    b += `</ul>`;
+  }
+  return panel("Dockhand", `<div class=\"space-y-1\">${b}</div>`);
+}
+
 function ageDays(seconds) {
   const n = num(seconds);
   if (n === null) return "—";
@@ -406,6 +459,7 @@ function render() {
     renderClusterOverview(),
     renderNodeComparison(),
     renderTruenas(collector),
+    renderDockhandPanel(collector),
     renderManualStopPanel(),
     renderGpuPanel(collector),
     renderDriftTimeline(collector),

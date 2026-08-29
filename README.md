@@ -7,7 +7,7 @@ remediation — all gated by dry-run by default. It also reasons about **multipl
 a unified cluster** (federation) and streams everything to a real-time dashboard.
 
 - **Poll:** Netdata, Dozzle, Dockpeek (Docker socket), `nvidia-smi`, `df`/`top`/`journalctl`,
-  TrueNAS SCALE REST API
+  TrueNAS SCALE REST API, and **Dockhand** (desired-state registry → drift vs actual)
 - **Reason:** Qwen 3:14B via local Ollama (`http://localhost:11434/api/generate`) for
   node decisions; deterministic math for cluster reasoning
 - **Act:** Docker restart / prune, systemctl restart, GPU kill, webhook notifications
@@ -26,7 +26,7 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
 
 ```
 /appdata/OpsBrain/
-  collector/          polls & merges all sources -> logs/collector.json (incl. truenas, manual_stops)
+  collector/          polls & merges all sources -> logs/collector.json (incl. truenas, dockhand, manual_stops)
   reasoner/           Qwen prompt template + Ollama wrapper -> logs/reasoner_result.json
   hermes_actions/     remediation module + deterministic RULES -> logs/actions_result.json
   federation/         multi-node cluster collector + reasoner -> logs/cluster_{snapshot,reasoner_result}.json
@@ -37,7 +37,7 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
   reports/            daily markdown reports
   ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
   deploy/             systemd units + installer
-  tests/              pytest suite (98 tests)
+  tests/              pytest suite (132 tests)
   docs/               per-feature implementation guides
   Dockerfile, docker-compose.yml, README.md, IMPLEMENTATION.md, CHANGELOG.md, .gitignore
 ```
@@ -47,8 +47,8 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
 A live single-page dashboard streams `collector`, `reasoner`, `actions`, `gpu_baseline`,
 `manual_stops`, and the federation `cluster_snapshot`/`cluster_reasoner` logs over
 WebSockets and refreshes every 2 seconds. Panels: **System Overview, Cluster Overview,
-Node Comparison, TrueNAS, Container Health, GPU Drift, OpsBrain Decisions, Manual Stop
-Protection, Daily Report Preview**, plus confidence-recovery / GPU-drift-decay /
+Node Comparison, TrueNAS, Dockhand, Container Health, GPU Drift, OpsBrain Decisions,
+Manual Stop Protection, Daily Report Preview**, plus confidence-recovery / GPU-drift-decay /
 restart-impact refinements. Served by the `opsbrain-ui` systemd service at
 `http://<host>:9120/` — see `ui/README.md`.
 
@@ -79,9 +79,10 @@ protection, TrueNAS, federation, security, tests, troubleshooting). Release hist
 ## How one cycle works
 
 1. **collector/collector.py** — polls Netdata (`:19999`), Docker (`/var/run/docker.sock`),
-   Dozzle (`:8080`), Dockpeek (`:8081` probe), `nvidia-smi`, host commands
-   (`df -h`, `top`, `journalctl --since "2 min ago"`), and TrueNAS SCALE (`/pool`,
-   `/system/info`, `/alert/list`, `/disk`). Also runs manual-stop transition detection.
+   Dozzle (`:8081`), Dockpeek (`:8001` probe), `nvidia-smi`, host commands
+   (`df -h`, `top`, `journalctl --since "2 min ago"`), TrueNAS SCALE (`/pool`,
+   `/system/info`, `/alert/list`, `/disk`), and **Dockhand** (SQLite desired-state →
+   drift vs actual). Also runs manual-stop transition detection.
    Merges into one JSON doc → `logs/collector.json`.
 2. **reasoner/reasoner.py** — renders `reasoner/prompt.txt` with a *compact risk digest*
    of the collector output, asks Qwen3 14B for a structured JSON decision
@@ -110,6 +111,7 @@ protection, TrueNAS, federation, security, tests, troubleshooting). Release hist
 | **GPU drift**: vram/power/temp/overload    | notify only                | —              |
 | disk usage > 85%                            | `docker system prune -af` + notify | `allow_prune`  |
 | Netdata ACTIVE alarm                        | surfaced as warnings       | —              |
+| **Dockhand drift** / storm / flap / orphan | notify only                | —              |
 | Qwen confidence < 0.6        | **do nothing, log only**   | —              |
 
 **Safety first:** `actions.dry_run: true` by default. Nothing actually happens until you
@@ -164,7 +166,7 @@ robust JSON extractor. If `qwen3:14b` is unavailable it falls back to
 
 ## Files you get
 
-- `logs/collector.json`                 unified signal doc (2-min cadence)
+- `logs/collector.json`                 unified signal doc (2-min cadence; incl. `truenas`, `dockhand`, `manual_stops`)
 - `logs/reasoner_result.json`           Qwen decision `{warnings, actions, summary, confidence}`
 - `logs/actions_result.json`            executed / skipped / blocked per cycle (+ `cluster` recs)
 - `logs/manual_stops.json`              protected (manually stopped) container registry
@@ -177,10 +179,10 @@ robust JSON extractor. If `qwen3:14b` is unavailable it falls back to
 
 ## Tests
 
-`python3 -m pytest` — **98 tests** across `tests/` (whitelist gate, deterministic rules,
+`python3 -m pytest` — **132 tests** across `tests/` (whitelist gate, deterministic rules,
 Qwen sanitization, GPU drift, manual-stop invariant, TrueNAS parse, federation math &
-correlations, dashboard refinements). Run before pushing changes to `actions.py`,
-`reasoner.py`, `common/`, `collector/`, or `federation/`.
+correlations, dashboard refinements, Dockhand desired-state ingest). Run before pushing
+changes to `actions.py`, `reasoner.py`, `common/`, `collector/`, or `federation/`.
 
 ## Troubleshooting
 

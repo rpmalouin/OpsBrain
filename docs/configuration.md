@@ -46,16 +46,24 @@ sources:
     base_url: http://localhost:19999
     enabled: true
   dozzle:
-    base_url: http://localhost:8080
+    base_url: http://localhost:8081
     enabled: true
   dockpeek:
-    base_url: http://localhost:8081
+    base_url: http://localhost:8001
     enabled: true
   truenas:                        # optional — see docs/truenas.md
     base_url: http://truenas/api/v2.0
     creds_file: ~/.smbcred
     enabled: true
     timeout_s: 8
+  dockhand:                       # optional desired-state source — see docs/dockhand.md
+    enabled: true
+    db_path: /appdata/dockhand/sqlite/db/dockhand.db
+    compose_root: /appdata/A--docker_stacks
+    environment_id: 1
+    storm_min_events: 3
+    storm_window_s: 1800
+    flap_min_transitions: 2
   docker_socket: /var/run/docker.sock
   gpu_query: whitelisted
   journalctl_since: "2 min ago"

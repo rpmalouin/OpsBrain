@@ -36,9 +36,12 @@ ui/
    live** badge.
 8. **Manual Stop Protection** — protected (manually stopped) containers; red
    "MANUALLY STOPPED" tag on rows.
-9. **Daily Report Preview** — last-24h summary, anomaly/remediation/drift-event counts,
-   link to the full report at `/report`.
-10. **Refinements** (from `ui_refinements.js`) — confidence recovery pulse, GPU drift
+9. **Dockhand** — desired-state drift: drift count (colour-coded), attention, one-line
+   summary, and counts for stacks drifting / restart storms / health flaps / orphaned
+   containers / missing resources (from the `dockhand` key in `collector.json`).
+10. **Daily Report Preview** — last-24h summary, anomaly/remediation/drift-event counts,
+    link to the full report at `/report`.
+11. **Refinements** (from `ui_refinements.js`) — confidence recovery pulse, GPU drift
     decay graph, container restart-impact bars.
 
 ## Files streamed (WebSocket, every 2s on change)

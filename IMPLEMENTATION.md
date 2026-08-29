@@ -23,7 +23,7 @@ for a structured decision; and executes **safe, whitelisted** remediation. It al
 dashboard.
 
 - **Poll:** Netdata, Dozzle, Dockpeek/Docker-socket, `nvidia-smi`, `df`/`top`/`journalctl`,
-  TrueNAS SCALE.
+  TrueNAS SCALE, and Dockhand (desired-state registry → drift vs actual).
 - **Reason:** Qwen3 14B (local Ollama) for node decisions; deterministic math for cluster
   reasoning.
 - **Act:** Docker restart / prune, systemctl restart, GPU kill, webhook notifications —
@@ -56,7 +56,7 @@ See **[docs/deployment.md](docs/deployment.md)** for the full step-by-step.
 ## Layout
 
 ```
-collector/          polls & merges sources -> logs/collector.json (incl. truenas, manual_stops)
+collector/          polls & merges sources -> logs/collector.json (incl. truenas, dockhand, manual_stops)
 reasoner/           Qwen prompt + Ollama wrapper -> logs/reasoner_result.json
 hermes_actions/     remediation + deterministic rules -> logs/actions_result.json
 federation/         multi-node collector + reasoner -> logs/cluster_{snapshot,reasoner_result}.json
@@ -65,7 +65,7 @@ common/             Cfg, ManualStops registry, JSON/log helpers
 config/             ops_brain.yaml (all settings)
 ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
 deploy/             systemd units + installer
-tests/              98 tests
+tests/              132 tests
 docs/               these implementation docs
 IMPLEMENTATION.md   this entry point
 CHANGELOG.md, README.md, MEMORY.md
@@ -82,6 +82,7 @@ CHANGELOG.md, README.md, MEMORY.md
 | Real-time dashboard + reverse proxy | [docs/dashboard.md](docs/dashboard.md) |
 | Manual Stop Protection (HARD INVARIANT) | [docs/manual-stop-protection.md](docs/manual-stop-protection.md) |
 | TrueNAS integration | [docs/truenas.md](docs/truenas.md) |
+| Dockhand desired-state drift | [docs/dockhand.md](docs/dockhand.md) |
 | Federation layer (multi-node) | [docs/federation.md](docs/federation.md) |
 | Security & operations | [docs/security.md](docs/security.md) |
 | Test suite | [docs/tests.md](docs/tests.md) |
@@ -93,7 +94,9 @@ CHANGELOG.md, README.md, MEMORY.md
   container is NEVER restarted or pruned, regardless of remediation/confidence/caps/LLM.
 - **Ollama is never restarted or killed** by the engine, even if allow-listed.
 - **Federation is notify-only** — no cross-node remediation.
-- **98 tests** cover the decision-critical logic with mocks (docs/tests.md).
+- **Dockhand drift is notify-only** — it never auto-restarts containers, so it can't
+  override Manual-Stop Protection or the allow-list.
+- **132 tests** cover the decision-critical logic with mocks (docs/tests.md).
 
 ## Release history
 

@@ -18,16 +18,16 @@ deployment, configuration, reasoning-llm, remediation, dashboard, manual-stop-pr
 truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.md`
 (overview), `ui/README.md` (dashboard), this file (operational memory).
 
-## Current running state (LAST UPDATED: 2026-08-27)
+## Current running state (LAST UPDATED: 2026-08-29)
 
 - **Service:** systemd unit `opsbrain` — ACTIVE, enabled, auto-restarts.
   `ExecStart: python3 /appdata/OpsBrain/scheduler/scheduler.py --daemon`
-- **Mode:** `actions.dry_run: true` — **observing only, NOT remediating live.**
-  Flip to `false` + `systemctl restart opsbrain` to allow real actions.
-- **Restart whitelist** (`actions.allow_restart_containers`, 19 containers): homepage,
-  dozzle, dockpeek, netdata, caddy, caddy-editor, calibre, calibre-web, dockscope,
-  filerise, firefox, flacsentry, grimmory, homelab-hub, homepage-editor,
-  last30days-runner, librewolf, yamtrack, youtube-dl-server. Everything else blocked.
+- **Mode:** `actions.dry_run: false` — **LIVE, remediating.** Restarts execute for
+  allow-listed containers (cap `restart_limit_per_run: 3`/cycle). Flip to `true` +
+  `systemctl restart opsbrain` to observe only.
+- **Restart whitelist** (`actions.allow_restart_containers`, 5 containers): homepage,
+  dozzle, dockpeek, netdata, caddy. Everything else blocked. Note: blocked rule actions
+  do NOT notify — they only show up in `logs/actions_result.json`.
 - **Cadence:** cycle every 120s; federation every 2 cycles (4 min); daily report at
   `report.time: 23:55` → `reports/YYYY-MM-DD.md`.
 - **Model:** `qwen3:14b` (pulled locally). Fallback `qwen2.5-coder:14b`.
@@ -98,7 +98,11 @@ Other calibration notes:
 ## Action rules (see config/ops_brain.yaml for thresholds)
 
 - container CPU > 80% sustained 5 min → `docker restart`
-- memory creep > 20% over baseline → `docker restart`
+- memory creep > 20% over baseline → `docker restart`. Creep denominator is floored at
+  `max(base, 1.0)`% (Aug 2026 fix): sub-1% baselines (e.g. dozzle's 0.01%) amplified a
+  0.01pp wiggle into 100% "creep", so allow-listed dozzle got restarted EVERY 2-min
+  cycle. With the floor, creep means "growth of ≥N percentage points of RAM" (≈190 MiB
+  per 20% on this box). Do NOT revert to `1e-3`.
 - container restart loop → `docker restart` + notify
 - GPU mem > 90% with resident process → `gpu_kill` (needs `allow_gpu_kill: true`)
 - disk usage > 85% → `docker system prune -af` + notify (needs `allow_prune: true`)
@@ -123,7 +127,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**98 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**106 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -311,7 +315,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **98 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **106 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

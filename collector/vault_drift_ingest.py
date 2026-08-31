@@ -130,7 +130,10 @@ def classify(report):
         # normalize issue text into a category
         path = str(f.get("path") or "")
         note = {"path": path, "issue": str(f.get("issue") or "")}
-        if "broken" in issue or "link" in issue:
+        # A broken *link* requires the "broken" diagnostic; a bare link/links
+        # mention (e.g. an orphan note whose issue says "no inbound links")
+        # must NOT be classified as a broken link. Match "broken" first.
+        if "broken" in issue:
             out["broken_links"].append(note)
         elif "orphan" in issue:
             out["orphans"].append(note)

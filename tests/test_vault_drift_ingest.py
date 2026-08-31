@@ -88,6 +88,14 @@ def test_classify_buckets_and_counts(base_config):
     assert len(cls["broken_links"]) == 2
 
 
+def test_classify_orphan_with_links_word_is_not_broken(base_config):
+    # Regression: an orphan note whose issue text merely says "no inbound links"
+    # must NOT be classified as a broken link (bare "link" used to match first).
+    cls = V.classify(_report([{"path": "X.md", "issue": "orphan candidate — no inbound links (expected)"}]))
+    assert cls["counts"]["broken_links"] == 0
+    assert cls["counts"]["orphans"] == 1
+
+
 def test_classify_skips_non_dict(base_config):
     cls = V.classify(_report([42, "x", None]))
     assert cls["counts"] == {"broken_links": 0, "orphans": 0,

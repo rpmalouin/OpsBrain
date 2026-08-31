@@ -268,6 +268,13 @@ class Engine:
             rec["detail"] = target
             self.executed.append(rec)
             return rec
+        # ---- Vault drift (NOTIFY ONLY, never remediates the vault) ----
+        if verb == "notify_vault_drift":
+            notify(str(target) or str(reason) or "Vault drift", "vault_drift")
+            rec["state"] = "notified"
+            rec["detail"] = target
+            self.executed.append(rec)
+            return rec
         rec["state"] = "blocked"
         rec["detail"] = f"unknown verb {verb}"
         self.blocked.append(rec)
@@ -563,6 +570,37 @@ def dockhand_drift_actions(coll, engine):
     return results
 
 
+def vault_drift_actions(coll, engine):
+    """Surface Hatchdoor vault drift as NOTIFY-ONLY events.
+
+    The vault-drift report is produced by Hermes' weekly cron; OpsBrain only
+    consumes it and notifies. It NEVER remediates the vault (no file writes, no
+    docker actions) — the vault lives behind Hatchdoor's sync engine and must
+    not be touched here. Even with active findings, this only dispatches
+    ``notify_vault_drift``. Returns a list of {verb, target, reason} records.
+    """
+    vd = coll.get("vault_drift", {}) if isinstance(coll, dict) else {}
+    if not isinstance(vd, dict) or not vd.get("up"):
+        return []
+    context = vd.get("context_nodes", {}) or {}
+    dash = vd.get("dashboard", {}) or {}
+    total = int(context.get("drift_count") or 0)
+    results = []
+    if total > 0:
+        summary = str(dash.get("summary") or f"{total} vault finding(s)")
+        # Only report actionable categories; needs_review is by definition a
+        # human decision and is surfaced in the digest, not notified.
+        actionable = int(vd.get("classify", {}).get("counts", {}).get("broken_links", 0)) \
+            + int(vd.get("classify", {}).get("counts", {}).get("orphans", 0))
+        kind = "vault drift" if actionable else "vault notes"
+        results.append(engine.dispatch("notify_vault_drift", total, f"{kind}: {summary}"))
+        notify(f"Vault drift ({total}): {summary}", "vault_drift")
+    if vd.get("stale"):
+        results.append(engine.dispatch("notify_vault_drift", "stale", "vault-drift report is stale"))
+        notify("Vault-drift report is stale; cron may not have run", "vault_drift")
+    return results
+
+
 def federation_decisions(engine, rec):
     """Dispatch cluster-level recommendations (NOTIFY-ONLY: never cross-node
     remediation). Loads cluster_reasoner_result.json and enqueues every
@@ -645,6 +683,9 @@ def main():
     # Dockhand desired-state drift (notify-only, never remediate).
     dockhand_recs = dockhand_drift_actions(coll, engine)
 
+    # Hatchdoor vault drift (notify-only, never remediate the vault).
+    vault_drift_recs = vault_drift_actions(coll, engine)
+
     save_state(st)
     write_json(Cfg.resolve("paths.baseline_json"), baseline)
     write_json(Cfg.resolve("paths.actions_json"), {
@@ -679,6 +720,11 @@ def main():
         "dockhand": {
             "enabled": bool((coll.get("dockhand", {}) or {}).get("up")),
             "notifications": dockhand_recs,
+        },
+        "vault_drift": {
+            "enabled": bool((coll.get("vault_drift", {}) or {}).get("up")),
+            "notifications": vault_drift_recs,
+            "drift_count": (coll.get("vault_drift", {}) or {}).get("context_nodes", {}).get("drift_count", 0),
         },
     })
     log.info("actions: executed=%d skipped=%d blocked=%d gpu_events=%d manual_stop_blocks=%d (dry_run=%s)",

@@ -42,6 +42,10 @@ sources:
     storm_min_events: 3                                # die/destroy/restart in window -> restart storm
     storm_window_s: 1800
     flap_min_transitions: 2                            # healthy<->unhealthy toggles -> health flap
+  vault_drift:
+    enabled: true
+    report_path: /appdata/OpsBrain/logs/vault_drift_report.json  # produced by the Hermes vault-drift cron
+    max_age_s: 691200                                   # ~8 days (weekly cron) before marking stale
   docker_socket: /var/run/docker.sock     # primary container-state source
   gpu_query: whitelisted                  # nvidia-smi interprets the query below
   journalctl_since: "2 min ago"

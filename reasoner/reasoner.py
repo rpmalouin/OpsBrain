@@ -276,6 +276,20 @@ def summarize_collector(c):
         }
     else:
         out["dockhand"] = {"up": bool(isinstance(dh, dict) and dh.get("up"))}
+    # Hatchdoor vault drift — compact so it stays out of the token budget.
+    vd = c.get("vault_drift", {})
+    if isinstance(vd, dict) and vd.get("up"):
+        ctx = vd.get("context_nodes", {}) or {}
+        out["vault_drift"] = {
+            "up": True,
+            "attention": ctx.get("attention"),
+            "drift_count": ctx.get("drift_count", 0),
+            "broken_links": ctx.get("broken_links", [])[:6],
+            "orphans": ctx.get("orphans", [])[:4],
+            "stale": bool(vd.get("stale")),
+        }
+    else:
+        out["vault_drift"] = {"up": bool(isinstance(vd, dict) and vd.get("up"))}
     vm = c.get("vm", {})
     out["vm"] = {"uptime_load": vm.get("uptime_load"), "disk_used_percent": vm.get("disk_used_percent"),
                  "memory": (vm.get("memory") or "")[:160],

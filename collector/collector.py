@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
 from manual_stops import ManualStops, classify_manual_stop, _norm_name  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
 from dockhand_ingest import collect_dockhand  # noqa: E402
+from vault_drift_ingest import collect_vault_drift  # noqa: E402
 
 log = get_logger("collector")
 
@@ -627,6 +628,7 @@ def collect_all(cfg):
     doc["vm"] = collect_vm(cfg)
     doc["truenas"] = collect_truenas(cfg)
     doc["dockhand"] = collect_dockhand(cfg)
+    doc["vault_drift"] = collect_vault_drift(cfg)
     doc["sources_healthy"] = sum(1 for k in ("netdata", "dozzle", "dockpeek", "docker", "gpu", "vm", "truenas")
                                  if doc.get(k, {}).get("up") or k in ("docker", "gpu", "vm"))
     return doc

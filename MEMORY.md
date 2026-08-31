@@ -33,7 +33,8 @@ truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.
 - **Model:** `qwen3:14b` (pulled locally). Fallback `qwen2.5-coder:14b`.
 - **Capabilities live in this build:** GPU drift detection, confidence recovery,
   restart-impact + drift-decay metrics, **Manual Stop Protection (HARD INVARIANT)**,
-  **Dockhand desired-state drift** (notify-only), **TrueNAS SCALE panel**,
+  **Dockhand desired-state drift** (notify-only), **Hatchdoor vault drift**
+  (notify-only), **TrueNAS SCALE panel**,
   **Federation Layer** (multi-node cluster reasoning; nodes configured at
   `dockervm:8099`/`truenas:8099`, currently OFFLINE/degrading gracefully on this single VM
   — test against `127.0.0.1:9120` to see live data).
@@ -317,6 +318,31 @@ selected"` — do NOT switch to it; the DB is the source of truth.
   the same container.
 - Tests: `tests/test_dockhand_ingest.py` (20) + 6 in `test_opsbrain.py` = 26 new.
 - Live verify: `python3 collector/collector.py` then inspect `logs/collector.json["dockhand"]`.
+
+## Hatchdoor vault drift ingestion
+
+Source (Aug 2026): `collector/vault_drift_ingest.py` reads the vault-drift report
+produced by Hermes' weekly cron at `/appdata/OpsBrain/logs/vault_drift_report.json`
+(OPsBrain is the CONSUMER; the Hermes `vault-maintenance` cron is the producer).
+
+- Config under `sources.vault_drift`: `enabled`, `report_path`, `max_age_s`
+  (default ~8 days for a weekly cron before marking the report `stale`).
+- Pipeline: pull (`pull_report`, read/parse-failed => `up:false` gracefully) →
+  classify (broken links / orphans / stale metadata / needs-review, capped at 30) →
+  `create_context_nodes` (attention: actionable/low/needs_review/stale_report) →
+  `update_dashboard_snapshot` (count + human summary). Merged into
+  collector.json as `vault_drift`.
+- Report shape (the cron writes EXACTLY this): `{timestamp, attention, findings:[{path, issue}]}`.
+- **NOTIFY-ONLY** (deliberate): `actions.vault_drift_actions()` emits
+  `notify_vault_drift` (registered notify-only verb) for findings/stale; it NEVER
+  proposes `docker_restart` or touches the vault filesystem — Hatchdoor owns the
+  vault behind its sync engine, so OpsBrain must not remediate it.
+- Reasoner digest carries a compact `vault_drift` block; collector presence is
+  enough for the dashboard (no server.py change needed).
+- Tests: `tests/test_vault_drift_ingest.py` (14). Full suite now 146.
+- Verify live: no report => `up:false` gracefully; place a sample report at the
+  configured path, run `python3 collector/collector.py` + `actions.py --dry-run`,
+  expect `NOTIFY[vault_drift]` and no remediation.
 
 ## GPU drift detection
 

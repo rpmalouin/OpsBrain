@@ -21,6 +21,7 @@ Usage (standalone, same import pattern as collector.py):
     from collector.dockhand_ingest import collect_dockhand
 """
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -240,7 +241,7 @@ def normalize(docked, environment_id=1, compose_root="/appdata/A--docker_stacks"
     for name, s in by_stack.items():
         compose_path = host_map_path(s.get("compose_path"), compose_root)
         env_path = host_map_path(s.get("env_path"), compose_root)
-        services, ready, perr = _parse_stack_compose(compose_path)
+        services, ready, perr = _parse_stack_compose(compose_path, env_path)
         desired_state.append({
             "stack": name,
             "environment_id": int(environment_id),
@@ -266,7 +267,46 @@ def _find_compose_file(compose_path):
     return None
 
 
-def _parse_stack_compose(compose_path):
+def _load_env_file(env_path):
+    """Best-effort KEY=VALUE parse of a compose .env file (no shell expansion)."""
+    env = {}
+    if not env_path:
+        return env
+    try:
+        with open(env_path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                env[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return env
+
+
+def _resolve_compose_env(text, env):
+    """Resolve ${VAR} and ${VAR:-default} against a .env dict.
+
+    Matches compose interpolation semantics for the common cases: an explicit
+    .env value wins; ``:-default`` falls back when the key is absent. A bare
+    ${VAR} with no .env value resolves to '' (as compose does). Leaves anything
+    else untouched so unresolvable expressions surface visibly.
+    """
+    if not isinstance(text, str) or "{" not in text:
+        return text
+    pattern = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+    def _sub(m):
+        key, default = m.group(1), m.group(2)
+        if key in env:
+            return str(env[key])
+        return default if default is not None else ""
+
+    return pattern.sub(_sub, text)
+
+
+def _parse_stack_compose(compose_path, env_path=None):
     """Best-effort compose parse -> (services, ready, parse_error). Never raises."""
     cf = _find_compose_file(compose_path)
     if cf is None:
@@ -276,28 +316,30 @@ def _parse_stack_compose(compose_path):
             doc = yaml.safe_load(fh)
         if not isinstance(doc, dict):
             return [], False, "compose root is not a mapping"
-        return _compose_services(doc), True, None
+        env = _load_env_file(env_path)
+        return _compose_services(doc, env), True, None
     except Exception as e:
         return [], False, f"compose parse failed: {e}"
 
 
-def _compose_services(doc):
+def _compose_services(doc, env=None):
     """Derive the service list from a parsed compose document."""
+    env = env or {}
     serv = doc.get("services") or {}
     out = []
     if isinstance(serv, dict):
         for name, cfg in serv.items():
             if isinstance(cfg, dict):
-                out.append(_service_doc(name, cfg))
+                out.append(_service_doc(name, cfg, env))
     elif isinstance(serv, list):
         for i, item in enumerate(serv):
             if isinstance(item, dict):
                 name = item.get("name") or str(i)
-                out.append(_service_doc(name, item))
+                out.append(_service_doc(name, item, env))
     return out
 
 
-def _service_doc(name, cfg):
+def _service_doc(name, cfg, env=None):
     """Derive one desired-service record from a compose service config."""
     # yaml.safe_load parses `restart: no` as the boolean False; normalize to "no".
     restart = cfg.get("restart")
@@ -307,7 +349,7 @@ def _service_doc(name, cfg):
         restart = "no"
     return {
         "service": name,
-        "image": cfg.get("image"),
+        "image": _resolve_compose_env(cfg.get("image"), env or {}),
         "restart": restart,
         "depends_on": _depends_on(cfg),
         "ports": _ports(cfg),
@@ -433,35 +475,89 @@ def _norm_image(image):
     return s
 
 
+def _compose_labels(container):
+    """Parse the collector's flat 'k=v,k=v' label string into a dict.
+
+    Docker inspect label output arrives as a comma-joined string; some test /
+    future record shapes may carry a dict already. Returns {} on garbage.
+    """
+    raw = (container or {}).get("labels") or ""
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items()}
+    out = {}
+    for part in str(raw).split(","):
+        if "=" in part:
+            k, _, v = part.partition("=")
+            out[k.strip()] = v
+    return out
+
+
+def _norm_sep(s):
+    """Lowercase and collapse '-'/'_' so immich_server == service immich-server."""
+    return str(s or "").lower().replace("-", "_")
+
+
 def _find_match(service_name, stack_name, containers):
     """Deterministic container match, service-scoped to avoid collisions.
 
     Match order (first hit wins):
-      1. Exact name == service_name
-      2. ``<stack>_<service>_<n>`` / ``<stack>_<service>`` (compose default naming) —
-         the project/service combination, so a multi-service stack does NOT let
-         every service match the same ``<stack>_`` container.
-      3. ``<service>_<n>`` / ``<service>-<n>`` (bare service-with-instance)
-      4. Substring similarity (service in name, or name in service)
+      0. Compose label identity: container carries
+         ``com.docker.compose.project == stack_name`` AND
+         ``com.docker.compose.service == service_name``. Authoritative — immune
+         to ``container_name`` overrides and separator differences (e.g.
+         container ``immich_server`` for compose service ``immich-server``).
+      1. Exact name == service_name / == ``<stack>_<service>``
+      2. Separator-normalized exact + compose-default naming
+         (``<stack>_<service>[_<n>]``, ``<service>[_|-]<n>``)
+      3. Substring similarity (service in name, or name in service)
+    Rules 1-3 are project-scoped: a compose-labeled container belonging to a
+    DIFFERENT project can never satisfy them (a standalone project's ``redis``
+    container must not match this stack's ``redis`` service). Unlabeled
+    containers (manual ``docker run``) fall back to name heuristics as before.
     Returns the first container record that satisfies the rule, or None.
     """
     service_name = str(service_name or "").lower()
     stack_name = str(stack_name or "").lower()
+    svc_norm = _norm_sep(service_name)
+    stack_svc_norm = f"{_norm_sep(stack_name)}_{svc_norm}"
 
     def _name(c):
         return str((c or {}).get("name") or "").lower()
 
-    # lowercased compose-default names (docker names are case-sensitive; compose
-    # stack/service names are lowercase but a container may start uppercase e.g.
-    # "Firefox" — compare case-insensitively)
+    def _same_project(c):
+        """False when the container is compose-labeled for another project."""
+        labels = _compose_labels(c)
+        proj = labels.get("com.docker.compose.project")
+        if proj is None or not str(proj).strip():
+            return True
+        return str(proj).lower() == stack_name
+
+    # 0) label identity (project + service)
     for c in containers:
+        labels = _compose_labels(c)
+        if (labels.get("com.docker.compose.service") or "").lower() == service_name and \
+                (labels.get("com.docker.compose.project") or "").lower() == stack_name:
+            return c
+    # 1) exact names
+    for c in containers:
+        if not _same_project(c):
+            continue
         if _name(c) in (service_name, f"{stack_name}_{service_name}"):
             return c
+    # 2) separator-normalized exact + compose-default prefixes
     for c in containers:
+        if not _same_project(c):
+            continue
         n = _name(c)
-        if n.startswith(f"{stack_name}_{service_name}") or n.startswith(service_name + "_") or n.startswith(service_name + "-"):
+        if _norm_sep(n) in (svc_norm, stack_svc_norm):
             return c
+        if n.startswith(f"{stack_name}_{service_name}") or \
+                n.startswith(service_name + "_") or n.startswith(service_name + "-"):
+            return c
+    # 3) substring similarity (only within the project scope)
     for c in containers:
+        if not _same_project(c):
+            continue
         n = _name(c)
         if service_name and n and (service_name in n or n in service_name):
             return c

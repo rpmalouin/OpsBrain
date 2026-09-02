@@ -287,6 +287,70 @@ def test_merge_no_match():
     assert merged[0]["missing_network"] == []
 
 
+def _clabels(project, service):
+    return (f"com.docker.compose.project={project},"
+            f"com.docker.compose.service={service},"
+            f"com.docker.compose.config-hash=abc")
+
+
+def test_merge_label_identity_handles_container_name_override():
+    # immich pattern: compose service "immich-server" with container_name
+    # "immich_server" (underscore) — the container must still match via its
+    # com.docker.compose.* labels, not just its name.
+    desired = [_make_stack("immich", [
+        _svc("immich-server", image="ghcr.io/immich-app/immich-server:release"),
+        _svc("database", image="ghcr.io/immich-app/postgres:14"),
+        _svc("redis", image="docker.io/valkey/valkey:9"),
+    ])]
+    containers = [
+        _container("immich_server", image="ghcr.io/immich-app/immich-server:release",
+                   labels=_clabels("immich", "immich-server")),
+        _container("immich_postgres", image="ghcr.io/immich-app/postgres:14",
+                   labels=_clabels("immich", "database")),
+        _container("immich_redis", image="docker.io/valkey/valkey:9",
+                   labels=_clabels("immich", "redis")),
+    ]
+    merged = D.merge_with_docker_actual(desired, containers)
+    assert all(m["matched"] for m in merged)
+    assert [m["actual"]["name"] for m in merged] == \
+        ["immich_server", "immich_postgres", "immich_redis"]
+    assert all(m["image_mismatch"] is False for m in merged)
+
+
+def test_merge_cross_project_same_service_name_not_stolen():
+    # worldmonitor pattern: a standalone project's container named exactly like
+    # this stack's service ("redis") must NOT satisfy the match.
+    desired = [_make_stack("worldmonitor", [
+        _svc("redis", image="docker.io/redis:7-alpine"),
+        _svc("redis-rest", image="worldmonitor-redis-rest:latest"),
+    ])]
+    containers = [
+        _container("redis", image="redis:7",
+                   labels=_clabels("redis", "redis")),
+        _container("worldmonitor-redis", image="redis:7-alpine",
+                   labels=_clabels("worldmonitor", "redis")),
+    ]
+    merged = D.merge_with_docker_actual(desired, containers)
+    by_svc = {m["service"]: m for m in merged}
+    # redis service matches ITS project's container even though an unrelated
+    # "redis" container exists earlier in the list
+    assert by_svc["redis"]["matched"] is True
+    assert by_svc["redis"]["actual"]["name"] == "worldmonitor-redis"
+    assert by_svc["redis"]["image_mismatch"] is False
+    # redis-rest must stay unmatched (nothing belongs to worldmonitor)
+    assert by_svc["redis-rest"]["matched"] is False
+
+
+def test_merge_separator_normalized_unlabeled():
+    # Without labels (manual docker run), an underscore container name still
+    # matches a hyphenated service name.
+    desired = [_make_stack("wm", [_svc("world-monitor", image="wm:1")])]
+    containers = [_container("world_monitor", image="wm:1")]
+    merged = D.merge_with_docker_actual(desired, containers)
+    assert merged[0]["matched"] is True
+    assert merged[0]["actual"]["name"] == "world_monitor"
+
+
 def test_merge_health_and_resources():
     desired = [_make_stack("web", [_svc("web", image="nginx:1.25",
                                         volumes=["/data", "/missing-data"],
@@ -358,6 +422,37 @@ def test_classify_dependency_and_replicas():
     # api did NOT falsely match the db container (service-scoped matching)
     api = next(m for m in merged if m["service"] == "api")
     assert api["matched"] is False
+
+
+def test_resolve_compose_env():
+    # ${VAR:-default} falls back when the key is absent...
+    assert D._resolve_compose_env("img:${TAG:-latest}", {"OTHER": "x"}) == "img:latest"
+    # ...an explicit .env value wins over the default...
+    assert D._resolve_compose_env("img:${TAG:-latest}", {"TAG": "v2"}) == "img:v2"
+    # bare ${VAR} uses the .env value, else empty (compose semantics)
+    assert D._resolve_compose_env("img:${TAG}", {"TAG": "v2"}) == "img:v2"
+    assert D._resolve_compose_env("img:${NOPE}", {}) == "img:"
+    # unresolvable / non-template strings pass through untouched
+    assert D._resolve_compose_env("plain", {}) == "plain"
+    assert D._resolve_compose_env("img:${UNCLOSED", {}) == "img:${UNCLOSED"
+
+
+def test_parse_stack_compose_resolves_env_file(tmp_path):
+    # immich pattern: compose interpolates ${IMMICH_VERSION:-release} from the
+    # stack's .env — the parsed service image must carry the resolved value so
+    # image drift compares release vs release, not the raw template.
+    cf = tmp_path / "compose.yaml"
+    ef = tmp_path / ".env"
+    cf.write_text(
+        "services:\n"
+        "  immich-server:\n"
+        "    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}\n"
+        "    restart: unless-stopped\n")
+    ef.write_text("IMMICH_VERSION=release\nRESTART=always\n")
+    services, ready, err = D._parse_stack_compose(str(cf), str(ef))
+    assert ready is True and err is None
+    assert services[0]["image"] == "ghcr.io/immich-app/immich-server:release"
+    assert services[0]["restart"] == "unless-stopped"
 
 
 # --------------------------------------------------------------------------- correlate

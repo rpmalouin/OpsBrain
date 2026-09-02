@@ -73,13 +73,15 @@ actions:
     - calibre-web
     - dockscope
     - filerise
-    - firefox
+    # GUI/VNC browsers are NOT auto-restarted: they are interactive and a
+    # restart destroys the in-use session; docker restart policy covers crashes.
+    # (Removed 2026-09: qwen restarted Firefox on high CPU + storm flags every
+    # cycle — each restart re-armed the storm detector.)
     - flacsentry
     - grimmory
     - homelab-hub
     - homepage-editor
     - last30days-runner
-    - librewolf
     - yamtrack
     - youtube-dl-server
   allow_service_restart: []     # systemd units whitelist (shell injection safe)

@@ -109,7 +109,7 @@ def allow_service(unit):
 class Engine:
     """Per-run executor with safety gates."""
 
-    def __init__(self, dry_run, manual_stops=None, protected_stopped=None):
+    def __init__(self, dry_run, manual_stops=None, protected_stopped=None, storming=None):
         self.dry_run = dry_run
         self.cap = int(Cfg.get("actions.restart_limit_per_run", 3))
         self.used = 0
@@ -122,6 +122,9 @@ class Engine:
         # names of protected containers that are CURRENTLY stopped (avoids prune
         # deleting them — docker prune has no per-name exclusion)
         self.protected_stopped = set(protected_stopped or [])
+        # containers currently in a Dockhand restart storm (case-insensitive) —
+        # restarting one of these would feed the very loop being detected
+        self.storming = {str(s).lower() for s in (storming or [])}
 
     def _rec(self, verb, target, reason):
         return {"verb": verb, "target": target, "reason": reason}
@@ -150,6 +153,18 @@ class Engine:
             if str(target).lower() == "ollama":
                 rec["state"] = "blocked"
                 rec["detail"] = "ollama restart forbidden by policy"
+                self.blocked.append(rec)
+                return rec
+            # Storm guard: a container already bouncing (die/destroy/restart
+            # storms detected from dockhand events) must not be restarted again —
+            # each restart re-arms the storm detector and the system would loop
+            # restarting it every cycle (observed: qwen restarted Firefox for
+            # "4 restarts in 30m" + high CPU, which produced 5 more restarts).
+            if str(target).lower() in self.storming:
+                rec["state"] = "blocked"
+                rec["reason"] = "blocked_restart_storm"
+                rec["detail"] = ("container currently in a detected restart storm — "
+                                 "autonomous restart suppressed (would feed the loop)")
                 self.blocked.append(rec)
                 return rec
             if not allow_container(target):
@@ -651,8 +666,13 @@ def main():
     now_containers = coll.get("docker", {}).get("containers", [])
     protected_stopped = {c["name"] for c in now_containers
                          if c.get("manual_stop_protected") and c.get("state") == "exited"}
+    # containers currently flagged in a Dockhand restart storm: never restart
+    # these (storm guard in Engine.dispatch) — restarting feeds the loop.
+    storming = [str(s.get("service") or "") for s in
+                ((coll.get("dockhand", {}) or {}).get("correlate", {}) or {}).get("restart_storms", [])]
 
-    engine = Engine(dry, manual_stops=reg, protected_stopped=protected_stopped)
+    engine = Engine(dry, manual_stops=reg, protected_stopped=protected_stopped,
+                    storming=storming)
 
     if conf >= floor:
         proposed = list(qwen.get("actions", [])) or []

@@ -578,6 +578,30 @@ class TestOllamaGuard:
         assert rec["state"] in ("executed",)  # dry_run False, allow-listed
 
 
+class TestStormGuard:
+    def test_never_restarts_container_in_storm(self, base_config):
+        # Firefox was allow-listed AND storming: qwen's "restart to stabilize"
+        # proposal executed every cycle, which produced more restarts and
+        # re-armed the storm detector — an autonomous restart loop. A container
+        # already flagged in a dockhand restart storm must be left alone.
+        base_config["actions"]["allow_restart_containers"] = ["firefox"]
+        e = A.Engine(False, storming=["Firefox"])   # service name case differs
+        rec = e.dispatch("docker_restart", "firefox", "4 restarts in 30m")
+        assert rec["state"] == "blocked"
+        assert rec["reason"] == "blocked_restart_storm"
+        assert not e.executed
+
+    def test_storm_guard_leaves_other_containers_alone(self, base_config):
+        base_config["actions"]["allow_restart_containers"] = ["homepage", "firefox"]
+        e = A.Engine(False, storming=["firefox"])
+        rec = e.dispatch("docker_restart", "homepage", "memory creep")
+        assert rec["state"] == "executed"
+
+    def test_storm_guard_no_storming_default(self, base_config):
+        e = A.Engine(False)   # no storm context -> normal gates apply
+        assert e.storming == set()
+
+
 # --------------------------------------------------------------------------- source collectors (dozzle / dockpeek)
 class TestSourceCollectors:
     """Probe logic for the log-viewer / dashboard sources. Network is stubbed:

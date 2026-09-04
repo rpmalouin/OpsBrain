@@ -4,7 +4,7 @@
 
 # --- Identity ---
 hostname: dockerVM               # used in reports/notifications
-interval_seconds: 120            # scheduler poll cadence (2 minutes)
+interval_seconds: 3600           # scheduler poll cadence (1 hour — homelab-tuned 2026-09)
 
 # --- Inference (Ollama local) ---
 ollama:
@@ -48,14 +48,14 @@ sources:
     max_age_s: 691200                                   # ~8 days (weekly cron) before marking stale
   docker_socket: /var/run/docker.sock     # primary container-state source
   gpu_query: whitelisted                  # nvidia-smi interprets the query below
-  journalctl_since: "2 min ago"
+  journalctl_since: "60 min ago"   # must cover the inter-cycle gap (3600s cadence)
 
 # --- Action engine ---
 actions:
   dry_run: false                # LIVE: remediation now executes (gated by allow-list/cap)
   restart_limit_per_run: 3      # cap docker/systemctl restarts per cycle
   cpu_restart_threshold_percent: 80.0
-  cpu_restart_minutes: 5        # sustained CPU needed before restart
+  cpu_restart_minutes: 120      # sustained CPU needed before restart (>=2 hourly samples at 3600s cadence; single-sample restart guard)
   mem_creep_threshold_percent: 20.0   # memory growth vs baseline
   gpu_mem_threshold_percent: 90.0
   disk_threshold_percent: 85.0
@@ -105,7 +105,7 @@ federation:
     drift: 0.3
     anomalies: 0.2
     restarts: 0.1
-  poll_interval_cycles: 2        # run federation every N scheduler cycles (4 min at 120s)
+  poll_interval_cycles: 2        # run federation every N scheduler cycles (2 h at 3600s)
 
 # --- Manual Stop Protection (HARD INVARIANT) ---
 # "Manually stopped containers must stay stopped." OpsBrain must NEVER restart
@@ -122,13 +122,16 @@ gpu_drift:
   enabled: true
   vram_creep_mb: 250           # VRAM increase between cycles that flags vram_drift
   vram_max_percent: 90         # VRAM usage % of total that flags vram_overload
-  stuck_pid_cycles: 5          # same GPU PID cycled this many times + util>util_thr -> stuck_process
+  stuck_pid_cycles: 2          # same GPU PID cycled this many times + util>util_thr -> stuck_process (~2 h at 3600s cadence)
   util_threshold: 10            # GPU util % treated as "idle" for power/temp drift; stuck needs util>this
   power_idle_max_watts: 40      # power draw above this while util<thr -> power_drift
   temp_idle_max_c: 55           # temp above this while util<thr -> temp_drift
 
 # --- Daily report ---
 report:
+  # Report for date D fires at the first cycle on/after D's report time; the due
+  # window extends past midnight to the same time on D+1 so coarse cadences
+  # (e.g. hourly polls straddling 23:55) still generate it daily.
   time: "23:55"
   dir: reports
   retention_days: 30

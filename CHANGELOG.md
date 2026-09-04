@@ -43,6 +43,20 @@ milestone).
   no state accumulation) if a stale collector still surfaces it. A genuine stuck job
   sitting next to ollama is still tracked and killed as before. +3 tests (101 total).
 
+### Changed
+- **Scheduler cadence 120s → 3600s (1 h)** — homelab retune (2026-09-04) to free
+  ollama/GPU for interactive chat (Open WebUI shares the same daemon). Rescaled with
+  it: `cpu_restart_minutes: 5 → 120` (a lone hourly sample = 3600s would otherwise
+  trip the 300s restart threshold instantly), `gpu_drift.stuck_pid_cycles: 5 → 2`,
+  `sources.journalctl_since: "2 min ago" → "60 min ago"` (must span the inter-cycle
+  gap). Federation cadence unchanged in cycles → now 2 h.
+- **Daily report trigger is now cadence-independent.** `should_report()` no longer
+  exact-matches the `%H:%M` report minute (which an hourly phase would never hit);
+  a report for date D is due from D's `report.time` until the same time on D+1, so
+  the first cycle at/after 23:55 fires it (post-midnight straddle included). The
+  scheduler passes `--date <day>` explicitly and skips firing when the day's report
+  file already exists (restart-safe). +8 tests (`tests/test_scheduler_cadence.py`).
+
 ## v0.5.0 — 2026-08-27
 
 ### Added

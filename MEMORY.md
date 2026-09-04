@@ -28,8 +28,18 @@ truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.
 - **Restart whitelist** (`actions.allow_restart_containers`, 19 containers incl. homepage,
   dozzle, dockpeek, netdata, caddy). Everything else blocked. Note: blocked rule actions
   do NOT notify — they only show up in `logs/actions_result.json`.
-- **Cadence:** cycle every 120s; federation every 2 cycles (4 min); daily report at
-  `report.time: 23:55` → `reports/YYYY-MM-DD.md`.
+- **Cadence:** cycle every **3600s (1 h)** since 2026-09-04 (was 120s — homelab
+  retune to free ollama/GPU for interactive chat). Cadence-coupled knobs were
+  rescaled with it: `actions.cpu_restart_minutes: 120` (≥2 hourly samples;
+  a single 3600s sample would otherwise trip instantly), `gpu_drift.stuck_pid_cycles: 2`
+  (~2 h stuck detection), `sources.journalctl_since: "60 min ago"` (must cover the
+  inter-cycle gap). Federation every 2 cycles = 2 h. Keep-alive is 5 m, so
+  qwen3:14b now unloads between cycles — each hourly reasoner call pays a model
+  reload, and VRAM is free for other models in between.
+- **Daily report** fires at the first cycle at/after `report.time: 23:55`; the due
+  window extends past midnight to D+1 23:55 (`should_report` in scheduler.py,
+  cadence-independent) → `reports/YYYY-MM-DD.md`. `--date` is passed explicitly;
+  an on-disk guard skips regeneration after daemon restarts.
 - **Model:** `qwen3:14b` (pulled locally). Fallback `qwen2.5-coder:14b`.
 - **Capabilities live in this build:** GPU drift detection, confidence recovery,
   restart-impact + drift-decay metrics, **Manual Stop Protection (HARD INVARIANT)**,

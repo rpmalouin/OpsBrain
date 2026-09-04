@@ -4,8 +4,10 @@ Ops Brain - scheduler (cron-like controller loop).
 Runs the full pipeline
     collector -> reasoner (Qwen3 14B) -> hermes_actions
 every `interval_seconds` (default 120), runs the federation collector+reasoner
-every `poll_interval_cycles` (default 2 cycles = 4 min), and generates the daily
-ops report at the configured report time (default 23:55).
+every `poll_interval_cycles` (default 2 cycles), and generates the daily
+ops report at the first cycle at/after the configured report time
+(default 23:55; the due window extends past midnight, so coarse cadences
+like hourly polls still report daily).
 
 Usage:
     python3 scheduler/scheduler.py --daemon        # run forever (e.g. under systemd)
@@ -16,7 +18,7 @@ import argparse
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -70,11 +72,28 @@ def run_federation(cycle_no=0):
 
 
 def should_report(now):
-    """Return the report date string when today's report_time has just been reached, else None."""
-    hhmm = now.strftime("%H:%M")
-    if hhmm == str(Cfg.get("report.time", "23:55")):
+    """Return the report date string when that date's report is due at `now`.
+
+    A report for date D is due from D's configured report_time until the same
+    wall-clock time on D+1 — i.e. the first cycle at-or-after the report moment
+    fires it. This is cadence-independent: an hourly poll whose phase never
+    lands inside the 23:55 minute still fires (on the next cycle after 23:55,
+    or on the first post-midnight cycle if it straddles). The daemon's
+    `reported` latch plus the on-disk report guard (see main) dedupe, so at
+    most one report is generated per date per daemon run.
+    """
+    hh, mm = (int(x) for x in str(Cfg.get("report.time", "23:55")).split(":"))
+    due = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if now >= due:
         return now.strftime("%Y-%m-%d")
-    return None
+    # Before today's report time: still inside the previous day's due window.
+    return (now - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _report_outpath(day):
+    """Path where the daily report for `day` is written (mirrors report.py)."""
+    repodir = Cfg.resolve("report.dir") or (REPO / "reports")
+    return Path(repodir) / f"{day}.md"
 
 
 def main():
@@ -107,8 +126,11 @@ def main():
         run_federation(cycle_no)
         cycle_no += 1
         day = should_report(datetime.now())
-        if day and day != reported:
-            run_script("report")
+        # File-exists guard: after a daemon restart the latch is empty, but the
+        # due window may still point at an already-generated report — don't
+        # regenerate (or backdate) it.
+        if day and day != reported and not _report_outpath(day).exists():
+            run_script("report", ("--date", day))
             reported = day
         gap = interval - (time.time() - cycle_start)
         if gap > 0:

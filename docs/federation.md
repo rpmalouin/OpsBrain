@@ -22,7 +22,7 @@ federation:
     drift: 0.3
     anomalies: 0.2
     restarts: 0.1
-  poll_interval_cycles: 2      # run federation every N scheduler cycles (4 min at 120s cadence)
+  poll_interval_cycles: 2      # run federation every N scheduler cycles (2 h at 3600s cadence)
 ```
 
 Replace the endpoints with your nodes' actual snapshot URLs, then restart the daemon.

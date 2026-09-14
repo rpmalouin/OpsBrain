@@ -77,7 +77,7 @@ cd /appdata/OpsBrain
 sudo ./deploy/install.sh
 ```
 
-This installs and starts `opsbrain.service` (the 2-min pipeline daemon). Verify:
+This installs and starts `opsbrain.service` (the hourly pipeline daemon). Verify:
 
 ```bash
 systemctl --no-pager status opsbrain
@@ -96,7 +96,7 @@ sudo systemctl enable --now opsbrain-ui
 
 ```bash
 sudo ./deploy/install.sh --no-systemd
-# prints two crontab lines (every 2 min + daily report); add them via `crontab -e`.
+# prints two crontab lines (hourly + daily report); add them via `crontab -e`.
 ```
 
 ## Next steps

@@ -8,6 +8,47 @@ milestone).
 ## [Unreleased]
 
 ### Added
+- **Per-model `think` gate + strict model selection.** `think` is now decided per model
+  instead of globally: `reasoner.fetch_capabilities()` reads `/api/show` and
+  `decide_think()` sends `think` only for models that declare the `thinking` capability
+  (unknown capability keeps the old behaviour and a `400 ... does not support thinking` is
+  retried once without it). `format:json` is still never sent. Model choice is limited to
+  `ollama.model` → `fallback_model` → `alt_models` (`:latest` normalized) — the old
+  "any qwen" fallback is gone, and if none of the named models is installed the stage
+  exits **rc=3** and logs what *is* installed instead of reasoning with a model nobody
+  chose. `logs/reasoner_result.json` now records `thinking` alongside `model`.
+  +18 tests.
+- **GPU visibility (`gpu.available` / `gpu.error`).** `collect_gpu` records why the GPU is
+  unreadable (e.g. `Failed to initialize NVML: Driver/library version mismatch`) instead of
+  writing an empty list that reads like an all-clear, `actions.gpu_unavailable_notice()`
+  notifies once per UTC day when a GPU the baseline knows about has vanished,
+  `actions_result.json` carries `gpu: {available, error}`, and the dashboard exposes both
+  via `/api/gpu`. +7 tests.
+- **Stale-decision guard.** `actions.reasoner_decision_state()` compares the decision's
+  collector snapshot with the current one: on a mismatch the LLM half of the cycle is
+  suppressed (deterministic rules still run), the reason is logged, recorded as
+  `reasoner: {fresh, reason}`, and notified at most once per UTC day. +5 tests.
+- **Resilient model-output parsing.** `reasoner.extract_json()` now recovers the decision
+  object from fenced, prose-wrapped, or repeated model output (balanced-brace candidates,
+  preferring the latest that carries a decision key) — deepseek-r1 needed this as a
+  fallback model. +5 tests.
+- `tests/test_reasoner_models.py` (23) and `tests/test_gpu_visibility.py` (7) — see
+  docs/tests.md. Suite is now **200 tests**.
+
+### Fixed
+- **Reasoner silently dead after an Ollama model swap.** Removing the configured primary
+  model made the old resolver substitute an unrelated non-thinking 7B, which Ollama
+  answered with `HTTP 400 "does not support thinking"`; the scheduler treats a failed
+  reasoner stage as non-fatal, so actions kept replaying the *previous*
+  `reasoner_result.json` for hours (stale LLM warnings/actions re-notified every cycle).
+  Fixed by the per-model `think` gate, strict model selection, and the stale-decision
+  guard above.
+- **Dashboard crash-loop on an unreadable GPU.** `ui/server.py` indexed
+  `collector.gpu.gpus[0]` while building history; with `gpus: []` (host `nvidia-smi`
+  failing) `_update_history` raised `IndexError`, application startup failed, and
+  `opsbrain-ui` restart-looped 65+ times — the dashboard was dark exactly when the GPU
+  was broken. History now tolerates an empty list and `lifespan()` starts degraded
+  (logging `initial snapshot failed`) rather than not at all. +3 tests.
 - **Dockhand desired-state drift ingestion.** New `collector/dockhand_ingest.py` reads
   Dockhand's local SQLite registry (read-only; the HTTP API is session-gated) as a
   **desired-state** source, merges it against actual Docker state, and classifies drift

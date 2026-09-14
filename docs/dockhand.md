@@ -53,7 +53,7 @@ yields `{"up": false, "err": ...}`, never a raised exception):
 5. **`correlate()`** — from Dockhand's archived `container_events` (the saved dockerd event
    stream, ~10k rows) compute **restart storms** (≥3 die/destroy/restart/`recreate` per
    container in the window) and **health flaps** (≥2 healthy↔unhealthy toggles). This is a
-   signal OpsBrain's own 2-min polling cannot see.
+   signal OpsBrain's own hourly polling cannot see.
 6. **`create_context_nodes()`** — collapse drift into compact reasoner-facing nodes
    (`{stack, service, expected, actual, cause, evidence}`) + a one-line `drift_summary` +
    an `attention` level.

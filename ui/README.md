@@ -31,7 +31,10 @@ ui/
    restart count.
 6. **GPU Drift** — VRAM used/total + %, power draw, temperature, drift flags
    (color-coded: `stuck_process`/`vram_overload` = red, others = yellow), stuck-PID +
-   same-pid cycle count.
+   same-pid cycle count. When the host cannot read the GPU at all (`nvidia-smi` fails,
+   e.g. a driver/NVML version mismatch) the collector reports `gpu.available: false` plus
+   the error text and `/api/gpu` exposes both — an unreadable GPU must never look like a
+   healthy one.
 7. **OpsBrain Decisions** — Qwen `warnings[]`, `actions[]`, confidence, **dry-run /
    live** badge.
 8. **Manual Stop Protection** — protected (manually stopped) containers; red

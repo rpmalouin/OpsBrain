@@ -52,6 +52,10 @@ list of log files streamed on change).
 Merged into one doc `{_meta, sources, collector, reasoner, actions, gpu_baseline,
 manual_stops, cluster_snapshot, cluster_reasoner}` and broadcast to every client.
 
+`/api/gpu` returns the GPU block plus `available` and `error` (from
+`collector.gpu.available`/`collector.gpu.error`), so a host that can no longer read the
+card reports that instead of empty metrics.
+
 ## Reverse proxy (recommended for LAN exposure)
 
 Example **Caddy** route (the dashboard has no auth layer — front it with auth if exposed

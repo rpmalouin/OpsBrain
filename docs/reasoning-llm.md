@@ -1,45 +1,95 @@
-# Reasoning LLM — Ollama + Qwen3
+# Reasoning LLM — Ollama + a per-model `think` gate
 
-Ops Brain uses a local LLM for *node-level* reasoning (recommendations + confidence).
-Cluster (federation) reasoning is deterministic.
+Ops Brain uses a local LLM for *node-level* reasoning (warnings, recommendations,
+confidence). Cluster (federation) reasoning is deterministic — no LLM.
 
 ## Install & pull the model
 
 1. Install Ollama: `curl -fsSL https://ollama.com/install.sh | sh`
-2. Pull the reasoning model:
+2. Pull the reasoning model and create the 64k tag:
    ```bash
    ollama pull qwen3:14b
+   # FROM qwen3:14b + PARAMETER num_ctx 65536
+   ollama create qwen3:14b-64k -f /appdata/ollama/qwen3-14b-64k.Modelfile
    ```
-   (fallback model `qwen2.5-coder:14b` is used automatically if `qwen3:14b` is absent.)
-3. Confirm it serves: `curl -s http://localhost:11434/api/tags` lists the model.
+3. Confirm it serves: `curl -s http://localhost:11434/api/tags` lists the model, and
+   `curl -s http://localhost:11434/api/show -d '{"model":"qwen3:14b-64k"}'` reports
+   `"capabilities": [... "thinking" ...]`.
 
-## CRITICAL — Qwen3/Ollama request shape (do not "fix")
+## Model selection — only what the config names
 
-`qwen3:14b` via `/api/generate` **short-circuits to a bare `{}` (2 tokens)** for
-reasonably large prompts unless **both**:
+`reasoner.resolve_model()` → `pick_model()` reads `/api/tags` and takes the first
+installed model from `ollama.model` → `ollama.fallback_model` → `ollama.alt_models`
+(tags compared with a trailing `:latest` ignored). If none of them is installed the stage
+exits **rc=3** and logs every model that *is* installed.
 
-1. you send an explicit `"think": true` (or false) field — set `ollama.think: true` in
-   config, **and**
-2. you **omit** `"format": "json"`.
+There is deliberately **no "pick any model of family X" fallback**. That fallback once
+handed the pipeline an unrelated 7B after the primary model was removed, which is how the
+whole reasoner stage died silently for hours while actions replayed an old decision.
 
-Sending `format:json` alongside `think` makes Qwen3 emit `{}`. The prompt
-(`reasoner/prompt.txt`) already mandates JSON, and `reasoner.extract_json()` recovers the
-object with a balanced-brace regex. This is handled by the code — just never try to "fix"
-the call shape back to `format:json`.
+## CRITICAL — `think` is per model (do not "fix")
+
+A **thinking** model (`qwen3:*`, `deepseek-r1:*`) via `/api/generate` **short-circuits to
+a bare `{}` (2 tokens)** for reasonably large prompts unless you send an explicit
+`"think": true` — *and* you **omit** `"format": "json"` (`format:json` alongside `think`
+makes them emit `{}`).
+
+A **non-thinking** model (e.g. `qwen2.5:*`) is the exact opposite: sending `think` returns
+**HTTP 400 `"… does not support thinking"`**. So the field cannot be a global switch:
+
+- `reasoner.fetch_capabilities()` reads `/api/show` → `capabilities` (thinking models list
+  `"thinking"`).
+- `reasoner.decide_think()` sends `think` only when the model declares it. Capability
+  unknown (older Ollama) ⇒ keep sending it, and a 400 whose body mentions thinking is
+  retried **once** without `think`.
+- `format:json` is never sent. `reasoner/prompt.txt` mandates JSON, and
+  `reasoner.extract_json()` recovers the object from fenced, prose-wrapped, or repeated
+  model output (balanced-brace candidates, preferring the latest one that carries a
+  decision key).
 
 ## Config
 
 ```yaml
 ollama:
-  base_url: http://localhost:11434
-  model: qwen3:14b
-  fallback_model: qwen2.5-coder:14b
-  think: true      # REQUIRED — see quirk above
+  url: http://localhost:11434/api/generate
+  model: qwen3:14b-64k
+  fallback_model: deepseek-r1:7b     # thinking-capable 7B
+  alt_models:                        # last resort; `think` is omitted for these
+    - qwen2.5-7b-128k:latest
+  timeout: 120
+  think: true            # sent only to models that support it — see above
+  options:
+    temperature: 0.2
+    num_ctx: 65536
+    keep_alive: 5m
 ```
 
-Ollama must be reachable at the configured `base_url`. If the model is cold, the first
-cycle can be slow (~10–15s). `num_ctx` is 32768; the reasoner feeds Qwen a **compact risk
-digest** (`summarize_collector`) that only includes anomalies, not the full container
-fleet, to stay within the context window.
+Ollama must be reachable at the configured `url`. `keep_alive: 5m` means the model unloads
+between hourly cycles, so each cycle pays a reload (and VRAM stays free in between).
+`num_ctx` is 65536; the reasoner feeds the model a **compact risk digest**
+(`summarize_collector`) containing anomalies only, not the full container fleet.
 
-The model often keys actions as `"action"` not `"type"`; `sanitize()` accepts both.
+The model often keys actions as `"action"` rather than `"type"`; `sanitize()` accepts both
+and drops any verb outside the allow-list.
+
+## Freshness guard (a stale decision is never replayed)
+
+`logs/reasoner_result.json` records the collector snapshot `timestamp` the decision was
+made for, plus `model` and `thinking`. `hermes_actions.reasoner_decision_state()` compares
+that with the current collector snapshot: on a mismatch the **LLM half of the cycle is
+suppressed** (deterministic rules still run), the reason is logged, `reasoner: {fresh:
+false, reason}` is written to `logs/actions_result.json`, and a `reasoner_stale`
+notification fires at most once per UTC day.
+
+A failed reasoner stage is therefore visible in three places: the stage's rc in
+`logs/opsbrain.log`, `reasoner.fresh` in `actions_result.json`, and the notification queue.
+
+## Verifying a model change end-to-end
+
+```bash
+curl -s localhost:11434/api/tags                       # what is installed
+python3 reasoner/reasoner.py --raw                     # one real call, writes the decision
+python3 -c "import json;print(json.load(open('logs/reasoner_result.json'))['model'])"
+systemctl restart opsbrain.service                     # daemon runs a full cycle immediately
+grep -E "reasoner|cycle complete" logs/opsbrain.log | tail -5
+```

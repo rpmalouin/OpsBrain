@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 132 tests
+python3 -m pytest        # 200 tests
 python3 -m pytest -q     # quiet
 ```
 
@@ -17,6 +17,15 @@ python3 -m pytest -q     # quiet
 - **`sanitize` / `extract_json`** — Qwen output normalization (accepts `type` or `action`
   key, drops unknown verbs, clamps confidence, tolerates null), `gpu_drift` flag filtering.
 - **`collector.evaluate_gpu_drift`** — all five drift flags + baseline bookkeeping.
+- **GPU visibility** (`tests/test_gpu_visibility.py`, 7 tests) — `collect_gpu` records
+  `available`/`error` when `nvidia-smi` is unusable and keeps the baseline identity;
+  `actions.gpu_unavailable_notice` fires once per UTC day, only when a GPU is known.
+- **Model selection + `think` gate** (`tests/test_reasoner_models.py`, 23 tests) —
+  `pick_model`/`resolve_model` (primary → fallback → alt, `:latest` normalization, never an
+  unconfigured substitution), `decide_think` (thinking / non-thinking / unknown
+  capability), `build_body` (think sent, `format` never), `call_ollama` (400-with-thinking →
+  one retry without), `extract_json` resilience, and the stale-decision guard
+  `actions.reasoner_decision_state`.
 - **`actions.gpu_drift_actions`** — stuck_process kill (conf>0.8) vs notify-only
   (conf<=0.8), notify-only for the other four flags, Qwen∪deterministic flag union.
 - **`Engine.dispatch`** — ollama-restart guard, manual-stop gate, cluster verbs.
@@ -44,4 +53,5 @@ Run it after touching `actions.py`, `reasoner.py`, `common/`, `collector/`, or
 `pytest.ini` sets `testpaths = tests` and quiet output. The test files live in `tests/`
 (`test_opsbrain.py`, `test_manual_stops.py`, `test_collector_manual_stops.py`,
 `test_truenas.py`, `test_federation.py`, `test_ui_refinements.py`,
-`test_dockhand_ingest.py`, plus the dashboard tests).
+`test_dockhand_ingest.py`, `test_vault_drift_ingest.py`, `test_scheduler_cadence.py`,
+`test_reasoner_models.py`, `test_gpu_visibility.py`, plus the dashboard tests).

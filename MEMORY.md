@@ -40,7 +40,10 @@ truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.
   window extends past midnight to D+1 23:55 (`should_report` in scheduler.py,
   cadence-independent) → `reports/YYYY-MM-DD.md`. `--date` is passed explicitly;
   an on-disk guard skips regeneration after daemon restarts.
-- **Model:** `qwen3:14b` (pulled locally). Fallback `qwen2.5-coder:14b`.
+- **Model:** `qwen3:14b-64k` primary (local, 64k ctx), `deepseek-r1:7b` fallback,
+  `qwen2.5-7b-128k:latest` alt (`ollama.model` / `fallback_model` / `alt_models`).
+  Only config-named models are ever used, and `think` is set per model — see
+  "Model selection & the `think` gate" below.
 - **Capabilities live in this build:** GPU drift detection, confidence recovery,
   restart-impact + drift-decay metrics, **Manual Stop Protection (HARD INVARIANT)**,
   **Dockhand desired-state drift** (notify-only), **Hatchdoor vault drift**
@@ -83,11 +86,44 @@ object with a balanced-brace regex. `reasoner.py` sets `think` from config
 leave the call shape alone.
 
 Other calibration notes:
-- `num_ctx` is 32768 in config; a 25k-char dump made earlier versions collapse, so the
+- `num_ctx` is 65536 in config; a 25k-char dump made earlier versions collapse, so the
   reasoner feeds Qwen a **compact risk digest** (`summarize_collector`) that only includes
   anomalies (restarting/exited/over-threshold containers, alarms, GPU, disk), not the full
   63-container fleet.
 - The model often keys actions as `"action"` not `"type"`; `sanitize()` accepts both.
+- **`think` is per model, not global** — a *non*-thinking model (qwen2.5:*) answers
+  `think=true` with HTTP 400 `"does not support thinking"`. See the next section.
+
+## Model selection & the `think` gate (Sep 2026 incident)
+
+The operator swapped the ollama model set (removed `qwen3:14b-64k` and
+`qwen2.5-coder:14b`, added `qwen2.5:7b` + `deepseek-r1:7b`). The old resolver fell
+through to "any model with 'qwen' in the name" and handed the pipeline
+`qwen2.5-7b-128k:latest`; `call_ollama` sent `think: true` unconditionally, ollama
+answered **HTTP 400**, and the reasoner exited rc=4 **every hour**. The scheduler treats
+a failed reasoner stage as non-fatal, so actions kept running against the *previous*
+`reasoner_result.json` — stale LLM decisions replayed silently for hours.
+
+Three rules now hold (all in `reasoner.py`):
+1. **Only config-named models**: `resolve_model()` → `pick_model()` matches
+   `ollama.model`, then `fallback_model`, then `alt_models` (tags compared with
+   `:latest` normalized). No wildcard/guess substitution — if none match, the stage
+   fails loudly with rc=3 and logs what is installed.
+2. **`think` per model**: `fetch_capabilities()` reads `/api/show` →
+   `capabilities` (`{"completion","tools","thinking"}`); `decide_think()` sends
+   `think` only for models that declare `thinking`. Capability unknown (older ollama)
+   keeps sending it, and a 400 whose body mentions thinking is retried **once** without
+   `think`. `format:json` is still never sent.
+3. **Freshness guard in actions.py**: `reasoner_decision_state(qwen, coll)` compares the
+   decision's snapshot timestamp with the collector's; a mismatch suppresses the LLM half
+   (deterministic rules still run), logs it, records
+   `reasoner: {fresh, reason}` in `actions_result.json`, and notifies at most once per UTC
+   day (`reasoner_stale`).
+
+`logs/reasoner_result.json` now also carries `thinking: true|false` so the answering
+model's mode is visible at a glance. Recreate the primary tag after a re-pull with
+`/appdata/ollama/qwen3-14b-64k.Modelfile` (`FROM qwen3:14b` + `num_ctx 65536`):
+`docker cp qwen3-14b-64k.Modelfile ollama:/tmp/ && docker exec ollama ollama create qwen3:14b-64k -f /tmp/qwen3-14b-64k.Modelfile`.
 
 ## Naming / data-source gotchas
 
@@ -139,7 +175,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**132 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**200 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -354,6 +390,26 @@ produced by Hermes' weekly cron at `/appdata/OpsBrain/logs/vault_drift_report.js
   configured path, run `python3 collector/collector.py` + `actions.py --dry-run`,
   expect `NOTIFY[vault_drift]` and no remediation.
 
+## GPU visibility (an invisible GPU is not an all-clear)
+
+Sep 2026: the host's nvidia userspace was upgraded to 595.91.07 (Sep 11) without reloading
+the kernel module (still 595.84), so `nvidia-smi` fails with *"Failed to initialize NVML:
+Driver/library version mismatch"* → the collector wrote `gpus: []` → GPU-drift checks
+compared nothing and reported nothing (looked healthy) for days. Ollama's container was
+unaffected (39/41 layers offloaded, ~15 GB in VRAM) — only host-side NVML/smi is broken.
+Fix requires a VM reboot (or unloading/reloading the module with all GPU consumers
+stopped). Meanwhile the pipeline now says so:
+
+- `collector.collect_gpu` records `gpu.available` (bool) + `gpu.error` (the nvidia-smi
+  text); the baseline keeps `gpu_name`/`total_vram` so "it vanished" stays detectable.
+- `actions.gpu_unavailable_notice()` notifies once per UTC day (`gpu_unavailable`) when
+  the GPU is invisible *and* the baseline proves one existed; `actions_result.json`
+  carries `gpu: {available, error}`.
+- `ui/server.py` tolerates an empty gpu list (`gpus[0] if gpus else {}`) and `lifespan()`
+  wraps its first `refresh_snapshot()`: the old `(…).get("gpus", [{}])[0]` raised
+  IndexError and crash-looped `opsbrain-ui` 65+ times (dashboard dark, restart counter
+  climbing). `/api/gpu` exposes `available`/`error`.
+
 ## GPU drift detection
 
 Live in collector → reasoner → actions → report. Config under `gpu_drift:`:
@@ -383,7 +439,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **132 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **200 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag
@@ -397,11 +453,21 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 - `test_federation.py` — `_num`/`_cnt` coercion, reverse_normalize, cluster stability
   score (spec math), node stability (null-conf-online credit, offline=0), ranking,
   recommendations, empty/all-offline, cross-node anomaly + drift correlation.
-- `test_ui_refinements.py` — confidence recovery, drift decay, restart impact.
+- `test_ui_refinements.py` — confidence recovery, drift decay, restart impact, and the
+  empty-gpu history guard (`_update_history` with `gpus: []`).
 - `test_dockhand_ingest.py` (20) — Dockhand DB pull (host path mapping, missing-DB /
   missing-table), compose `normalize`, service-matching (exact/prefix/case-insensitive),
   all 8 drift classifications, restart-storm / health-flap correlate, context nodes cap,
   dashboard snapshot.
+- `test_reasoner_models.py` (23) — model selection (`pick_model`/`resolve_model`: primary
+  → fallback → alt, `:latest` normalization, and *never* an unconfigured substitution),
+  the `think` gate (`decide_think` for thinking / non-thinking / unknown capability),
+  `build_body` (think sent, `format` never sent), `call_ollama` (400-with-thinking →
+  single retry without `think`; unrelated 400 propagates), and the stale-decision guard
+  `actions.reasoner_decision_state`.
+- `test_gpu_visibility.py` (7) — `collect_gpu` surfacing `available`/`error` and keeping the
+  baseline identity, plus `actions.gpu_unavailable_notice` (once per UTC day, silent when
+  the GPU is visible or was never there).
 
 These caught real bugs during development — `sanitize` crashed on null confidence, and
 run/parse edge cases. GPU/kill tests mock `run()`/`notify` so they never touch live

@@ -437,6 +437,14 @@ def collect_gpu(cfg):
                              "util_gpu_percent": _to_float(parts[2]),
                              "temp_c": _to_int(parts[3]),
                              "power_w": _to_float(parts[4])})
+    # An empty gpu list is a REAL state, not an impossible one: a host driver/NVML
+    # version mismatch (userspace upgraded without reloading the kernel module) makes
+    # nvidia-smi fail, and every GPU check then silently reads zeros. Record why, so
+    # the UI and actions can say "GPU invisible" instead of reporting a quiet all-clear.
+    gpu_error = None
+    if not gpus:
+        gpu_error = ((gp.get("err") or gp.get("out") or "").strip()[:300]
+                     or "nvidia-smi reported no GPUs")
     procs = run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory",
                  "--format=csv,noheader,nounits"])
     processes = []
@@ -457,7 +465,8 @@ def collect_gpu(cfg):
     write_json(baseline_path, baseline)
 
     return {"gpus": gpus, "compute_processes": processes,
-            "baseline": baseline, "drift_flags": flags}
+            "baseline": baseline, "drift_flags": flags,
+            "available": bool(gpus), "error": gpu_error}
 
 
 GPU_BASELINE = REPO / "logs" / "gpu_baseline.json"

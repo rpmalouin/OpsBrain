@@ -120,7 +120,10 @@ def _sig_and_load(path):
 # ---------------------------------------------------------------- history + notifications
 def _update_history(collector, reasoner):
     """Append one cycle to the 10-cycle rings."""
-    g = (collector.get("gpu", {}) or {}).get("gpus", [{}])[0]
+    # An empty gpu list is a REAL state (driver/NVML mismatch, GPU past-through lost),
+    # not an impossible one — indexing [0] here crash-looped the whole dashboard.
+    gpus = (collector.get("gpu", {}) or {}).get("gpus") or []
+    g = gpus[0] if gpus else {}
     base = (collector.get("gpu", {}) or {}).get("baseline") or {}
     _hist["gpu_vram"].append(int(g.get("mem_used_mb") or 0))
     _hist["gpu_temp"].append(int(g.get("temp_c") or 0))
@@ -507,7 +510,13 @@ async def watcher_loop():
 @asynccontextmanager
 async def lifespan(app):
     global _observer, _watcher_task
-    refresh_snapshot()
+    try:
+        refresh_snapshot()
+    except Exception as e:
+        # A dashboard must come up even when one metric source is degraded. Sep 2026:
+        # an empty gpu list (host driver/NVML mismatch) raised IndexError here and
+        # crash-looped the unit 65+ times — the UI was dark exactly when it mattered.
+        print(f"initial snapshot failed, starting degraded: {e}")
     # watchdog observer on background thread, bridging to the loop
     try:
         _observer = Observer()
@@ -590,6 +599,9 @@ async def api_gpu():
     col = _snapshot.get("collector") or {}
     return JSONResponse({
         "gpus": col.get("gpu", {}).get("gpus", []),
+        "available": col.get("gpu", {}).get("available",
+                                            bool(col.get("gpu", {}).get("gpus"))),
+        "error": col.get("gpu", {}).get("error"),
         "compute_processes": col.get("gpu", {}).get("compute_processes", []),
         "drift_flags": col.get("gpu", {}).get("drift_flags", []),
         "baseline": col.get("gpu", {}).get("baseline", {}),

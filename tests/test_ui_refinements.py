@@ -43,6 +43,33 @@ def test_recovery_null_safe():
     assert r["detected"] is False
 
 
+# ------------------------------------------------- empty / invisible GPU
+def test_update_history_survives_missing_gpu():
+    """Regression: gpus==[] (driver mismatch, lost passthrough) crash-looped the UI."""
+    _reset()
+    S._update_history({"gpu": {"gpus": [], "baseline": {}}, "docker": {"containers": []}},
+                      {"confidence": 0.5})
+    assert list(S._hist["gpu_vram"]) == [0]
+    assert list(S._hist["gpu_temp"]) == [0]
+    assert list(S._hist["gpu_power"]) == [0.0]
+
+
+def test_update_history_survives_absent_gpu_key():
+    _reset()
+    S._update_history({"docker": {"containers": []}}, {"confidence": None})
+    assert list(S._hist["gpu_vram"]) == [0]
+
+
+def test_update_history_uses_real_gpu_when_present():
+    _reset()
+    S._update_history({"gpu": {"gpus": [{"mem_used_mb": 14046, "temp_c": 39, "power_w": 11.2}],
+                               "baseline": {"last_vram": 14000}},
+                       "docker": {"containers": []}}, {"confidence": 0.85})
+    assert list(S._hist["gpu_vram"]) == [14046]
+    assert list(S._hist["gpu_baseline_vram"]) == [14000]
+    assert list(S._hist["confidence"]) == [0.85]
+
+
 # ------------------------------------------------- drift decay
 def test_drift_decay_ok_when_within_tolerance():
     _reset()

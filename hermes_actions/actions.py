@@ -75,6 +75,27 @@ def save_state(st):
     write_json(STATE_FILE, st)
 
 
+def gpu_unavailable_notice(coll, st):
+    """Notify (at most once per UTC day) when the collector can no longer see the GPU.
+
+    GPU drift detection reads zeros when nvidia-smi fails, which looks exactly like a
+    healthy GPU — the Sep 2026 driver/NVML mismatch kept this pipeline blind for days
+    without a single signal. Only notify if a baseline proves a GPU used to be there.
+    """
+    g = coll.get("gpu", {}) or {}
+    if g.get("available", bool(g.get("gpus"))):
+        return False
+    if not (g.get("baseline") or {}).get("gpu_name"):
+        return False
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    if st.get("gpu_unavailable_notified") == today:
+        return False
+    notify(f"GPU invisible to nvidia-smi ({(g.get('error') or 'no GPUs reported')[:180]}); "
+           f"GPU drift detection is blind", "gpu_unavailable")
+    st["gpu_unavailable_notified"] = today
+    return True
+
+
 def notify(message, category="action"):
     entry = {"ts": time.time(), "category": category, "message": message}
     NOTIF_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -640,6 +661,26 @@ def federation_decisions(engine, rec):
     return results
 
 
+def reasoner_decision_state(qwen, coll):
+    """(usable, why) — is the LLM decision doc produced for THIS collector snapshot?
+
+    The scheduler treats a failed reasoner stage as non-fatal and runs actions anyway,
+    which silently replays the previous decision doc (Sep 2026: an ollama model swap
+    400'd the reasoner while actions kept re-firing a 4-hour-old decision). Reasoning
+    over a stale snapshot is worse than not reasoning: compare snapshots and skip the
+    LLM half loudly instead.
+    """
+    if not qwen:
+        return False, "no reasoner decision on disk"
+    dts = str(qwen.get("timestamp") or "")
+    cts = str(coll.get("timestamp") or "")
+    if not dts:
+        return False, "reasoner decision carries no snapshot timestamp"
+    if cts and dts != cts:
+        return False, f"decision is for snapshot {dts}, collector is {cts}"
+    return True, ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
@@ -654,10 +695,25 @@ def main():
     st = load_state()
     baseline = read_json(Cfg.resolve("paths.baseline_json"), {}) or {}
 
+    reasoner_fresh, reasoner_note = reasoner_decision_state(qwen, coll)
+    if not reasoner_fresh:
+        # Deterministic rules still run on the fresh collector data; only the LLM half
+        # is dropped. Notify at most once per UTC day so a broken reasoner cannot spam.
+        log.warning("reasoner decision unusable -> LLM actions suppressed: %s", reasoner_note)
+        qwen = {"warnings": [], "actions": [], "gpu_drift": [], "summary": "",
+                "confidence": 0.0, "manual_stops": []}
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        if st.get("reasoner_stale_notified") != today:
+            notify(f"Reasoner produced no fresh decision ({reasoner_note}); "
+                   f"LLM-driven actions suppressed this cycle", "reasoner_stale")
+            st["reasoner_stale_notified"] = today
+
     conf = float(qwen.get("confidence", 0.0))
     floor = float(Cfg.get("actions.qwen_confidence_floor", 0.6))
 
     rule_actions, rule_warnings = deterministic_rules(coll, st, baseline)
+    if not reasoner_fresh:
+        rule_warnings.append(f"reasoner stage produced no fresh decision ({reasoner_note})")
 
     # ---- Manual Stop Protection: load the protected set once for this run ----
     reg = load_manual_stops()
@@ -697,6 +753,9 @@ def main():
     # GPU drift handling (gated internally: kill needs conf>0.8; else notify only)
     gpu_events, gpu_remediations = gpu_drift_actions(coll, qwen, conf, engine, st)
 
+    # A GPU the collector cannot see (driver/NVML mismatch) reads as all-clear — say so.
+    gpu_unavailable_notice(coll, st)
+
     # Federation: dispatch cluster-level recommendations (notify-only, gated).
     cluster_recs = federation_decisions(engine, None)
 
@@ -713,6 +772,7 @@ def main():
         "dry_run": dry,
         "confidence": conf,
         "confidence_floor": floor,
+        "reasoner": {"fresh": reasoner_fresh, "reason": reasoner_note},
         "qwen_actions": qwen.get("actions", []),
         "rule_actions": rule_actions,
         "warnings": _merge_warnings(qwen.get("warnings", []), rule_warnings),
@@ -728,6 +788,9 @@ def main():
                             if isinstance(r, dict) and r.get("verb") == "gpu_kill"
                             and r.get("state") == "executed"],
         },
+        "gpu": {"available": (coll.get("gpu", {}) or {}).get("available",
+                                                             bool((coll.get("gpu", {}) or {}).get("gpus"))),
+                "error": (coll.get("gpu", {}) or {}).get("error")},
         "manual_stops": {
             "names": protected_names,
             "count": len(protected_names),

@@ -15,6 +15,8 @@ import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -39,28 +41,169 @@ def load_manual_stop_names():
         return []
 
 
-def resolve_model():
-    """Pick qwen3:14b (requested), else fallback, else any qwen2.5 model."""
-    import urllib.request
+# ------------------------------------------------------------ model / ollama plumbing
+# Model choice and the `think` flag are decided PER MODEL, from ollama itself:
+#   GET /api/tags  -> which configured model is installed
+#   POST /api/show -> capabilities, incl. "thinking"
+# Two hard-won facts this replaces (Sep 2026 model swap):
+#  1. think=true is MANDATORY for thinking models here (without it this ollama
+#     short-circuits a large prompt to a bare {}), and FATAL for non-thinking ones
+#     (HTTP 400 "does not support thinking") — so it cannot be a global switch.
+#  2. A loose "any qwen" resolution silently ran the pipeline on an unconfigured 7B
+#     after the operator removed the primary model. Only config-named models are ever
+#     used now; otherwise the stage fails loudly (rc=3).
+_CAP_CACHE = {}
+_LAST_CALL = {}
+
+
+def _api_base():
+    url = str(Cfg.get("ollama.url", "http://localhost:11434/api/generate"))
+    return url.rsplit("/api/", 1)[0] if "/api/" in url else "http://localhost:11434"
+
+
+def fetch_available_models(timeout=5):
+    """Names installed in ollama (GET /api/tags)."""
+    with urllib.request.urlopen(f"{_api_base()}/api/tags", timeout=timeout) as r:
+        return {m["name"] for m in json.loads(r.read().decode()).get("models", [])}
+
+
+def fetch_capabilities(model, timeout=5):
+    """Capability set from /api/show — {'completion','tools','thinking',...}.
+
+    None means ollama could not tell us (older build, missing model); callers then
+    keep the configured behaviour and rely on the 400 retry rather than guessing.
+    """
+    if model in _CAP_CACHE:
+        return _CAP_CACHE[model]
+    caps = None
     try:
-        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=5) as r:
-            tags = json.loads(r.read().decode())
-        avail = {m["name"] for m in tags.get("models", [])}
-        prim = Cfg.get("ollama.model", "qwen3:14b")
-        fallback = Cfg.get("ollama.fallback_model", "qwen2.5-coder:14b")
-        if prim in avail:
-            return prim
-        if fallback in avail:
-            log.info("primary model %s absent, using fallback %s", prim, fallback)
-            return fallback
-        for m in tags.get("models", []):
-            if "qwen" in m["name"].lower():
-                log.info("using available qwen model %s", m["name"])
-                return m["name"]
-        raise RuntimeError("no usable qwen model in ollama")
+        req = urllib.request.Request(f"{_api_base()}/api/show",
+                                     data=json.dumps({"model": model}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = json.loads(r.read().decode()).get("capabilities")
+        caps = set(raw) if isinstance(raw, list) else None
+    except Exception as e:
+        log.warning("capability probe failed for %s: %s", model, e)
+    _CAP_CACHE[model] = caps
+    return caps
+
+
+def _norm(name):
+    """Normalize a tag for comparison: 'qwen3:14b:latest' == 'qwen3:14b'."""
+    n = str(name or "").strip()
+    return n[:-len(":latest")] if n.endswith(":latest") else n
+
+
+def pick_model(avail, primary, fallback=None, alts=()):
+    """Pick ONLY from models the config names, in priority order; else None.
+
+    Never substitute an unvetted model: reasoning with a model nobody chose is worse
+    than failing the stage where it is visible in the log.
+    """
+    by_norm = {}
+    for name in avail or []:
+        by_norm.setdefault(_norm(name), name)
+    for idx, want in enumerate([primary, fallback, *list(alts or [])]):
+        if not want:
+            continue
+        hit = by_norm.get(_norm(want))
+        if hit:
+            if idx == 1:
+                log.info("primary model %s absent, using configured fallback %s", primary, hit)
+            elif idx > 1:
+                log.info("primary/fallback absent, using configured alt model %s", hit)
+            return hit
+    return None
+
+
+def resolve_model():
+    """Configured primary, else configured fallback/alt, else None (loud failure)."""
+    try:
+        avail = fetch_available_models()
     except Exception as e:
         log.warning("model resolution failed: %s", e)
         return None
+    primary = Cfg.get("ollama.model", "qwen3:14b")
+    fallback = Cfg.get("ollama.fallback_model")
+    alts = Cfg.get("ollama.alt_models", []) or []
+    picked = pick_model(avail, primary, fallback, alts)
+    if not picked:
+        log.error("no configured ollama model installed (primary=%s fallback=%s alts=%s); "
+                  "installed=%s", primary, fallback, list(alts), sorted(avail))
+    return picked
+
+
+def decide_think(model, cfg_think=True, supports_thinking=None):
+    """(send_think, why) — send `think` only when the model can accept it.
+
+    supports_thinking is either None (unknown -> keep sending, the 400 retry protects),
+    a bool, or the capability set returned by /api/show.
+    """
+    if not cfg_think:
+        return False, "think disabled in config"
+    if supports_thinking is None:
+        return True, "thinking capability unknown; sending think (400-retry protects)"
+    if isinstance(supports_thinking, bool):
+        supports = supports_thinking
+    else:
+        supports = "thinking" in set(supports_thinking)
+    if not supports:
+        return False, f"{model} has no 'thinking' capability (ollama would 400)"
+    return True, "thinking model"
+
+
+def build_body(model, prompt, opts, keep, send_think):
+    """Body for /api/generate.
+
+    Never add format=json: alongside think=true it makes this ollama short-circuit to a
+    bare {} (prompt already mandates JSON). See MEMORY.md.
+    """
+    body = {"model": model, "prompt": prompt, "stream": False,
+            "options": opts, "keep_alive": keep}
+    if send_think:
+        body["think"] = True
+    return body
+
+
+def _post_ollama(url, body, timeout):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def call_ollama(prompt, model, supports_thinking=None):
+    url = str(Cfg.get("ollama.url", "http://localhost:11434/api/generate"))
+    opts = dict(Cfg.get("ollama.options", {}) or {})
+    keep = opts.pop("keep_alive", None) or "5m"
+    timeout = int(Cfg.get("ollama.timeout", 120))
+    send_think, why = decide_think(model, bool(Cfg.get("ollama.think", True)),
+                                   supports_thinking)
+    body = build_body(model, prompt, opts, keep, send_think)
+    log.info("ollama %s: think=%s (%s)", model, send_think, why)
+    try:
+        resp = _post_ollama(url, body, timeout)
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode()[:300]
+        except Exception:
+            pass
+        # Belt & braces for ollama builds that don't advertise capabilities: the only
+        # 400 we may safely reinterpret is "does not support thinking".
+        if send_think and e.code == 400 and "think" in detail.lower():
+            log.warning("model %s rejected think=true (%s); retrying without it",
+                        model, detail.strip())
+            body.pop("think", None)
+            send_think = False
+            resp = _post_ollama(url, body, timeout)
+        else:
+            log.error("ollama HTTP %s: %s", e.code, detail.strip())
+            raise
+    _LAST_CALL.clear()
+    _LAST_CALL.update({"model": model, "thinking": send_think, "reason": why})
+    return resp
 
 
 def render_prompt(collector_json):
@@ -69,32 +212,52 @@ def render_prompt(collector_json):
               .replace("{host}", Cfg.get("hostname", "dockerVM"))
 
 
-def call_ollama(prompt, model):
-    import urllib.request
-    url = str(Cfg.get("ollama.url", "http://localhost:11434/api/generate"))
-    opts = dict(Cfg.get("ollama.options", {}) or {})
-    keep = opts.pop("keep_alive", None) or "5m"
-    # NOTE: do NOT pass format=json alongside think=true for qwen3 — it makes the
-    # model short-circuit to an empty {} . The prompt already forces JSON output.
-    body = {"model": model, "prompt": prompt, "stream": False,
-            "options": opts, "keep_alive": keep, "think": bool(Cfg.get("ollama.think", True))}
-    req = urllib.request.Request(url, data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=int(Cfg.get("ollama.timeout", 120))) as r:
-        return json.loads(r.read().decode())
+def _json_objects(s):
+    """Yield balanced-brace substrings of s, in order of appearance."""
+    depth, start = 0, None
+    for i, ch in enumerate(s):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                yield s[start:i + 1]
+
+
+DECISION_KEYS = ("confidence", "summary", "actions", "warnings")
 
 
 def extract_json(raw):
-    s = raw.strip()
-    s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s, flags=re.M)
+    """Recover the decision object from model output.
+
+    Models fence their JSON, wrap it in prose, or emit a couple of objects in a row
+    (deepseek-r1 does all three at different times). Try the widest {...} span first,
+    then balanced objects — preferring one that carries a decision key, latest first.
+    """
+    s = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.M)
     start, end = s.find("{"), s.rfind("}")
     if start == -1 or end <= start:
         raise ValueError("no JSON object in model output")
-    cand = s[start:end + 1]
-    try:
-        return json.loads(cand)
-    except Exception:
-        raise ValueError("could not parse JSON from model output")
+    span = s[start:end + 1]
+    objs = [o for o in _json_objects(s) if o != span]
+
+    def _tries():
+        yield span
+        for o in reversed(objs):
+            if any(k in o for k in DECISION_KEYS):
+                yield o
+        yield from reversed(objs)
+
+    for cand in _tries():
+        try:
+            obj = json.loads(cand)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    raise ValueError("could not parse JSON from model output")
 
 
 def sanitize(obj):
@@ -163,13 +326,15 @@ def main():
 
     model = args.model or os.environ.get("OPSBRAIN_MODEL") or resolve_model()
     if not model:
-        log.error("no ollama model available; cannot reason")
+        log.error("no configured ollama model available; cannot reason "
+                  "(set ollama.model / fallback_model / alt_models in config)")
         return 3
 
+    caps = fetch_capabilities(model)
     prompt = render_prompt(json.dumps(risk_summary, indent=1))
     log.info("invoking %s via ollama (prompt %s chars)", model, len(prompt))
     try:
-        resp = call_ollama(prompt, model)
+        resp = call_ollama(prompt, model, supports_thinking=caps)
     except Exception as e:
         log.error("ollama call failed: %s", e)
         return 4
@@ -200,6 +365,9 @@ def main():
 
     decision["manual_stops"] = sorted(manual_names)
     decision["model"] = model
+    # Which model actually answered and whether `think` was usable — the field that
+    # would have made the Sep 2026 model-swap failure obvious in one glance.
+    decision["thinking"] = bool(_LAST_CALL.get("thinking"))
     decision["timestamp"] = collector.get("timestamp")
     out = Cfg.resolve("paths.reasoner_json")
     write_json(out, decision)

@@ -9,13 +9,20 @@ interval_seconds: 3600           # scheduler poll cadence (1 hour — homelab-tu
 # --- Inference (Ollama local) ---
 ollama:
   url: http://localhost:11434/api/generate
-  model: qwen3:14b                # requested model (Qwen3 14B)
-  fallback_model: qwen2.5-coder:14b   # used if primary unavailable
+  model: qwen3:14b-64k            # requested model (Qwen3 14B, 64k ctx, thinking)
+  fallback_model: deepseek-r1:7b  # thinking-capable 7B, used if primary is absent
+  alt_models:                     # last resort; non-thinking is fine (think omitted)
+    - qwen2.5-7b-128k:latest
+  # ONLY models named above are ever used. The reasoner probes /api/tags (is the model
+  # installed) and /api/show (does it declare the "thinking" capability) and then sends
+  # `think` per model — required for thinking models here, HTTP 400 for the others.
+  # If none of these are installed the stage fails loudly (rc=3) instead of silently
+  # reasoning with an unconfigured model.
   timeout: 120
   think: true                  # Qwen3 thinking mode; MUST be explicit (default path returns {} in this ollama)
   options:                     # passed verbatim to Ollama /api/generate options
     temperature: 0.2
-    num_ctx: 32768
+    num_ctx: 65536
     keep_alive: 5m
 
 # --- Data sources ---

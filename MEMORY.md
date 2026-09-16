@@ -18,7 +18,7 @@ deployment, configuration, reasoning-llm, remediation, dashboard, manual-stop-pr
 truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.md`
 (overview), `ui/README.md` (dashboard), this file (operational memory).
 
-## Current running state (LAST UPDATED: 2026-08-29)
+## Current running state (LAST UPDATED: 2026-09-16)
 
 - **Service:** systemd unit `opsbrain` — ACTIVE, enabled, auto-restarts.
   `ExecStart: python3 /appdata/OpsBrain/scheduler/scheduler.py --daemon`
@@ -40,7 +40,9 @@ truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.
   window extends past midnight to D+1 23:55 (`should_report` in scheduler.py,
   cadence-independent) → `reports/YYYY-MM-DD.md`. `--date` is passed explicitly;
   an on-disk guard skips regeneration after daemon restarts.
-- **Model:** `qwen3:14b-64k` primary (local, 64k ctx), `deepseek-r1:7b` fallback,
+- **Model:** `qwen3:14b-64k` primary (local, thinking; the tag requests 64k but this card's
+  ollama caps the EFFECTIVE window at 40960 — see "`num_ctx` ceiling" below),
+  `deepseek-r1:7b` fallback,
   `qwen2.5-7b-128k:latest` alt (`ollama.model` / `fallback_model` / `alt_models`).
   Only config-named models are ever used, and `think` is set per model — see
   "Model selection & the `think` gate" below.
@@ -86,7 +88,8 @@ object with a balanced-brace regex. `reasoner.py` sets `think` from config
 leave the call shape alone.
 
 Other calibration notes:
-- `num_ctx` is 65536 in config; a 25k-char dump made earlier versions collapse, so the
+- `num_ctx` is **32768** in config (was 65536 until 2026-09-16 — see "`num_ctx` ceiling"
+  below); a 25k-char dump made earlier versions collapse, so the
   reasoner feeds Qwen a **compact risk digest** (`summarize_collector`) that only includes
   anomalies (restarting/exited/over-threshold containers, alarms, GPU, disk), not the full
   63-container fleet.
@@ -124,6 +127,25 @@ Three rules now hold (all in `reasoner.py`):
 model's mode is visible at a glance. Recreate the primary tag after a re-pull with
 `/appdata/ollama/qwen3-14b-64k.Modelfile` (`FROM qwen3:14b` + `num_ctx 65536`):
 `docker cp qwen3-14b-64k.Modelfile ollama:/tmp/ && docker exec ollama ollama create qwen3:14b-64k -f /tmp/qwen3-14b-64k.Modelfile`.
+
+## `num_ctx` ceiling & the 2-day reasoner outage (Sep 2026 incident)
+
+A window that does not fit the card does not error — ollama fits what it can on the GPU, spills
+the rest to CPU, caps the effective window, and serves the request slowly. `num_ctx: 65536` made
+this card (16 GB RTX 5070 Ti) load the model at 40960 with **8% of the layers on CPU: 74 → 4
+tok/s**, so the hourly call exceeded `ollama.timeout` (120 s), the reasoner stage exited **rc=4**,
+and actions replayed the 2026-09-14 decision for ~2 days (`reasoner: {fresh: false}` every cycle).
+
+- Config was cut to **32768** (11 GB, 100% GPU) — the reasoner's digest is ~2.5k tokens, so this
+  is ~13x headroom. Do not raise it without re-measuring.
+- The ollama container also gained `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0`
+  (KV 6.5 GB → 3.4 GB), which removes any spill: 40960 now runs 100% GPU at 66-72 tok/s.
+- **The 40960 window cap does NOT move with the KV type** — ollama sizes it as if the KV were
+  f16, leaving 3.4 GB unused. Only smaller weights raise it, so the `-64k` tag name is
+  aspirational on this card.
+- Diagnose with `docker exec ollama ollama ps`: PROCESSOR must read `100% GPU`, and the CONTEXT
+  column is the truth about the window. Ladder + mechanism: skill `ollama-local-inference`,
+  "VRAM fit".
 
 ## Naming / data-source gotchas
 

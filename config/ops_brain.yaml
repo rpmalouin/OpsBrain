@@ -22,7 +22,13 @@ ollama:
   think: true                  # Qwen3 thinking mode; MUST be explicit (default path returns {} in this ollama)
   options:                     # passed verbatim to Ollama /api/generate options
     temperature: 0.2
-    num_ctx: 65536
+    # num_ctx MUST stay <= 32768: at 40960 the model + KV cache needs ~16 GB, this 16 GB card
+    # cannot hold it, ollama spills ~8% of the layers to CPU and throughput collapses 74 -> 4
+    # tok/s, so the 120s call times out and the reasoner stage dies (rc=4) while actions keep
+    # replaying a stale decision doc. Measured 2026-09-16: 32768 => 14 GB, 100% GPU, 74 tok/s
+    # (1.8 GB VRAM spare); 16384 => 11 GB, 100% GPU. The digest is only ~7.4k chars (~2.5k
+    # tokens), so 32768 is a ~13x headroom ceiling, not a working limit.
+    num_ctx: 32768
     keep_alive: 5m
 
 # --- Data sources ---

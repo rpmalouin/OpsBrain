@@ -10,7 +10,8 @@ hostname: dockerVM              # label used in reports/notifications
 interval_seconds: 3600          # scheduler poll cadence (1 h — see "Cadence" below)
 ollama:
   url: http://localhost:11434/api/generate
-  model: qwen3:14b-64k          # primary (must be installed; 64k ctx, thinking)
+  model: qwen3:14b-64k          # primary (must be installed; thinking — effective window is
+                                # capped at 40960 by VRAM regardless of the 64k tag/request)
   fallback_model: deepseek-r1:7b   # thinking-capable 7B, used only if the primary is absent
   alt_models:                   # last resort; `think` is omitted for non-thinking models
     - qwen2.5-7b-128k:latest
@@ -18,7 +19,7 @@ ollama:
   think: true                   # sent per model — see docs/reasoning-llm.md
   options:
     temperature: 0.2
-    num_ctx: 65536
+    num_ctx: 32768            # ceiling: a window that does not fit spills to CPU (docs/reasoning-llm.md)
     keep_alive: 5m
 ```
 

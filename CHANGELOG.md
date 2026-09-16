@@ -36,6 +36,16 @@ milestone).
   docs/tests.md. Suite is now **200 tests**.
 
 ### Fixed
+- **Hourly reasoner timeout from an over-large context window.** `ollama.options.num_ctx` was
+  65536, which does not fit this 16 GB card: ollama silently capped the window at 40960, spilled
+  ~8% of the layers to CPU and dropped throughput 74 → 4 tok/s, so the call blew past
+  `ollama.timeout` (120 s) and the stage exited **rc=4** — for ~2 days, with actions replayed
+  against the 2026-09-14 decision and only `reasoner: {fresh: false}` marking it. Config is now
+  **32768** (11 GB, `100% GPU`; the digest is ~2.5k tokens, so ~13x headroom). The ollama
+  container also gained `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0`, which removes
+  the spill entirely — note these buy throughput, not window: the 40960 cap is unchanged. The
+  sizing rule, the measurement ladder and the diagnosis (`docker exec ollama ollama ps`) are in
+  docs/reasoning-llm.md.
 - **Reasoner silently dead after an Ollama model swap.** Removing the configured primary
   model made the old resolver substitute an unrelated non-thinking 7B, which Ollama
   answered with `HTTP 400 "does not support thinking"`; the scheduler treats a failed

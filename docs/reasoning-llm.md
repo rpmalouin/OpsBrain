@@ -60,14 +60,28 @@ ollama:
   think: true            # sent only to models that support it — see above
   options:
     temperature: 0.2
-    num_ctx: 65536
+    num_ctx: 32768      # ceiling — see "Why 32768, not 65536" below
     keep_alive: 5m
 ```
 
 Ollama must be reachable at the configured `url`. `keep_alive: 5m` means the model unloads
 between hourly cycles, so each cycle pays a reload (and VRAM stays free in between).
-`num_ctx` is 65536; the reasoner feeds the model a **compact risk digest**
+`num_ctx` is 32768; the reasoner feeds the model a **compact risk digest**
 (`summarize_collector`) containing anomalies only, not the full container fleet.
+
+### Why 32768, not 65536
+
+Weights + KV cache must fit the card. At `num_ctx: 65536` the 16 GB RTX 5070 Ti cannot hold
+qwen3:14b, so ollama does *not* error: it caps the window at 40960, spills ~8% of the layers to
+CPU, and throughput collapses 74 → 4 tok/s. The 120 s `ollama.timeout` then fires every cycle and
+the reasoner stage exits **rc=4** (actions keep running with the LLM half suppressed, so the
+pipeline still looks alive). At 32768 the model loads 11 GB at `100% GPU`.
+
+The digest is ~2.5k tokens, so 32768 is ~13x headroom — sizing is about VRAM, not the prompt.
+Verify any change with `docker exec ollama ollama ps`: PROCESSOR must read `100% GPU`, and the
+CONTEXT column reports the EFFECTIVE window (which is also why a tag named `-64k` can be running
+at 40960). The KV-shrinking container flags (`OLLAMA_FLASH_ATTENTION=1`,
+`OLLAMA_KV_CACHE_TYPE=q8_0`) remove the spill but do **not** raise that cap.
 
 The model often keys actions as `"action"` rather than `"type"`; `sanitize()` accepts both
 and drops any verb outside the allow-list.

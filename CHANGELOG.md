@@ -36,6 +36,18 @@ milestone).
   docs/tests.md. Suite is now **200 tests**.
 
 ### Fixed
+- **Image drift on locally-built services, reported forever.** A compose service with
+  `build:` produces its image on this host, so its tag moves on every rebuild; once the
+  previous image loses its tag `docker ps` reports the bare image ID for the running
+  container, which a tag-shaped expectation can never equal — `hermes-portal` was flagged on
+  every hourly cycle (and by Qwen as "image drift requiring verification") for a container
+  that was simply one build behind its own tag. `merge_with_docker_actual` now skips the
+  image comparison for `build:` services (`sources.dockhand.image_drift_skip_local_builds`,
+  default `true`). The raw compare is still recorded (`image_mismatch_raw`,
+  `image_drift_skipped`) and the skipped pairs are published as
+  `classify.image_local_skipped_items`, which feeds no flag, no `drift_count`, no dashboard
+  `image_mismatch` and no notification; registry images are compared exactly as before.
+  +5 tests.
 - **Hourly reasoner timeout from an over-large context window.** `ollama.options.num_ctx` was
   65536, which does not fit this 16 GB card: ollama silently capped the window at 40960, spilled
   ~8% of the layers to CPU and dropped throughput 74 → 4 tok/s, so the call blew past

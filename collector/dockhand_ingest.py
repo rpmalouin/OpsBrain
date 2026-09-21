@@ -358,6 +358,10 @@ def _service_doc(name, cfg, env=None):
         "env": _env(cfg),
         "labels": _labels(cfg),
         "replicas": _replicas(cfg),
+        # `build:` means this image is produced on THIS host — no registry to
+        # compare a tag against. Consumed by merge_with_docker_actual so local
+        # build churn is not reported as image drift.
+        "build": bool(cfg.get("build")),
         "create": True,
     }
 
@@ -564,13 +568,22 @@ def _find_match(service_name, stack_name, containers):
     return None
 
 
-def merge_with_docker_actual(desired, docker_containers, cap=120):
+def merge_with_docker_actual(desired, docker_containers, cap=120,
+                             skip_local_image_drift=True):
     """Merge desired services with docker container state -> per-service records.
 
     Each record carries expected (compose-derived), actual (matched container,
     or None when unmatched), matched/image_mismatch flags, and best-effort
     missing_volume / missing_network detection (only when the container record
     exposes the data). Output is capped at ``cap`` items.
+
+    ``skip_local_image_drift`` (config
+    ``sources.dockhand.image_drift_skip_local_builds``) suppresses the image
+    comparison for services that declare ``build:``: their tag is rebuilt
+    locally, so the running container legitimately lags it and docker reports
+    the bare image ID once the prior build's image is untagged. The raw
+    comparison is still recorded (``image_mismatch_raw`` /
+    ``image_drift_skipped``) so the fact stays auditable.
     """
     merged = []
     for stack in desired or []:
@@ -580,7 +593,15 @@ def merge_with_docker_actual(desired, docker_containers, cap=120):
             cont = _find_match(svc.get("service"), stack.get("stack"), docker_containers or [])
             exp_img = svc.get("image")
             act_img = cont.get("image") if cont else None
-            mismatch = bool(exp_img and act_img and _norm_image(exp_img) != _norm_image(act_img))
+            raw_mismatch = bool(exp_img and act_img
+                                and _norm_image(exp_img) != _norm_image(act_img))
+            # `build:` services are built here: the tag moves on every rebuild,
+            # and once the previous image loses its tag docker reports the bare
+            # image ID for the container — a value no tag-shaped expectation can
+            # ever equal. Local build churn, not drift, so it is not flagged.
+            local_build = bool(svc.get("build"))
+            local_skipped = bool(raw_mismatch and local_build and skip_local_image_drift)
+            mismatch = bool(raw_mismatch and not local_skipped)
             missing_vol = _missing_volumes(svc, cont)
             missing_net = _missing_networks(svc, cont)
             if cont is None:
@@ -629,6 +650,9 @@ def merge_with_docker_actual(desired, docker_containers, cap=120):
                 "actual": actual,
                 "matched": matched,
                 "image_mismatch": mismatch,
+                "image_mismatch_raw": raw_mismatch,
+                "image_local_build": local_build,
+                "image_drift_skipped": local_skipped,
                 "missing_volume": missing_vol,
                 "missing_network": missing_net,
                 # Desired services are by definition never orphaned; orphaned
@@ -697,6 +721,7 @@ def classify_drift(merged, docker_doc, cfg_thresholds=None):
 
     state, health, replica = [], [], []
     image, volume, network = [], [], []
+    image_local = []
     dependency, policy = [], []
 
     def _add(items, item):
@@ -737,6 +762,15 @@ def classify_drift(merged, docker_doc, cfg_thresholds=None):
                          "expected": expected.get("image"),
                          "actual": (m.get("actual") or {}).get("image"),
                          "cause": f"image mismatch {expected.get('image')} vs {(m.get('actual') or {}).get('image')}"})
+
+        if m.get("image_drift_skipped"):
+            # Informational only: never counted as drift, never notified. Kept
+            # so a locally-built service running behind its rebuilt tag is
+            # still visible in collector.json.
+            _add(image_local, {"stack": m.get("stack"), "service": m.get("service"),
+                               "expected": expected.get("image"),
+                               "actual": (m.get("actual") or {}).get("image"),
+                               "cause": "local build: image is produced on this host"})
 
         if m.get("missing_volume"):
             _add(volume, {"stack": m.get("stack"), "service": m.get("service"),
@@ -784,6 +818,7 @@ def classify_drift(merged, docker_doc, cfg_thresholds=None):
         "health_drift": health_drift, "health_drift_items": health,
         "replica_drift": replica_drift, "replica_drift_items": replica,
         "image_drift": image_drift, "image_drift_items": image,
+        "image_local_skipped_items": image_local,
         "volume_drift": volume_drift, "volume_drift_items": volume,
         "network_drift": network_drift, "network_drift_items": network,
         "dependency_drift": dependency_drift, "dependency_drift_items": dependency,
@@ -1090,6 +1125,9 @@ def collect_dockhand(cfg):
     storm_min = int(sd.get("storm_min_events", 3))
     storm_window = int(sd.get("storm_window_s", 1800))
     flap_min = int(sd.get("flap_min_transitions", 2))
+    # Locally-built services (compose `build:`) are not image-drift candidates:
+    # their tag is produced on this host. See merge_with_docker_actual.
+    skip_local_image = bool(sd.get("image_drift_skip_local_builds", True))
 
     docked = pull_dockhand_state(db_path, compose_root)
     if not docked.get("up"):
@@ -1102,7 +1140,8 @@ def collect_dockhand(cfg):
     netdata = prev.get("netdata") or {}
     dozzle = prev.get("dozzle") or {}
 
-    merged = merge_with_docker_actual(desired["desired_state"], docker_containers)
+    merged = merge_with_docker_actual(desired["desired_state"], docker_containers,
+                                      skip_local_image_drift=skip_local_image)
     classified = classify_drift(merged, prev_docker, {})
     correlated = correlate(docked.get("container_events_recent") or [], netdata, dozzle,
                            window_s=storm_window, storm_min=storm_min, flap_min=flap_min)

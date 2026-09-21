@@ -65,7 +65,7 @@ common/             Cfg, ManualStops registry, JSON/log helpers
 config/             ops_brain.yaml (all settings)
 ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
 deploy/             systemd units + installer
-tests/              200 tests
+tests/              205 tests
 docs/               these implementation docs
 IMPLEMENTATION.md   this entry point
 CHANGELOG.md, README.md, MEMORY.md
@@ -101,7 +101,7 @@ CHANGELOG.md, README.md, MEMORY.md
   deterministic rules still run) and `reasoner: {fresh: false}` is recorded.
 - **An unreadable GPU is not an all-clear** — the collector reports `gpu.available` +
   `gpu.error`, and a missing GPU notifies once per UTC day instead of reporting zeros.
-- **200 tests** cover the decision-critical logic with mocks (docs/tests.md).
+- **205 tests** cover the decision-critical logic with mocks (docs/tests.md).
 
 ## Release history
 

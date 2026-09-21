@@ -48,8 +48,11 @@ yields `{"up": false, "err": ...}`, never a raised exception):
 3. **`merge_with_docker_actual()`** — match each desired service to a running container
    (exact, `<stack>_<service>[_n]`, instance-prefix, then substring — case-insensitive;
    Docker capitalises e.g. `Firefox`). Flags image mismatch + missing volumes/networks.
+   Services declaring **`build:`** are exempt from the image comparison — see "Local builds"
+   below.
 4. **`classify_drift()`** — eight drift flags + capped item lists: `state`, `health`,
-   `replica`, `image`, `volume`, `network`, `dependency`, `policy` (+ derived `compose`).
+   `replica`, `image`, `volume`, `network`, `dependency`, `policy` (+ derived `compose`), plus
+   the informational (never counted) `image_local_skipped_items`.
 5. **`correlate()`** — from Dockhand's archived `container_events` (the saved dockerd event
    stream, ~10k rows) compute **restart storms** (≥3 die/destroy/restart/`recreate` per
    container in the window) and **health flaps** (≥2 healthy↔unhealthy toggles). This is a
@@ -65,6 +68,23 @@ yields `{"up": false, "err": ...}`, never a raised exception):
 `collect_dockhand(cfg)` orchestrates all of it and returns the full multi-level doc
 (normalize / merge / classify / correlate / context_nodes / dashboard), which the collector
 merges into `logs/collector.json` under the **`dockhand`** key.
+
+## Local builds are not image drift
+
+A service that declares **`build:`** gets its image from *this host*, so its tag is expected
+to move on every rebuild — and once the previous build's image loses its tag, `docker ps`
+reports the bare image ID for the running container, a value no tag-shaped expectation can
+ever equal. Comparing the two then fires forever: `hermes-portal` (a `build:` stack) was
+flagged every hourly cycle for a container that was simply one build behind its own tag,
+and the notification pointed at a hash rather than at anything actionable.
+
+`merge_with_docker_actual` therefore skips the image comparison for `build:` services
+(`sources.dockhand.image_drift_skip_local_builds`, default `true` — set `false` to restore
+the old behaviour). Nothing is hidden: the raw compare is recorded per service as
+`image_mismatch_raw` / `image_drift_skipped`, and `classify_drift` publishes the skipped
+pairs as `image_local_skipped_items`, which is **not** drift — it feeds no flag, no
+`drift_count`, no dashboard `image_mismatch`, and no notification. Pulled (registry) images
+are compared exactly as before, so a stack running the wrong registry image still flags.
 
 ## How OpsBrain reacts (NOTIFY-ONLY)
 
@@ -101,5 +121,5 @@ import json
 d = json.load(open("logs/collector.json"))["dockhand"]
 print(d["normalize"], d["classify"]["drift_count"], d["context_nodes"]["drift_summary"])
 PY
-python3 -m pytest tests/test_dockhand_ingest.py -q     # 20 module tests
+python3 -m pytest tests/test_dockhand_ingest.py -q     # 25 module tests
 ```

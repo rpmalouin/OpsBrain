@@ -55,6 +55,7 @@ sources:
     storm_min_events: 3                                # die/destroy/restart in window -> restart storm
     storm_window_s: 1800
     flap_min_transitions: 2                            # healthy<->unhealthy toggles -> health flap
+    image_drift_skip_local_builds: true                # services with `build:` are built HERE: a rebuilt tag (docker reports the bare image id) is churn, not drift
   vault_drift:
     enabled: true
     report_path: /appdata/OpsBrain/logs/vault_drift_report.json  # produced by the Hermes vault-drift cron

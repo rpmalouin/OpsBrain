@@ -82,11 +82,12 @@ def _make_stack(name, services, compose_path=None, env_path=None, environment_id
 
 
 def _svc(name, image=None, restart=None, depends_on=None, ports=None, volumes=None,
-         networks=None, env=None, labels=None, replicas=1):
+         networks=None, env=None, labels=None, replicas=1, build=None):
     return {"service": name, "image": image, "restart": restart,
             "depends_on": depends_on or [], "ports": ports or [],
-            "volumes": volumes or [], "networks": networks or [],
-            "env": env or [], "labels": labels or {}, "replicas": replicas, "create": True}
+            "volumes": volumes or [], "networks": networks or [], "env": env or [],
+            "labels": labels or {}, "replicas": replicas, "build": bool(build),
+            "create": True}
 
 
 def _container(name, state="running", image=None, status=None, restarting=False,
@@ -400,6 +401,78 @@ def test_classify_image_drift():
     assert c["image_drift_items"][0]["expected"] == "nginx:1.25"
     assert c["compose_drift"] is True
     assert c["state_drift"] is False
+
+
+def test_service_doc_records_build_flag(tmp_path):
+    # `build:` may be shorthand ('.') or a mapping ({context: ..}); anything
+    # truthy means the image is produced on this host.
+    assert D._service_doc("a", {"image": "a:local", "build": "."})["build"] is True
+    assert D._service_doc("b", {"image": "b:local", "build": {"context": ".."}})["build"] is True
+    assert D._service_doc("c", {"image": "nginx"})["build"] is False
+
+
+def test_local_build_image_drift_is_not_flagged():
+    """A `build:` service is not image drift (the hermes-portal case).
+
+    After a local rebuild the previous image loses its tag, docker reports the
+    bare image ID for the running container, and a tag-shaped expectation can
+    never equal it — the flag fired every hourly cycle until the container was
+    recreated. Local build churn is now skipped, but stays auditable.
+    """
+    desired = [_make_stack("hermes-portal", [
+        _svc("hermes-portal", image="hermes-portal:local", build=".")])]
+    merged = D.merge_with_docker_actual(
+        desired, [_container("hermes-portal",
+                             image="sha256:b8831660858a67626a425b965f518279c064b9afb542a0692eedc74fe5b8766f")])
+    c = _classify(merged)
+    assert merged[0]["image_local_build"] is True
+    assert merged[0]["image_mismatch_raw"] is True   # the raw compare still ran
+    assert merged[0]["image_drift_skipped"] is True
+    assert merged[0]["image_mismatch"] is False
+    assert c["image_drift"] is False
+    assert c["image_drift_items"] == []
+    assert c["compose_drift"] is False
+    assert c["drift_count"] == 0
+    skipped = c["image_local_skipped_items"]
+    assert skipped[0]["service"] == "hermes-portal"
+    assert skipped[0]["expected"] == "hermes-portal:local"
+    assert skipped[0]["actual"].startswith("sha256:b8831660858a")
+
+
+def test_local_build_image_drift_flagged_when_knob_off():
+    desired = [_make_stack("hermes-portal", [
+        _svc("hermes-portal", image="hermes-portal:local", build=".")])]
+    merged = D.merge_with_docker_actual(
+        desired, [_container("hermes-portal", image="sha256:b8831660858a")],
+        skip_local_image_drift=False)
+    c = _classify(merged)
+    assert merged[0]["image_mismatch"] is True
+    assert merged[0]["image_drift_skipped"] is False
+    assert c["image_drift"] is True
+    assert c["image_local_skipped_items"] == []
+    assert c["drift_count"] == 1
+
+
+def test_pulled_image_drift_still_flagged():
+    # no `build:` -> a registry image, compared as before
+    desired = [_make_stack("immich", [_svc("immich-server", image="valkey/valkey:9")])]
+    merged = D.merge_with_docker_actual(
+        desired, [_container("immich-server", image="redis:7")])
+    c = _classify(merged)
+    assert merged[0]["image_local_build"] is False
+    assert c["image_drift"] is True
+    assert c["image_drift_items"][0]["cause"] == "image mismatch valkey/valkey:9 vs redis:7"
+    assert c["image_local_skipped_items"] == []
+
+
+def test_dashboard_image_mismatch_excludes_local_builds():
+    desired = [_make_stack("hermes-portal", [
+        _svc("hermes-portal", image="hermes-portal:local", build=".")])]
+    merged = D.merge_with_docker_actual(
+        desired, [_container("hermes-portal", image="sha256:b8831660858a")])
+    c = _classify(merged)
+    dash = D.update_dashboard_snapshot({}, merged, c, {}, docker_doc={"containers": []})
+    assert dash["image_mismatch"] == []
 
 
 def test_classify_dependency_and_replicas():

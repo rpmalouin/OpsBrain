@@ -90,6 +90,7 @@ sources:
     storm_min_events: 3
     storm_window_s: 1800
     flap_min_transitions: 2
+    image_drift_skip_local_builds: true   # `build:` services are built here; a rebuilt tag is churn, not drift
   vault_drift:                    # Hatchdoor vault findings — notify-only
     enabled: true
     report_path: /appdata/OpsBrain/logs/vault_drift_report.json   # written by an external cron

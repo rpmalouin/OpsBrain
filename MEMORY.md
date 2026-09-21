@@ -197,7 +197,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**200 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**205 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -366,7 +366,7 @@ selected"` — do NOT switch to it; the DB is the source of truth.
 
 - Config under `sources.dockhand`: `db_path`, `compose_root` (maps Dockhand's in-container
   `/app/data/stacks/` → host `/appdata/A--docker_stacks`), `environment_id` (1 = DockerVM),
-  `storm_min_events`/`storm_window_s`/`flap_min_transitions`.
+  `storm_min_events`/`storm_window_s`/`flap_min_transitions`/`image_drift_skip_local_builds`.
 - Pipeline: pull → normalize (parse each stack's compose → desired services) →
   `merge_with_docker_actual` → `classify_drift` (8 flags: state/health/replica/image/
   volume/network/dependency/policy + derived compose) → `correlate` (restart storms ≥3
@@ -377,6 +377,18 @@ selected"` — do NOT switch to it; the DB is the source of truth.
   `notify_dockhand_drift` (registered notify-only verb) for drift/storms/flaps/orphans. It
   NEVER proposes `docker_restart`, so it can't override Manual-Stop Protection or the
   allow-list. Reasoner digest carries a compact `dockhand` object.
+- **Locally-built services are NOT image drift** (Sep 2026): a service with `build:` gets its
+  image from this host, so the tag moves on every rebuild and — once the previous build's
+  image loses its tag — `docker ps` reports the bare image ID for the container, which no
+  tag-shaped expectation can equal. `hermes-portal` was flagged every hourly cycle that way,
+  for a container that was one build behind its own tag. `merge_with_docker_actual` now skips
+  the image comparison for `build:` services (knob
+  `sources.dockhand.image_drift_skip_local_builds`, default true); the raw compare and the
+  skipped pairs stay in the doc (`image_mismatch_raw`, `image_drift_skipped`,
+  `classify.image_local_skipped_items`) but feed no flag, no `drift_count`, no dashboard
+  `image_mismatch`, no notification. Registry images are compared exactly as before.
+  Note the ingest merges against the **prior** cycle's `collector.json` containers, so a
+  container recreated mid-hour is still described by the previous snapshot for one cycle.
 - Gotchas fixed during build: the matched `actual` record must carry **`labels`** so
   restart-policy inference can see `com.docker.compose.*` (else every compose-managed
   container reads as `no` → policy-drift flood — 11 false positives before this fix);
@@ -384,7 +396,7 @@ selected"` — do NOT switch to it; the DB is the source of truth.
   `restart: no` in compose YAML parses to boolean `False` — normalized back to `"no"`;
   service matching is `<stack>_<service>`-scoped so multi-service stacks don't all match
   the same container.
-- Tests: `tests/test_dockhand_ingest.py` (20) + 6 in `test_opsbrain.py` = 26 new.
+- Tests: `tests/test_dockhand_ingest.py` (25) + 6 in `test_opsbrain.py` = 31 new.
 - Live verify: `python3 collector/collector.py` then inspect `logs/collector.json["dockhand"]`.
 
 ## Hatchdoor vault drift ingestion
@@ -461,7 +473,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **200 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **205 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag
@@ -477,7 +489,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
   recommendations, empty/all-offline, cross-node anomaly + drift correlation.
 - `test_ui_refinements.py` — confidence recovery, drift decay, restart impact, and the
   empty-gpu history guard (`_update_history` with `gpus: []`).
-- `test_dockhand_ingest.py` (20) — Dockhand DB pull (host path mapping, missing-DB /
+- `test_dockhand_ingest.py` (25) — Dockhand DB pull (host path mapping, missing-DB /
   missing-table), compose `normalize`, service-matching (exact/prefix/case-insensitive),
   all 8 drift classifications, restart-storm / health-flap correlate, context nodes cap,
   dashboard snapshot.

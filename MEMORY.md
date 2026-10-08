@@ -197,7 +197,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**205 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**217 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -395,7 +395,15 @@ selected"` — do NOT switch to it; the DB is the source of truth.
   matching and orphan detection are **case-insensitive** (Docker capitalises `Firefox`);
   `restart: no` in compose YAML parses to boolean `False` — normalized back to `"no"`;
   service matching is `<stack>_<service>`-scoped so multi-service stacks don't all match
-  the same container.
+  the same container. (Oct 2026) **Every scalar that gets compared must be env-resolved:**
+  `restart: ${RESTART}` used to reach `classify_drift` as a literal template and, against a
+  state-inferred actual (`restarting` ⇒ `always`), emitted `restart policy ${RESTART} vs
+  always` every hour beside a genuine restart storm (immich, 2026-10-08 — 6 such notices).
+  `_service_doc` now resolves `restart`/`ports`/`volumes`/`networks` like `image`, an
+  expected value that still contains `${` makes NO policy claim, and the collector carries
+  the real `HostConfig.RestartPolicy.Name` (`_inspect_state` → `restart_policy`) which
+  `_actual_restart_policy` prefers over inference (`None` = unknown ⇒ no claim, `""` =
+  docker reports no policy ⇒ `"no"`).
 - Tests: `tests/test_dockhand_ingest.py` (25) + 6 in `test_opsbrain.py` = 31 new.
 - Live verify: `python3 collector/collector.py` then inspect `logs/collector.json["dockhand"]`.
 
@@ -473,7 +481,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **205 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **217 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

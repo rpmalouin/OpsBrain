@@ -91,11 +91,13 @@ def _svc(name, image=None, restart=None, depends_on=None, ports=None, volumes=No
 
 
 def _container(name, state="running", image=None, status=None, restarting=False,
-               restart_count=0, mounts=None, networks=None, labels=""):
+               restart_count=0, mounts=None, networks=None, labels="",
+               restart_policy=None):
     return {"name": name, "state": state, "image": image,
             "status": status or (f"Up {name}" if state == "running" else state),
             "restarting": restarting, "restart_count": restart_count,
-            "labels": labels, "mounts": mounts, "networks": networks}
+            "labels": labels, "mounts": mounts, "networks": networks,
+            "restart_policy": restart_policy}
 
 
 # --------------------------------------------------------------------------- pull_dockhand_state
@@ -511,21 +513,50 @@ def test_resolve_compose_env():
 
 
 def test_parse_stack_compose_resolves_env_file(tmp_path):
-    # immich pattern: compose interpolates ${IMMICH_VERSION:-release} from the
-    # stack's .env — the parsed service image must carry the resolved value so
-    # image drift compares release vs release, not the raw template.
+    # immich pattern: compose interpolates BOTH ${IMMICH_VERSION:-release} and
+    # ${RESTART} from the stack's .env. Every compared scalar must carry the
+    # resolved value — an unresolved `restart: ${RESTART}` reaches
+    # classify_drift as a literal and used to invent a policy mismatch.
     cf = tmp_path / "compose.yaml"
     ef = tmp_path / ".env"
     cf.write_text(
         "services:\n"
         "  immich-server:\n"
         "    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}\n"
-        "    restart: unless-stopped\n")
-    ef.write_text("IMMICH_VERSION=release\nRESTART=always\n")
+        "    restart: ${RESTART}\n")
+    ef.write_text("IMMICH_VERSION=release\nRESTART=unless-stopped\n")
     services, ready, err = D._parse_stack_compose(str(cf), str(ef))
     assert ready is True and err is None
     assert services[0]["image"] == "ghcr.io/immich-app/immich-server:release"
     assert services[0]["restart"] == "unless-stopped"
+
+
+def test_parse_stack_compose_restart_no_from_env_normalizes(tmp_path):
+    # a .env value of `no` is normalised the same way the literal YAML is.
+    cf = tmp_path / "compose.yaml"
+    ef = tmp_path / ".env"
+    cf.write_text("services:\n  web:\n    restart: ${RESTART:-no}\n")
+    ef.write_text("RESTART=no\n")
+    services, ready, err = D._parse_stack_compose(str(cf), str(ef))
+    assert ready is True and err is None
+    assert services[0]["restart"] == "no"
+
+
+def test_parse_stack_compose_env_driven_volume_and_port_resolve(tmp_path):
+    cf = tmp_path / "compose.yaml"
+    ef = tmp_path / ".env"
+    cf.write_text(
+        "services:\n"
+        "  web:\n"
+        "    ports:\n"
+        "      - \"${PORT}:8080\"\n"
+        "    volumes:\n"
+        "      - ${DATA_DIR}:/data\n")
+    ef.write_text("PORT=8123\nDATA_DIR=/appdata/web/data\n")
+    services, ready, err = D._parse_stack_compose(str(cf), str(ef))
+    assert ready is True and err is None
+    assert services[0]["ports"] == ["8080"]        # host side dropped by design
+    assert services[0]["volumes"] == ["/data"]     # container side is what is compared
 
 
 # --------------------------------------------------------------------------- correlate
@@ -656,3 +687,87 @@ def test_update_dashboard_snapshot_lists():
 def test_collect_dockhand_disabled(monkeypatch):
     monkeypatch.setattr(Cfg, "data", {"sources": {"dockhand": {"enabled": False}}})
     assert D.collect_dockhand(Cfg) == {"enabled": False}
+
+
+# --------------------------------------------------------------------------- restart-policy drift
+# Regression, 2026-10-08 (immich): the compose says `restart: ${RESTART}`. The
+# ingest resolved ${VAR} for `image` but handed `restart` through raw, so the
+# expected policy was the literal "${RESTART}"; `_actual_restart_policy` then
+# *inferred* "always" from `state == restarting` and every flapping container
+# emitted `restart policy ${RESTART} vs always` — hourly, beside a genuine
+# restart storm. Three fixes are locked here: the template resolves from the
+# stack .env, an unresolved template makes no policy claim, and the real
+# HostConfig policy carried by the collector is preferred over inference.
+
+
+def _policy_merged(restart, restart_policy, state="restarting"):
+    """One immich-shaped stack merged against a container with a real policy."""
+    desired = [_make_stack("immich", [_svc("immich-server", image="immich:release",
+                                           restart=restart)])]
+    cont = _container("immich_server", state=state, image="immich:release",
+                      status=("Restarting (1) 3 seconds ago" if state == "restarting"
+                              else "Up 2 minutes"),
+                      restarting=(state == "restarting"), restart_count=29,
+                      labels="com.docker.compose.project=immich,",
+                      restart_policy=restart_policy)
+    return D.merge_with_docker_actual(desired, [cont])
+
+
+def test_policy_merged_fixture_matches_the_immich_pair():
+    m = _policy_merged("unless-stopped", "unless-stopped")[0]
+    assert m["matched"] is True
+    assert m["actual"]["restart_policy"] == "unless-stopped"
+
+
+def test_unresolved_restart_template_makes_no_policy_claim():
+    c = _classify(_policy_merged("${RESTART}", None))
+    assert c["policy_drift"] is False
+    assert c["policy_drift_items"] == []
+    # the genuine signal is still reported: the container is not running
+    assert c["state_drift"] is True
+    assert c["state_drift_items"][0]["cause"] == "not running (restarting)"
+    assert c["drift_count"] == 1
+
+
+def test_policy_drift_clean_when_the_real_policy_matches():
+    # immich after the fix: compose ${RESTART} -> unless-stopped, container
+    # reports unless-stopped -> same family, no claim even while restarting.
+    c = _classify(_policy_merged("unless-stopped", "unless-stopped"))
+    assert c["policy_drift"] is False
+
+
+def test_policy_drift_clean_for_old_records_without_a_real_policy():
+    # a collector.json written before the policy field existed: inference says
+    # "always", expected is unless-stopped -> same family -> still no claim.
+    c = _classify(_policy_merged("unless-stopped", None))
+    assert c["policy_drift"] is False
+
+
+def test_policy_drift_flags_a_real_mismatch():
+    # `restart: no` in compose but the container restarts anyway IS drift.
+    c = _classify(_policy_merged("no", "always"))
+    assert c["policy_drift"] is True
+    assert c["policy_drift_items"][0]["cause"] == "restart policy no vs always"
+
+
+def test_policy_drift_flags_uncapped_policy_against_a_capped_one():
+    c = _classify(_policy_merged("no", "on-failure:5"))
+    assert c["policy_drift"] is True
+    assert c["policy_drift_items"][0]["cause"] == "restart policy no vs on-failure:5"
+
+
+def test_actual_restart_policy_prefers_the_inspect_value():
+    # the real policy wins over evidence-based inference
+    assert D._actual_restart_policy(
+        {"state": "restarting", "restart_policy": "unless-stopped",
+         "restart_count": 29, "labels": ""}) == "unless-stopped"
+    # docker reporting NO policy is "no", not "unknown"
+    assert D._actual_restart_policy(
+        {"state": "running", "restart_policy": "", "restart_count": 0,
+         "labels": ""}) == "no"
+    # no real value (older record) -> fall back to inference
+    assert D._actual_restart_policy(
+        {"state": "restarting", "restart_count": 29, "labels": ""}) == "always"
+    assert D._actual_restart_policy(
+        {"state": "running", "restart_count": 0,
+         "labels": "com.docker.compose.project=x,"}) is None

@@ -86,3 +86,42 @@ def test_rearm_on_rerun_clears(tmp_path):
     containers2 = [_cont("web", "running", cid="c1")]
     meta2 = C.update_manual_stops(containers2, Cfg)
     assert "web" not in meta2["names"]
+
+
+# --------------------------------------------------------------------------- restart policy from inspect
+# The Dockhand ingest compares restart policy; it used to have to infer one from
+# container state because the collector record carried no policy. Carry the real
+# HostConfig value instead (immich, 2026-10-08: `restart policy ${RESTART} vs always`).
+
+
+class _FakeInspect:
+    returncode = 0
+    stdout = ("abc123|1|false|2026-10-08T13:00:00Z|2026-10-08T14:00:00Z|29"
+              "|unless-stopped\n")
+
+
+def _stub_inspect(monkeypatch):
+    monkeypatch.setattr(C.subprocess, "run", lambda *a, **k: _FakeInspect())
+
+
+def test_inspect_state_carries_the_real_restart_policy(monkeypatch):
+    _stub_inspect(monkeypatch)
+    st = C._inspect_state("immich_server")
+    assert st["restart_policy"] == "unless-stopped"
+    assert st["restart_count"] == 29
+    assert st["exit_code"] == 1
+
+
+def test_inspect_state_handles_a_container_with_no_policy(monkeypatch):
+    class R:
+        returncode = 0
+        stdout = "abc|0|false|t|t|0|\n"
+    monkeypatch.setattr(C.subprocess, "run", lambda *a, **k: R())
+    assert C._inspect_state("x")["restart_policy"] == ""
+
+
+def test_inspect_state_policy_is_none_when_inspect_fails(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("no docker")
+    monkeypatch.setattr(C.subprocess, "run", boom)
+    assert C._inspect_state("x")["restart_policy"] is None

@@ -36,6 +36,20 @@ milestone).
   docs/tests.md. Suite is now **200 tests**.
 
 ### Fixed
+- **Restart-policy drift invented from an unresolved compose template.** `_service_doc`
+  interpolated `${VAR}` for `image` but handed `restart` through raw, so a service whose
+  compose says `restart: ${RESTART}` reached `classify_drift` as the literal `${RESTART}`;
+  the actual side then *inferred* a policy from container state (anything `restarting` read
+  as `always`), so a flapping container emitted `restart policy ${RESTART} vs always` every
+  cycle beside its genuine state drift (immich, 2026-10-08 — hourly for 5 h during a real
+  restart storm). Three changes: `_service_doc` resolves `restart`, `ports`, `volumes` and
+  `networks` through `_resolve_compose_env` exactly like `image`; `classify_drift` makes
+  **no** policy claim while the expected value still contains `${` (an unresolvable template
+  is not a policy); and the collector now carries each container's real
+  `HostConfig.RestartPolicy.Name` (`collector._inspect_state` → `restart_policy`), which
+  `_actual_restart_policy` prefers over its evidence-based fallback. Verified against the
+  live Dockhand DB: 53 stacks / 69 services parse with zero unresolved templates, and
+  immich-server's expected policy reads `unless-stopped` rather than `${RESTART}`. +12 tests.
 - **Image drift on locally-built services, reported forever.** A compose service with
   `build:` produces its image on this host, so its tag moves on every rebuild; once the
   previous image loses its tag `docker ps` reports the bare image ID for the running

@@ -341,20 +341,28 @@ def _compose_services(doc, env=None):
 
 def _service_doc(name, cfg, env=None):
     """Derive one desired-service record from a compose service config."""
-    # yaml.safe_load parses `restart: no` as the boolean False; normalize to "no".
-    restart = cfg.get("restart")
+    env = env or {}
+    # Compose interpolates ${VAR} across the WHOLE file, so every scalar that is
+    # compared or reported downstream must be resolved here. An unresolved
+    # `restart: ${RESTART}` compared against a real policy is a guaranteed
+    # policy-drift false positive (immich, 2026-10-08: `restart policy
+    # ${RESTART} vs always` every hour beside a genuine restart storm), and an
+    # unresolved volume/port target surfaces as a phantom missing-volume item.
+    # yaml.safe_load parses `restart: no` as the boolean False; normalize to "no"
+    # AFTER interpolation so a .env value of `no` normalizes too.
+    restart = _resolve_compose_env(cfg.get("restart"), env)
     if restart is False:
         restart = "no"
     elif isinstance(restart, str) and restart.strip().lower() == "no":
         restart = "no"
     return {
         "service": name,
-        "image": _resolve_compose_env(cfg.get("image"), env or {}),
+        "image": _resolve_compose_env(cfg.get("image"), env),
         "restart": restart,
         "depends_on": _depends_on(cfg),
-        "ports": _ports(cfg),
-        "volumes": _volumes(cfg),
-        "networks": _networks(cfg),
+        "ports": [_resolve_compose_env(p, env) for p in _ports(cfg)],
+        "volumes": [_resolve_compose_env(v, env) for v in _volumes(cfg)],
+        "networks": [_resolve_compose_env(n, env) for n in _networks(cfg)],
         "env": _env(cfg),
         "labels": _labels(cfg),
         "replicas": _replicas(cfg),
@@ -628,6 +636,9 @@ def merge_with_docker_actual(desired, docker_containers, cap=120,
                     "restarting": bool(cont.get("restarting")),
                     "running": running,
                     "status": cont.get("status"),
+                    # the real policy from docker inspect; None on records written
+                    # by an older collector -> the ingest falls back to inference
+                    "restart_policy": cont.get("restart_policy"),
                     # labels (raw docker compose label string) so restart-policy
                     # inference can see com.docker.compose.* markers
                     "labels": cont.get("labels") or "",
@@ -792,10 +803,17 @@ def classify_drift(merged, docker_doc, cfg_thresholds=None):
                                   "cause": f"depends_on {dep} not running"})
 
         if m.get("matched") and m.get("actual"):
-            actual_policy = _actual_restart_policy(m["actual"])
-            if actual_policy is not None and _policy_family(expected.get("restart")) != _policy_family(actual_policy):
-                _add(policy, {"stack": m.get("stack"), "service": m.get("service"),
-                              "cause": f"restart policy {expected.get('restart') or 'no'} vs {actual_policy}"})
+            expected_policy = str(expected.get("restart") or "")
+            # An unresolved `${VAR}` is not a policy this host can ever run:
+            # comparing it invents drift. Withhold the claim instead (the state
+            # drift for the same container is still reported, which is the real
+            # signal), so a missing .env or a parse gap can never masquerade as a
+            # restart-policy mismatch.
+            if "${" not in expected_policy:
+                actual_policy = _actual_restart_policy(m["actual"])
+                if actual_policy is not None and _policy_family(expected_policy) != _policy_family(actual_policy):
+                    _add(policy, {"stack": m.get("stack"), "service": m.get("service"),
+                                  "cause": f"restart policy {expected_policy or 'no'} vs {actual_policy}"})
 
         replicas = int(expected.get("replicas") or 1)
         exp_img = expected.get("image")
@@ -830,13 +848,18 @@ def classify_drift(merged, docker_doc, cfg_thresholds=None):
 
 
 def _actual_restart_policy(cont):
-    """Best-effort actual restart policy from a docker.containers record.
+    """Actual restart policy from a docker.containers record.
 
-    The collector record does not carry HostConfig.RestartPolicy, so this
-    infers from observable evidence only: a 'restarting' state proves an active
-    policy; a nonzero restart_count proves restarts have been attempted.
-    Compose-managed containers without such evidence return None (unknown, so
-    no policy claim is made)."""
+    Prefers the REAL policy the collector reads from
+    `HostConfig.RestartPolicy` (`restart_policy`). Only when that is absent —
+    an older `collector.json` written by a pre-Oct-2026 collector, or a failed
+    inspect — does it fall back to observable evidence: a 'restarting' state
+    proves SOME keep-policy is active, and a nonzero restart_count proves
+    restarts have been attempted. ``[]``/'' means docker reports no policy at
+    all; None means unknown, so no claim is made."""
+    real = cont.get("restart_policy")
+    if real is not None:
+        return str(real).strip().lower() or "no"
     if cont.get("state") == "restarting":
         return "always"
     rc = int(cont.get("restart_count") or 0)

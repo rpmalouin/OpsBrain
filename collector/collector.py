@@ -257,6 +257,7 @@ def collect_docker_socket(cfg):
                     "oom_killed": inst.get("oom_killed"),
                     "finished_at": inst.get("finished_at"),
                     "started_at": inst.get("started_at"),
+                    "restart_policy": inst.get("restart_policy"),
                 })
             except Exception:
                 continue
@@ -306,13 +307,15 @@ def collect_docker_socket(cfg):
 
 def _inspect_state(name):
     """Get a container's exit fingerprint via docker inspect.
-    Returns {id, exit_code, oom_killed, finished_at, started_at, restart_count}."""
-    fmt = "{{.Id}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{.State.FinishedAt}}|{{.State.StartedAt}}|{{.RestartCount}}"
+    Returns {id, exit_code, oom_killed, finished_at, started_at, restart_count,
+    restart_policy}."""
+    fmt = ("{{.Id}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{.State.FinishedAt}}"
+           "|{{.State.StartedAt}}|{{.RestartCount}}|{{.HostConfig.RestartPolicy.Name}}")
     try:
         r = subprocess.run(["docker", "inspect", name, "--format", fmt],
                            capture_output=True, text=True, timeout=6)
         parts = r.stdout.strip().split("|")
-        while len(parts) < 6:
+        while len(parts) < 7:
             parts.append("")
         return {
             "id": parts[0],
@@ -321,10 +324,15 @@ def _inspect_state(name):
             "finished_at": parts[3],
             "started_at": parts[4],
             "restart_count": _to_int(parts[5]),
+            # Real HostConfig policy ("unless-stopped", "always", "on-failure:N",
+            # or "" when the container has none). Carried so the Dockhand ingest
+            # compares a real policy instead of inferring one from state.
+            "restart_policy": parts[6].strip(),
         }
     except Exception:
         return {"id": "", "exit_code": None, "oom_killed": False,
-                "finished_at": None, "started_at": None, "restart_count": 0}
+                "finished_at": None, "started_at": None, "restart_count": 0,
+                "restart_policy": None}
 
 
 def _restart_count(name):

@@ -458,6 +458,20 @@ def summarize_collector(c):
         }
     else:
         out["vault_drift"] = {"up": bool(isinstance(vd, dict) and vd.get("up"))}
+    # GPU driver reconcile: the apt hook's log + the LIVE module comparison. Carries the
+    # state even when the log is unreadable, because a live mismatch is the actionable half.
+    gr = c.get("gpu_reconcile", {})
+    grc = (gr.get("context_nodes") or {}) if isinstance(gr, dict) else {}
+    out["gpu_reconcile"] = {
+        "up": bool(isinstance(gr, dict) and gr.get("up")),
+        "state": grc.get("state"),
+        "attention": grc.get("attention"),
+        "loaded": grc.get("loaded"),
+        "disk": grc.get("disk"),
+        "last_event": grc.get("last_event_kind"),
+        "holders": (grc.get("holders") or [])[:4],
+        "remedy": (grc.get("remedy") or "")[:200],
+    }
     vm = c.get("vm", {})
     out["vm"] = {"uptime_load": vm.get("uptime_load"), "disk_used_percent": vm.get("disk_used_percent"),
                  "memory": (vm.get("memory") or "")[:160],

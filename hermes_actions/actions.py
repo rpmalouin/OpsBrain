@@ -311,6 +311,13 @@ class Engine:
             rec["detail"] = target
             self.executed.append(rec)
             return rec
+        # ---- GPU driver/library reconcile (NOTIFY ONLY, never touches the driver) ----
+        if verb == "notify_gpu_reconcile":
+            notify(str(target) or str(reason) or "GPU driver reconcile", "gpu_reconcile")
+            rec["state"] = "notified"
+            rec["detail"] = target
+            self.executed.append(rec)
+            return rec
         rec["state"] = "blocked"
         rec["detail"] = f"unknown verb {verb}"
         self.blocked.append(rec)
@@ -637,6 +644,33 @@ def vault_drift_actions(coll, engine):
     return results
 
 
+def gpu_reconcile_actions(coll, engine, st):
+    """Surface a LIVE GPU driver/library mismatch as NOTIFY-ONLY.
+
+    The host's apt hook (`nvidia-module-reconcile`) repairs the loaded module after a
+    driver upgrade UNLESS a GPU container holds the device — it then logs the mismatch
+    plus the remedy and DEFERS, which is the state a human must act on. This overlaps
+    `gpu_unavailable_notice` deliberately: that one names the nvidia-smi error, this one
+    names the versions, the holder, the hook's verdict and the exact command. Guarded to
+    at most one notification per UTC day. NEVER proposes a restart/kill/prune — a driver
+    mismatch is fixed by stopping GPU containers and reloading, not by OpsBrain.
+    """
+    gr = coll.get("gpu_reconcile", {}) if isinstance(coll, dict) else {}
+    if not isinstance(gr, dict):
+        return []
+    ctx = gr.get("context_nodes", {}) or {}
+    if ctx.get("attention") != "actionable":
+        return []
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    if st.get("gpu_reconcile_notified") == today:
+        return []
+    summary = (gr.get("dashboard", {}) or {}).get("summary") or "GPU driver mismatch"
+    results = [engine.dispatch("notify_gpu_reconcile", ctx.get("state"), summary)]
+    notify(summary, "gpu_reconcile")
+    st["gpu_reconcile_notified"] = today
+    return results
+
+
 def federation_decisions(engine, rec):
     """Dispatch cluster-level recommendations (NOTIFY-ONLY: never cross-node
     remediation). Loads cluster_reasoner_result.json and enqueues every
@@ -756,6 +790,9 @@ def main():
     # A GPU the collector cannot see (driver/NVML mismatch) reads as all-clear — say so.
     gpu_unavailable_notice(coll, st)
 
+    # GPU driver/library mismatch the apt hook could not repair on its own (notify-only).
+    gpu_reconcile_recs = gpu_reconcile_actions(coll, engine, st)
+
     # Federation: dispatch cluster-level recommendations (notify-only, gated).
     cluster_recs = federation_decisions(engine, None)
 
@@ -808,6 +845,11 @@ def main():
             "enabled": bool((coll.get("vault_drift", {}) or {}).get("up")),
             "notifications": vault_drift_recs,
             "drift_count": (coll.get("vault_drift", {}) or {}).get("context_nodes", {}).get("drift_count", 0),
+        },
+        "gpu_reconcile": {
+            "enabled": bool((coll.get("gpu_reconcile", {}) or {}).get("up")),
+            "state": ((coll.get("gpu_reconcile", {}) or {}).get("context_nodes", {}) or {}).get("state"),
+            "notifications": gpu_reconcile_recs,
         },
     })
     log.info("actions: executed=%d skipped=%d blocked=%d gpu_events=%d manual_stop_blocks=%d (dry_run=%s)",

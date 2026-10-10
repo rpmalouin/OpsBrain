@@ -239,6 +239,16 @@ function renderGpuPanel(col) {
   b += `</div>`;
   const flags = col?.gpu?.drift_flags || [];
   b += `<div class="mt-2 text-xs text-slate-400">Drift: ${flags.length ? flags.map(f => chip(f, driftTone(f))).join(" ") : chip("no drift", "ok")}</div>`;
+  // Driver/library mismatch: the apt hook repairs it after an nvidia upgrade UNLESS a GPU
+  // container holds the device — then it defers and the GPU reads as invisible here. Say why.
+  const grc = col?.gpu_reconcile?.context_nodes || {};
+  if (grc.attention === "actionable") {
+    b += `<div class="mt-2 notif critical">GPU driver mismatch: loaded ${escapeHtml(grc.loaded ?? "?")} vs disk ${escapeHtml(grc.disk ?? "?")}` +
+         (grc.last_event_kind === "deferred" ? " — the apt hook DEFERRED the reload" : "") +
+         (grc.remedy ? `<br>${escapeHtml(grc.remedy)}` : "") + `</div>`;
+  } else if (grc.attention === "low") {
+    b += `<div class="mt-2 notif info">GPU driver in sync${grc.loaded ? ` (${escapeHtml(grc.loaded)})` : ""}; last hook event: ${escapeHtml(grc.last_event_kind || "none")}</div>`;
+  }
   return panel("GPU Drift", b);
 }
 

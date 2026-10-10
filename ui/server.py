@@ -605,6 +605,7 @@ async def api_gpu():
         "compute_processes": col.get("gpu", {}).get("compute_processes", []),
         "drift_flags": col.get("gpu", {}).get("drift_flags", []),
         "baseline": col.get("gpu", {}).get("baseline", {}),
+        "reconcile": (col.get("gpu_reconcile") or {}).get("dashboard", {}),
         "history": {"gpu_vram": list(_hist["gpu_vram"]),
                     "gpu_temp": list(_hist["gpu_temp"]),
                     "gpu_power": list(_hist["gpu_power"]),

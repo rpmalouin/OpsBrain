@@ -60,6 +60,12 @@ sources:
     enabled: true
     report_path: /appdata/OpsBrain/logs/vault_drift_report.json  # produced by the Hermes vault-drift cron
     max_age_s: 691200                                   # ~8 days (weekly cron) before marking stale
+  gpu_reconcile:
+    enabled: true
+    log_path: /var/log/nvidia-module-reconcile.log      # written by the driver-reconcile apt hook
+    module_version_file: /sys/module/nvidia/version     # the LOADED module
+    ko_root: /lib/modules                               # on-disk module: <ko_root>/<uname -r>/**/nvidia.ko*
+    max_age_s: 604800                                   # 7 days: older hook events are history, not news
   docker_socket: /var/run/docker.sock     # primary container-state source
   gpu_query: whitelisted                  # nvidia-smi interprets the query below
   journalctl_since: "60 min ago"   # must cover the inter-cycle gap (3600s cadence)

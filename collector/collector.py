@@ -27,6 +27,7 @@ from manual_stops import ManualStops, classify_manual_stop, _norm_name  # noqa: 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
 from dockhand_ingest import collect_dockhand  # noqa: E402
 from vault_drift_ingest import collect_vault_drift  # noqa: E402
+from gpu_reconcile_ingest import collect_gpu_reconcile  # noqa: E402
 
 log = get_logger("collector")
 
@@ -646,6 +647,7 @@ def collect_all(cfg):
     doc["truenas"] = collect_truenas(cfg)
     doc["dockhand"] = collect_dockhand(cfg)
     doc["vault_drift"] = collect_vault_drift(cfg)
+    doc["gpu_reconcile"] = collect_gpu_reconcile(cfg)
     doc["sources_healthy"] = sum(1 for k in ("netdata", "dozzle", "dockpeek", "docker", "gpu", "vm", "truenas")
                                  if doc.get(k, {}).get("up") or k in ("docker", "gpu", "vm"))
     return doc

@@ -114,12 +114,19 @@ actions:
 federation:
   enabled: true
   nodes:
+    # Each node's collector_endpoint serves what THIS host serves: its OpsBrain dashboard
+    # `/api/status` envelope (or a raw collector.json). It is the dashboard port, NOT an
+    # arbitrary one — 8099 on dockerVM is caddy-editor (404) which made the cluster read red.
     - name: dockervm
       type: linux
-      collector_endpoint: "http://dockervm:8099/api/status"
-    - name: truenas
-      type: storage
-      collector_endpoint: "http://truenas:8099/api/status"
+      collector_endpoint: "http://127.0.0.1:9120/api/status"
+    # truenas: disabled 2026-10-10 — nothing on that box serves /api/status (http://truenas:8099
+    # was a guess: connection refused), so it only produced a permanent critical
+    # "1 node(s) offline" rec every federation cycle. Re-enable once an OpsBrain dashboard
+    # answers there (per-node OpsBrain on :9120, published/served to this host).
+    # - name: truenas
+    #   type: storage
+    #   collector_endpoint: "http://truenas:9120/api/status"
   cluster_stability_weights:
     confidence: 0.4
     drift: 0.3

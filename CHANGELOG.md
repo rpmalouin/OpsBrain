@@ -58,6 +58,14 @@ milestone).
   `active + wired + compressor` (the naive `total - free` reads ~98 % on a healthy box).
   `collect_cluster` also honours a node-level `timeout_s`. Verified live: 2/2 nodes online,
   `macstudio` stability 100/100, `anomalies: 0`, `disk_used_percent` 82.3 (Data2).
+  The Mac's own answer to the wiring questionnaire (2026-10-10) widened the skip-list to the mounts
+  that must never become this node's anomaly: **SMB volumes belonging to another machine**
+  (`/Volumes/appdata` and `/Volumes/hermes` are dockerVM shares, `/Volumes/media` is TrueNAS), plus
+  personal archives and macOS system views — a remote box's fullness is not this host's fault. It also
+  confirmed the standing CRITICAL is **stale** (the DMG was not mounted when checked, but Netdata keeps
+  serving the chart) and that `.34` is a 24 h DHCP lease, so durability depends on a router
+  reservation. A test loads the shipped config and asserts the whole exclusion list, while proving a
+  watched volume (`/Volumes/Data2`) still raises.
 - **GPU driver-reconcile ingest (`gpu_reconcile`, notify-only).** The host's new
   `/etc/apt/apt.conf.d/99-nvidia-module-reconcile` hook (`DPkg::Post-Invoke` →
   `/usr/local/sbin/nvidia-module-reconcile`) compares the LOADED nvidia module with the one on

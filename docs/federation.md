@@ -27,7 +27,14 @@ federation:
       alarm_keep: ["CRITICAL", "WARNING", "ERROR"]
       alarm_skip_names: ["disk_fill_rate", "disk_inode_rate"]
       alarm_skip_mounts: ["/Volumes/makemkv", "/Volumes/Gemini", "/Volumes/Install",
-                          "/Volumes/MusicBrainz", "com.apple.TimeMachine.localsnapshots"]
+                          "/Volumes/MusicBrainz", "/Volumes/documents", "/Volumes/mystuff",
+                          "/Volumes/appdata", "/Volumes/hermes", "/Volumes/downloads",
+                          "/Volumes/music", "/Volumes/media",
+                          "/Volumes/.timemachine", "com.apple.TimeMachine.localsnapshots",
+                          "/Volumes/Recovery", "/System/Volumes/VM", "/System/Volumes/Preboot",
+                          "/System/Volumes/Update", "/System/Volumes/xarts",
+                          "/System/Volumes/iSCPreboot", "/System/Volumes/Hardware",
+                          "/System/Volumes/Data/home"]
     # - name: truenas
     #   type: storage
     #   collector_endpoint: "http://truenas:9120/api/status"
@@ -80,12 +87,16 @@ averaging a fake 0), `anomalies` = kept alarm count, `drift_events`/`restart_eve
 
 Three traps this adapter exists to absorb — each measured on the Mac, 2026-10-10:
 
-1. **The only CRITICAL there is a mounted installer disk image.** Per-mount alarms are the host's own
-   verdicts, but a DMG mount (`/Volumes/makemkv_v2.0.0` at 98.8 %) is transient and immaterial; left
-   unfiltered it becomes a permanent `anomalies: 1`, a `notify_cluster` every federation cycle and a
-   Mac stuck below 100 stability. Hence `alarm_skip_mounts` (and `alarm_skip_names` for the
-   `disk_fill_rate`/`disk_inode_rate` alarms, which are UNINITIALIZED on every Time Machine snapshot
-   mount).
+1. **The only CRITICAL there was a mounted installer disk image — and a remote server's capacity is
+   not this node's anomaly.** Per-mount alarms are the host's own verdicts, but three classes of mount
+   must never reach the cluster: transient installer images and personal archives (the standing
+   CRITICAL was `disk_space_usage` on `/Volumes/makemkv_v2.0.0` at 98.8 %, a MakeMKV installer DMG
+   that was **not even mounted** when it was checked — Netdata serves the stale chart, so the alarm
+   sticks), **SMB mounts belonging to another machine** (`/Volumes/appdata` and `/Volumes/hermes` are
+   this host's own shares, `/Volumes/media` is TrueNAS — reporting their fullness as a Mac anomaly is
+   a false-alarm generator), and Time Machine / macOS system views, which appear and disappear by
+   design. Hence `alarm_skip_mounts`; `alarm_skip_names` separately drops the `disk_fill_rate` /
+   `disk_inode_rate` alarms that are UNINITIALIZED on every Time Machine snapshot mount.
 2. **Never enumerate disk charts.** The Mac exposes 3288 charts, most of them Time Machine
    snapshot and DMG mounts, so the worst-volume metric would be garbage. `volumes:` is an explicit
    list.
@@ -96,6 +107,12 @@ Three traps this adapter exists to absorb — each measured on the Mac, 2026-10-
 
 Alarms and per-volume disk are best-effort: a chart that 404s leaves a null field, never an offline
 node. Only `/info` and `/alarms` failing marks the node offline.
+
+**Pin the address, and make the pin durable.** `collector_endpoint` carries the literal IP because
+mDNS does not resolve from dockerVM (`Mac-Studio.local` fails). If that address comes from DHCP — the
+Mac's en0 is a 24 h lease from `10.1.10.1` — put a DHCP reservation on the router: a moved lease reads
+as an **offline node**, which is a standing critical `cluster_health_warning` on every federation
+cycle, not a quiet degradation.
 
 ## What it computes
 

@@ -125,6 +125,9 @@ federation:
     # (federation/netdata_node.py) into the same node block an OpsBrain node produces.
     # The endpoint is the Mac's Netdata port on en0, NOT :9120 — nothing there serves /api/status.
     # mDNS does not resolve from this host (Mac-Studio.local fails), so the address is pinned.
+    # en0 is a 24 h DHCP lease from 10.1.10.1, so the DURABLE pin is a router reservation at
+    # 10.1.10.34 (the Mac's own answer, 2026-10-10); if the lease ever moves, this node reads
+    # offline and the cluster raises a standing critical cluster_health_warning.
     - name: macstudio
       type: macos
       kind: netdata
@@ -132,19 +135,43 @@ federation:
       timeout_s: 6
       volumes:                 # explicit list: the Mac exposes 3288 charts, most of them Time
         - "/"                  # Machine snapshot mounts and mounted DMG volumes, so the volumes
-        - "/Volumes/Data"      # that matter are named rather than discovered
-        - "/Volumes/Data2"
-        - "/Volumes/Data3"
+        - "/Volumes/Data"      # that matter are named rather than discovered. This is the Mac's
+        - "/Volumes/Data2"     # own WATCH list, character for character (2026-10-10); "/" covers
+        - "/Volumes/Data3"     # the macOS system + data volume (Netdata fuses them into one chart)
         - "/Volumes/Data4"
         - "/Volumes/TimeMachine"
       alarm_keep: ["CRITICAL", "WARNING", "ERROR"]
       # Statuses and names are the Mac's OWN verdicts; the skip-lists drop what is real but
-      # immaterial. The only CRITICAL there is disk_space_usage on a mounted installer DMG, and
-      # the rate alarms are UNINITIALIZED on every Time Machine snapshot mount — left in, they
-      # would be a permanent cluster anomaly and a notify_cluster every federation cycle.
+      # immaterial. Its only CRITICAL was disk_space_usage on a mounted installer DMG (stale
+      # chart — the image was not even mounted when it was checked), and the rate alarms are
+      # UNINITIALIZED on every Time Machine snapshot mount; left in, they are a permanent cluster
+      # anomaly and a notify_cluster every federation cycle.
       alarm_skip_names: ["disk_fill_rate", "disk_inode_rate"]
-      alarm_skip_mounts: ["/Volumes/makemkv", "/Volumes/Gemini", "/Volumes/Install",
-                          "/Volumes/MusicBrainz", "com.apple.TimeMachine.localsnapshots"]
+      alarm_skip_mounts:
+        # Transient installer images and personal archives.
+        - "/Volumes/makemkv"
+        - "/Volumes/Gemini"
+        - "/Volumes/Install"
+        - "/Volumes/MusicBrainz"
+        - "/Volumes/documents"
+        - "/Volumes/mystuff"
+        # REMOTE capacity over SMB: another server's disk must never become this node's anomaly.
+        - "/Volumes/appdata"     # this host's /appdata share
+        - "/Volumes/hermes"      # this host's Hermes state share
+        - "/Volumes/downloads"
+        - "/Volumes/music"
+        - "/Volumes/media"       # TrueNAS capacity
+        # Time Machine views and macOS system views: they appear and disappear by design.
+        - "/Volumes/.timemachine"
+        - "com.apple.TimeMachine.localsnapshots"
+        - "/Volumes/Recovery"
+        - "/System/Volumes/VM"
+        - "/System/Volumes/Preboot"
+        - "/System/Volumes/Update"
+        - "/System/Volumes/xarts"
+        - "/System/Volumes/iSCPreboot"
+        - "/System/Volumes/Hardware"
+        - "/System/Volumes/Data/home"
     # truenas: disabled 2026-10-10 — nothing on that box serves /api/status (http://truenas:8099
     # was a guess: connection refused), so it only produced a permanent critical
     # "1 node(s) offline" rec every federation cycle. Re-enable once an OpsBrain dashboard

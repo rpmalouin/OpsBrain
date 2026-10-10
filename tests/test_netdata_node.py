@@ -216,3 +216,54 @@ def test_collect_netdata_node_offline_on_transport_error(monkeypatch):
 def test_collect_netdata_node_offline_without_endpoint():
     node = NN.collect_netdata_node({"name": "x", "type": "macos"}, timeout=2)
     assert node["online"] is False and "collector_endpoint" in node["err"]
+
+
+# --------------------------------------------------------------- shipped macstudio config
+def test_shipped_macstudio_skip_list_drops_remote_and_transient_mounts():
+    """The Mac's own answer (mailbox reply 20261010T151459Z, 2026-10-10) named the mounts that must
+    never become a cluster anomaly: transient installer images, personal archives, REMOTE (SMB)
+    capacity belonging to another server, Time Machine views and macOS system views. This test locks
+    the shipped config to that list and proves a watched volume still alerts."""
+    import yaml
+
+    cfg = yaml.safe_load((REPO / "config" / "ops_brain.yaml").read_text())
+    node = next(n for n in cfg["federation"]["nodes"] if n.get("name") == "macstudio")
+    skips = tuple(node["alarm_skip_mounts"])
+
+    transient_and_remote = (
+        "/Volumes/makemkv_v2.0.0",                        # the standing CRITICAL (unmounted DMG)
+        "/Volumes/Gemini_1.128.1.995",
+        "/Volumes/Install_Google_Drive",
+        "/Volumes/MusicBrainz_Picard_3.0",
+        "/Volumes/documents",
+        "/Volumes/mystuff",
+        "/Volumes/appdata",                               # THIS host's capacity over SMB
+        "/Volumes/hermes",                                # this host's Hermes state over SMB
+        "/Volumes/downloads",
+        "/Volumes/music",
+        "/Volumes/media",                                 # TrueNAS capacity
+        "/Volumes/.timemachine/D4BD40CE/x.backup",
+        "com.apple.TimeMachine.localsnapshots/Backups.backupdb/Mac Studio/2026-10-10/Data",
+        "/Volumes/Recovery",
+        "/System/Volumes/VM",
+        "/System/Volumes/Preboot",
+        "/System/Volumes/Update",
+        "/System/Volumes/xarts",
+        "/System/Volumes/iSCPreboot",
+        "/System/Volumes/Hardware",
+        "/System/Volumes/Data/home",
+    )
+    for mount in transient_and_remote:
+        doc = {"alarms": {"a": {"name": "disk_space_usage", "status": "CRITICAL",
+                                "chart": f"disk_space.{mount}", "value": 98.7}}}
+        assert NN.select_alarms(doc, skip_mounts=skips) == [], mount
+
+    # ...but a watched volume still raises, so the filter is not a blanket mute
+    watched = {"alarms": {"a": {"name": "disk_space_usage", "status": "CRITICAL",
+                                "chart": "disk_space./Volumes/Data2", "value": 91.0}}}
+    kept = NN.select_alarms(watched, skip_mounts=skips)
+    assert [a["mount"] for a in kept] == ["/Volumes/Data2"]
+
+    # and the watched list is exactly the Mac's WATCH list
+    assert node["volumes"] == ["/", "/Volumes/Data", "/Volumes/Data2", "/Volumes/Data3",
+                               "/Volumes/Data4", "/Volumes/TimeMachine"]

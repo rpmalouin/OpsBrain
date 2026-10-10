@@ -346,14 +346,38 @@ default / `netdata`), and `collect_cluster` honours a per-node `timeout_s`.
   is unauthenticated on the LAN). **mDNS does not resolve from this host** — `Mac-Studio.local`
   fails — so the address is pinned in config; if it ever moves, the node reads offline and the
   cluster raises a standing critical `cluster_health_warning` (the `truenas` lesson).
-- **Its own alarms are the source of truth, minus what is real-but-immaterial.** The Mac exposes
-  847 alarms (CLEAR 526 / UNDEFINED 318 / UNINITIALIZED 2 / CRITICAL 1) and the single CRITICAL is
-  `disk_space_usage` on `/Volumes/makemkv_v2.0.0` — a **mounted installer DMG**. Unfiltered, that
-  is a permanent `anomalies: 1`, a `notify_cluster` every federation cycle, and a Mac stuck below
-  100 stability. Hence `alarm_keep: [CRITICAL, WARNING, ERROR]`, `alarm_skip_names`
-  (`disk_fill_rate`, `disk_inode_rate` — UNINITIALIZED on every Time Machine snapshot mount) and
-  `alarm_skip_mounts` (DMG/installer volumes, `com.apple.TimeMachine.localsnapshots`). With them,
-  the Mac reports `anomalies: 0` on a clean day.
+- **The Mac's own answer (mailbox reply `20261010T151459Z`, 2026-10-10) confirms and sharpens this:**
+  Netdata v2.11.1 is Homebrew's per-user LaunchAgent (`sh.brew.netdata`, `/opt/homebrew/…`), and the
+  all-interface bind is **upstream's default** (`netdata.conf` is the stock commented template), not a
+  decision — narrowing it is `bind to = 10.1.10.34 127.0.0.1` plus an agent restart, on Ron's word
+  only. `.34` is en0/Ethernet (`.20` is Wi-Fi en1) on a **24 h DHCP lease from 10.1.10.1**, so the
+  durable pin is a **router DHCP reservation** — the config's literal IP is only as good as that
+  lease. The firewall on the Mac is disabled, so nothing there blocks the poll.
+- **Alarm skip-list = transient images + personal archives + REMOTE capacity + TM/system views.** The
+  Mac's list (`/Volumes/makemkv`, `Gemini*`, `Install Google Drive`, `MusicBrainz Picard`,
+  `documents`, `mystuff`, `appdata`, `hermes`, `downloads`, `music`, `media`, `.timemachine/*`,
+  `com.apple.TimeMachine.localsnapshots/**`, `Recovery`, `System/Volumes/{VM,Preboot,Update,xarts,
+  iSCPreboot,Hardware,Data/home}`) is shipped in config, and
+  `tests/test_netdata_node.py::test_shipped_macstudio_skip_list_drops_remote_and_transient_mounts`
+  locks it there and proves `/Volumes/Data2` still raises. **`/Volumes/appdata` and `/Volumes/hermes`
+  are this host's own shares and `/Volumes/media` is TrueNAS** — a remote server's fullness must never
+  become a Mac anomaly. Also note the DMG alarm **stuck on stale data**: the image was not even
+  mounted when the Mac checked (Netdata keeps serving the chart), so the skip-list is the fix, not a
+  threshold change.
+- Phase 2 (a Mac-side 15-minute producer for Time Machine/cron/Hindsight/mount health) is **proposed
+  by the Mac, not built — it needs Ron's go-ahead**. Their design notes if it is green-lit:
+  `~/.hermes/scripts/mac-node-snapshot.py` (deliberately outside `/Volumes`), writing
+  `/Volumes/appdata/OpsBrain/logs/macstudio_node.json` tmp+rename; it must run under the **Hermes cron
+  runtime** to inherit the existing Full Disk Access grant (a new standalone launchd job lands back in
+  the TCC gate that broke smbd on 2026-09-24); python3 there is 3.12.1 with PyYAML only in
+  `~/.local/venvs/crg`. Services on `127.0.0.1` (Hermes Portal 8087, Hindsight 9177/19177, the
+  llama.cpp router 18434) are **loopback-only**, so any check of them has to run Mac-side. No
+  reciprocal federation exists today (the Mac reads this host over SMB JSON + the queue).
+- **Its own alarms are the source of truth, minus what is real-but-immaterial.** The Mac reports
+  ~850 alarms (1 CRITICAL, 0 WARNING, the rest CLEAR/UNDEFINED); unfiltered, that one CRITICAL is a
+  permanent `anomalies: 1`, a `notify_cluster` every federation cycle and a Mac stuck below 100
+  stability. Hence `alarm_keep: [CRITICAL, WARNING, ERROR]` plus the `alarm_skip_names` /
+  `alarm_skip_mounts` lists above. With them the Mac reports `anomalies: 0` on a clean day.
 - **Two measurement traps are baked into the adapter, do not "simplify" them:** `disk_space.*`
   dimensions are **GiB, not percent** (root reports `used=315.3` at 34 % full — the percent is
   `used/(used+avail)`), and macOS RAM "used" is `active + wired + compressor` (the naive

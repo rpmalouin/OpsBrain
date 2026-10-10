@@ -197,7 +197,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**217 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**244 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -409,9 +409,17 @@ selected"` — do NOT switch to it; the DB is the source of truth.
 
 ## Hatchdoor vault drift ingestion
 
-Source (Aug 2026): `collector/vault_drift_ingest.py` reads the vault-drift report
-produced by Hermes' weekly cron at `/appdata/OpsBrain/logs/vault_drift_report.json`
-(OPsBrain is the CONSUMER; the Hermes `vault-maintenance` cron is the producer).
+Source (Aug 2026): `collector/vault_drift_ingest.py` reads the vault-drift report at
+`/appdata/OpsBrain/logs/vault_drift_report.json`. **OpsBrain is the CONSUMER only.**
+**Producer moved to the Mac (Sep 2026):** the weekly scan runs there — the Mac's Hermes cron
+(Monday 03:00 local) fronts the job with a deterministic report writer and writes through the
+SMB share (`/Volumes/appdata/OpsBrain/logs/…` = this path), tmp+rename so the collector never
+reads a half file. dockerVM's own Hermes carries NO vault job (its cron set is the
+`hermes-docker inbox` only), so do NOT add a second writer here — the collector reads whatever
+lands in that one file. The report on disk dated `2026-10-05T07:01Z` (a Monday) is that job's
+output. (Oct 2026: a dockerVM-side prototype `collector/vault_drift_detect.py` was removed for
+exactly this reason — it wrote the file non-atomically, duplicated a subset of the Mac's
+findings, and its hardcoded `HATCHDOOR_VAULT_ID` had gone stale after the vault was recreated.)
 
 - Config under `sources.vault_drift`: `enabled`, `report_path`, `max_age_s`
   (default ~8 days for a weekly cron before marking the report `stale`).
@@ -452,6 +460,97 @@ stopped). Meanwhile the pipeline now says so:
   IndexError and crash-looped `opsbrain-ui` 65+ times (dashboard dark, restart counter
   climbing). `/api/gpu` exposes `available`/`error`.
 
+### 2026-10-10 recurrence — fixed in place, no reboot
+
+Same failure class, next version step. `apt-daily-upgrade` at **06:47:46** upgraded the whole
+`nvidia-*` set **595.91.07 -> 595.99.02**, `nvidia-dkms-595-open` included (so the on-disk
+module WAS rebuilt for the new version) — but the LOADED module stayed 595.91.07.
+`nvidia-persistenced` died at 06:48:08; `nvidia-smi` then failed with *"Failed to initialize
+NVML: Driver/library version mismatch / NVML library version: 595.99"*. The collector caught it
+the same way the Sep incident taught it to: `gpu.available:false` + the nvidia-smi text in
+`gpu.error`, from the 11:41 cycle onward. The `gpu-watchdog.timer` (5 min, log-only) appended
+"nvidia-smi failed" until 12:49:40.
+
+Fixed at 12:51 **without a reboot** (the Sep note says reboot-or-reload; reload is enough):
+stop every GPU consumer (`docker stop ollama`) -> `rmmod nvidia_uvm nvidia_drm nvidia_modeset
+nvidia` -> `modprobe nvidia` (module now reports 595.99.02) -> **`nvidia-ctk cdi generate
+--output=/var/run/cdi/nvidia.yaml`** -> `systemctl start nvidia-persistenced` -> **recreate the
+GPU container** (`cd /appdata/A--docker_stacks/ollama && docker compose up -d`) -> `systemctl
+restart opsbrain opsbrain-ui`. The last two are the easy-to-miss ones: a container's GPU mount
+list is baked at create time from the then-loaded module version, so `docker start` alone keeps
+failing on the old-version lib path, and a stale CDI spec asks for paths the new version does
+not have.
+
+Verified after the fix: `nvidia-smi` reports 595.99.02; `collector.json` `gpu.available:true`
+with `error:null` (RTX 5070 Ti, 16303 MB); ollama's `llama-server` holds ~11.6 GB in VRAM.
+`opsbrain`/`opsbrain-ui` were restarted too, because both had initialised against the broken
+state and would otherwise have kept serving the cached error.
+
+Cheapest recurrence check, no tools: `nvidia-smi` vs `cat /sys/module/nvidia/version` — a
+mismatch IS the bug. Since DKMS rebuilds the module at upgrade time, the only missing step is
+reloading it, and any future `apt-daily-upgrade` can reintroduce this silently. GPU drift
+detection is BLIND for every cycle that runs before the reload; `gpu.available`/`gpu.error` is
+the only signal that it is blind.
+
+(Unrelated defect in the same area, fixed in the same change: `/usr/local/bin/gpu-watchdog.sh`
+probed a hardcoded PCI slot `06:10.0` while this VM's card is at `01:00.0`, so its "zombie
+state (rev ff)" branch was dead code that could never fire. It also logged no timestamps —
+which is why the 06:48-12:49 failure window could not be read off its log.)
+
+### Guards added 2026-10-10 (this failure class should now self-heal or say why it cannot)
+
+- **`/usr/local/sbin/nvidia-module-reconcile`** + **`/etc/apt/apt.conf.d/99-nvidia-module-reconcile`**
+  (`DPkg::Post-Invoke`, runs after every apt/dpkg operation incl. unattended-upgrades): compares
+  `cat /sys/module/nvidia/version` against `modinfo -F version` of the on-disk `nvidia.ko` for the
+  running kernel; on a mismatch it reloads the module, restarts `nvidia-persistenced` and
+  regenerates the CDI spec. It **DEFERS** — logs the mismatch plus the remedy, touches nothing —
+  while a GPU container holds the device, because rmmod cannot succeed under a live `llama-server`
+  and the repair is not worth killing inference. So a mismatch while ollama runs still needs a
+  human: `docker stop ollama && /usr/local/sbin/nvidia-module-reconcile --force`. Log:
+  `/var/log/nvidia-module-reconcile.log` (written only on a mismatch). `--dry-run` prints the plan.
+  Test hooks, unset in production: `NVIDIA_SYS_VERSION_FILE`, `NVIDIA_KO_ROOT`, `NVIDIA_KO_FILE`,
+  `NVIDIA_RECONCILE_LOG`. Note the scope: it is an apt hook, so a bare `dpkg -i` or a hand-copied
+  module does NOT trigger it.
+- **`/usr/local/bin/gpu-watchdog.sh`** (5-min timer, log-only): resolves the card's PCI slot every
+  run instead of hardcoding it, extracts the revision from the `(rev xx)` field (the old
+  `grep Rev | awk '{print $3}'` also matched unrelated `Rev=` capability lines), timestamps every
+  entry, and records WHY nvidia-smi failed plus the loaded module version — enough to tell a
+  driver mismatch from a dead card without digging.
+
+## GPU driver reconcile (apt hook + ingest, added 2026-10-10)
+
+The host repairs the loaded nvidia module after a driver upgrade: `/usr/local/sbin/nvidia-module-reconcile`
+runs from `/etc/apt/apt.conf.d/99-nvidia-module-reconcile` (`DPkg::Post-Invoke`) and compares
+`/sys/module/nvidia/version` (LOADED) with `modinfo -F version` of the on-disk `nvidia.ko` for the
+running kernel. On a mismatch it reloads the module, restarts `nvidia-persistenced` and regenerates
+the CDI spec — but ONLY when nothing holds the GPU. With a GPU container running it **DEFERS** (rmmod
+cannot succeed under a live `llama-server`) and logs the mismatch plus the remedy to
+`/var/log/nvidia-module-reconcile.log`. That deferral is the case a human must act on, so OpsBrain
+ingests it.
+
+- `collector/gpu_reconcile_ingest.py` reads that log AND compares the live module versions; merged
+  into `collector.json` as `gpu_reconcile`. The LOG says what the hook decided, when, which containers
+  held the GPU and the exact remedy; the LIVE comparison says whether the mismatch is still true —
+  without it, a deferral a human fixed by hand would alarm forever. `state` is driven by the live
+  verdict (`ok` = loaded == disk, `mismatch` = live and NVML is broken), the log is context.
+- `attention`: `actionable` only while the mismatch is live; `low` = a deferral/failure the hook never
+  resolved that is no longer live (informational, and `none` once the hook itself reloaded past it);
+  `none` otherwise. A `deferred`/`failed` event older than `max_age_s` is reported as `stale_event`
+  and stops reading as news.
+- **NOTIFY-ONLY**: `actions.gpu_reconcile_actions()` emits `notify_gpu_reconcile` at most once per UTC
+  day while actionable and NEVER restarts/kills/prunes — a driver mismatch is fixed by stopping the
+  GPU containers and reloading. Overlaps `gpu_unavailable_notice` on purpose: that one names the
+  nvidia-smi error, this one names the versions, the holder, the hook's verdict and the command.
+- Reasoner digest key `gpu_reconcile`; `actions_result.json` → `gpu_reconcile.{enabled,state,notifications}`;
+  the GPU Drift panel renders a red strip when actionable (with the remedy) and an info line when
+  `low`; `/api/gpu` → `reconcile`.
+- Config `sources.gpu_reconcile`: `log_path`, `module_version_file`, `ko_root`, `max_age_s`.
+- Scope gap worth knowing: the hook is an APT hook, so a bare `dpkg -i` or a hand-copied module writes
+  no log line — the live comparison still catches that case (there is a test for it).
+- Tests: `tests/test_gpu_reconcile_ingest.py` (27). Those tests patch `A.NOTIF_FILE`/`A.STATE_FILE` AND
+  `A.log` — patching the first two alone still let `notify()`'s `log.info` write into the live
+  `logs/opsbrain.log`.
+
 ## GPU drift detection
 
 Live in collector → reasoner → actions → report. Config under `gpu_drift:`:
@@ -481,7 +580,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **217 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **244 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag
@@ -510,6 +609,11 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 - `test_gpu_visibility.py` (7) — `collect_gpu` surfacing `available`/`error` and keeping the
   baseline identity, plus `actions.gpu_unavailable_notice` (once per UTC day, silent when
   the GPU is visible or was never there).
+- `test_gpu_reconcile_ingest.py` (27) — parsing the apt hook's log (real line format,
+  truncated/handwritten lines skipped, an `rmmod ... failed` warning attached to the attempt
+  instead of read as a failed reload), the live loaded-vs-disk comparison, `classify`'s
+  deferral-resolved-by-a-later-reload logic, context/attention states, and the notify-only
+  action (once per UTC day, never a remediation verb).
 
 These caught real bugs during development — `sanitize` crashed on null confidence, and
 run/parse edge cases. GPU/kill tests mock `run()`/`notify` so they never touch live

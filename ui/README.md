@@ -29,7 +29,7 @@ ui/
    active alerts.
 5. **Container Health** — running/exited, per-container CPU/RAM, restart-loop badge,
    restart count.
-6. **GPU Drift** — VRAM used/total + %, power draw, temperature, drift flags
+6. **GPU Drift** — VRAM used/total + %, power draw, temperature, drift flags, plus a driver-reconcile strip: red when the loaded nvidia module does not match the one on disk (naming the deferred apt-hook reload and the exact fix command), info when a deferral was since resolved
    (color-coded: `stuck_process`/`vram_overload` = red, others = yellow), stuck-PID +
    same-pid cycle count. When the host cannot read the GPU at all (`nvidia-smi` fails,
    e.g. a driver/NVML version mismatch) the collector reports `gpu.available: false` plus

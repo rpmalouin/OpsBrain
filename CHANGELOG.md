@@ -8,6 +8,22 @@ milestone).
 ## [Unreleased]
 
 ### Added
+- **GPU driver-reconcile ingest (`gpu_reconcile`, notify-only).** The host's new
+  `/etc/apt/apt.conf.d/99-nvidia-module-reconcile` hook (`DPkg::Post-Invoke` →
+  `/usr/local/sbin/nvidia-module-reconcile`) compares the LOADED nvidia module with the one on
+  disk after every apt operation and reloads it on a mismatch — the failure that silently blinds
+  every host-side GPU read (`Failed to initialize NVML: Driver/library version mismatch`). With a
+  GPU container running it cannot reload (rmmod fails under a live `llama-server`), so it logs the
+  mismatch plus the remedy and defers instead.
+  `collector/gpu_reconcile_ingest.py` now ingests that log AND compares the live module versions,
+  merged into `collector.json` as `gpu_reconcile`: `state` (`ok`/`mismatch`/`deferred`/`failed`)
+  comes from the live verdict, the log supplies the holders and the exact remedy, and a deferral
+  the hook later reloaded past stops reading as an open item. `attention: actionable` drives
+  `actions.gpu_reconcile_actions()` → `notify_gpu_reconcile` (once per UTC day, never a
+  remediation verb), a red strip in the dashboard's GPU Drift panel, the `gpu_reconcile` reasoner
+  digest block, `actions_result.json.gpu_reconcile` and `/api/gpu → reconcile`.
+  Config: `sources.gpu_reconcile.{log_path,module_version_file,ko_root,max_age_s}`.
+  +27 tests.
 - **Per-model `think` gate + strict model selection.** `think` is now decided per model
   instead of globally: `reasoner.fetch_capabilities()` reads `/api/show` and
   `decide_think()` sends `think` only for models that declare the `thinking` capability

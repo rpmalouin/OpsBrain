@@ -95,6 +95,12 @@ sources:
     enabled: true
     report_path: /appdata/OpsBrain/logs/vault_drift_report.json   # written by an external cron
     max_age_s: 691200             # ~8 days before the report is flagged stale
+  gpu_reconcile:                  # NVIDIA driver/library mismatch — notify-only
+    enabled: true
+    log_path: /var/log/nvidia-module-reconcile.log   # written by the driver-reconcile apt hook
+    module_version_file: /sys/module/nvidia/version  # the LOADED module
+    ko_root: /lib/modules         # on-disk module: <ko_root>/<uname -r>/**/nvidia.ko*
+    max_age_s: 604800             # 7 days: older hook events are history, not news
   docker_socket: /var/run/docker.sock
   gpu_query: whitelisted
   journalctl_since: "60 min ago"

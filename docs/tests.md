@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 217 tests
+python3 -m pytest        # 244 tests
 python3 -m pytest -q     # quiet
 ```
 
@@ -20,6 +20,11 @@ python3 -m pytest -q     # quiet
 - **GPU visibility** (`tests/test_gpu_visibility.py`, 7 tests) — `collect_gpu` records
   `available`/`error` when `nvidia-smi` is unusable and keeps the baseline identity;
   `actions.gpu_unavailable_notice` fires once per UTC day, only when a GPU is known.
+- **GPU driver reconcile** (`tests/test_gpu_reconcile_ingest.py`, 27 tests) — parses the apt
+  hook's log (`nvidia-module-reconcile`), compares the LOADED module version against the one
+  on disk, and drives `state`/`attention` (`ok` / `mismatch` / `deferred` / `failed`); a
+  deferral the hook later reloaded past stops alarming. `gpu_reconcile_actions` is notify-only
+  (once per UTC day, never `docker_restart`/`gpu_kill`/`docker_prune`).
 - **Model selection + `think` gate** (`tests/test_reasoner_models.py`, 23 tests) —
   `pick_model`/`resolve_model` (primary → fallback → alt, `:latest` normalization, never an
   unconfigured substitution), `decide_think` (thinking / non-thinking / unknown
@@ -56,4 +61,5 @@ Run it after touching `actions.py`, `reasoner.py`, `common/`, `collector/`, or
 (`test_opsbrain.py`, `test_manual_stops.py`, `test_collector_manual_stops.py`,
 `test_truenas.py`, `test_federation.py`, `test_ui_refinements.py`,
 `test_dockhand_ingest.py`, `test_vault_drift_ingest.py`, `test_scheduler_cadence.py`,
-`test_reasoner_models.py`, `test_gpu_visibility.py`, plus the dashboard tests).
+`test_reasoner_models.py`, `test_gpu_visibility.py`, `test_gpu_reconcile_ingest.py`, plus the
+dashboard tests).

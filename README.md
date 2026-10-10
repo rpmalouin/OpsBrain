@@ -28,7 +28,7 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
 
 ```
 /appdata/OpsBrain/
-  collector/          polls & merges all sources -> logs/collector.json (incl. truenas, dockhand, vault_drift, manual_stops)
+  collector/          polls & merges all sources -> logs/collector.json (incl. truenas, dockhand, vault_drift, gpu_reconcile, manual_stops)
   reasoner/           LLM prompt template + Ollama wrapper -> logs/reasoner_result.json
   hermes_actions/     remediation module + deterministic RULES -> logs/actions_result.json
   federation/         multi-node cluster collector + reasoner -> logs/cluster_{snapshot,reasoner_result}.json
@@ -39,7 +39,7 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
   reports/            daily markdown reports
   ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
   deploy/             systemd units + installer
-  tests/              pytest suite (217 tests)
+  tests/              pytest suite (244 tests)
   docs/               per-feature implementation guides
   Dockerfile, docker-compose.yml, README.md, IMPLEMENTATION.md, CHANGELOG.md, .gitignore
 ```
@@ -49,8 +49,9 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
 A live single-page dashboard streams `collector`, `reasoner`, `actions`, `gpu_baseline`,
 `manual_stops`, and the federation `cluster_snapshot`/`cluster_reasoner` logs over
 WebSockets and refreshes every 2 seconds. Panels: **System Overview, Cluster Overview,
-Node Comparison, TrueNAS, Dockhand, Container Health, GPU Drift, OpsBrain Decisions,
-Manual Stop Protection, Daily Report Preview**, plus confidence-recovery / GPU-drift-decay /
+Node Comparison, TrueNAS, Dockhand, Container Health, GPU Drift (with a driver-reconcile
+strip), OpsBrain Decisions, Manual Stop Protection, Daily Report Preview**, plus
+confidence-recovery / GPU-drift-decay /
 restart-impact refinements. Served by the `opsbrain-ui` systemd service at
 `http://<host>:9120/` — see `ui/README.md`. `/api/gpu` also reports `available` + `error`,
 so a GPU the host can no longer read is visible instead of a silent all-clear.
@@ -188,7 +189,7 @@ deterministic (no LLM).**
 
 ## Files you get
 
-- `logs/collector.json`                 unified signal doc (hourly cadence; incl. `truenas`, `dockhand`, `vault_drift`, `gpu.available/error`, `manual_stops`)
+- `logs/collector.json`                 unified signal doc (hourly cadence; incl. `truenas`, `dockhand`, `vault_drift`, `gpu_reconcile`, `gpu.available/error`, `manual_stops`)
 - `logs/reasoner_result.json`           decision `{warnings, actions, summary, confidence, model, thinking, timestamp}`
 - `logs/actions_result.json`            executed / skipped / blocked per cycle (+ `cluster` recs, `reasoner.fresh`, `gpu.available`)
 - `logs/manual_stops.json`              protected (manually stopped) container registry
@@ -201,10 +202,10 @@ deterministic (no LLM).**
 
 ## Tests
 
-`python3 -m pytest` — **217 tests** across `tests/` (whitelist gate, deterministic rules,
-output sanitization, GPU drift + GPU visibility, manual-stop invariant, TrueNAS parse,
-federation math & correlations, dashboard refinements, Dockhand desired-state ingest, model
-selection / `think` gate, stale-decision guard). Run before pushing changes to
+`python3 -m pytest` — **244 tests** across `tests/` (whitelist gate, deterministic rules,
+output sanitization, GPU drift + GPU visibility + GPU driver reconcile, manual-stop invariant,
+TrueNAS parse, federation math & correlations, dashboard refinements, Dockhand desired-state
+ingest, model selection / `think` gate, stale-decision guard). Run before pushing changes to
 `actions.py`, `reasoner.py`, `common/`, `collector/`, `ui/` or `federation/`.
 
 ## Troubleshooting

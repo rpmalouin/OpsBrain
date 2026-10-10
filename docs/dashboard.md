@@ -40,6 +40,23 @@ list of log files streamed on change).
 11. **Refinements** (from `ui_refinements.js`) — confidence recovery pulse, GPU drift
     decay graph, container restart-impact bars.
 
+## Notification ticker
+
+The **Live notifications** panel renders the most recent 8 entries, newest first, with the
+level chip and the event's own UTC time (`HH:MMZ`). Two producers feed it:
+
+1. conditions the dashboard itself detects from the current collector/reasoner/actions docs
+   (below-floor confidence, GPU drift flags, restart loops, packet drops, restarts OpsBrain
+   performed), which carry levels straight from `ui/server.py::_check_notifications`;
+2. the tail of `logs/notifications.jsonl`, level-mapped by category
+   (`_category_level`: gpu_*/manual_stop/restart/cluster_health_warning/reasoner_stale → critical,
+   dockhand/vault/cluster_*/disk/low_confidence/packet_drop → warning, else info).
+
+The panel is LIVE-ONLY: the JSONL ring is a byte offset seeded at EOF on the first read after a
+UI start, so a restart never replays historical records (it used to dump the last 100 of a
+34k-line log into the ticker). The header chip counts what is wrong (`⚠ N critical`, else
+`N warn`), not the length of the in-memory list.
+
 ## Files streamed (WebSocket, every 2s on change)
 
 - `logs/collector.json`

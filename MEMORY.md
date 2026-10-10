@@ -198,7 +198,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**301 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**303 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -451,6 +451,28 @@ default / `netdata`), and `collect_cluster` honours a per-node `timeout_s`.
   four notify/reasoner-touching test files now do this; the suite leaves the live log
   byte-identical (verified: line delta 0). A pytest burst at an off-cycle minute in
   `logs/opsbrain.log`/`notifications.jsonl` is still the signature of a suite that isn't guarded.
+
+- **The ticker is LIVE-ONLY: the ring is a byte offset, seeded at EOF.** `_read_notifications_tail`
+  reads only what was APPENDED to `logs/notifications.jsonl` since the previous call. The old
+  line-index ring ignored `max_lines` and returned the WHOLE file on the first call after each UI
+  start (measured 2026-10-10: 34,262 records), so every `opsbrain-ui` restart pushed the last 100
+  historical records — including pre-fix bare-name junk ("cluster", "radarr") — into the panel as
+  if they were live, and re-read all 34k lines every cycle. A partial trailing line waits for the
+  next call, and a truncated/rotated file re-seeds instead of mis-indexing. `ts` on a
+  log-ingested entry is the RECORD's own time, not the dashboard's read time.
+- **Every `severity` must be `critical` / `warning` / `info`.** `_check_notifications` wrote
+  `"crit"`, which the frontend does not recognise, so the UI-detected conditions fell through to
+  the calmest "info" chip: a 0.20-confidence cycle displayed as `info confidence 0.20 < 0.6` while
+  it should be the warning the same category gets through the log path (seen live 2026-10-10).
+  `ui/static/app.js::notifLevel` also normalizes `crit*`/`warn*`, so an old payload cannot
+  reintroduce it.
+- **The header chip counts what is wrong, not the backlog size.** It printed the raw list length
+  (`⚠ 50`) — a number that never went down and referred to replayed history; it now reads
+  `⚠ N critical` (red) or `N warn`, and hides when everything is info.
+- **Browser alerts must not be diffed by array length.** `ws.onmessage` did
+  `curN.length > prevN`, so once the 100-entry ring saturated the payload stayed pinned at its
+  50-entry cap and no desktop alert ever fired again for that tab. The client now scans the list
+  each tick and dedupes by `type:message` (`handleNewNotifications`).
 
 ## Manual Stop Protection (HARD INVARIANT)
 
@@ -715,7 +737,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **301 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **303 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

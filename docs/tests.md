@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 301 tests
+python3 -m pytest        # 303 tests
 python3 -m pytest -q     # quiet
 ```
 
@@ -54,7 +54,10 @@ python3 -m pytest -q     # quiet
   host-fact merge with the live poll winning, and a contract test over a real producer payload.
   `test_federation.py` covers the merge through `collect_cluster` and that the compact `raw` stays
   under 500 bytes.
-- **Dashboard refinements** — confidence recovery, drift decay, restart impact.
+- **Dashboard refinements** — confidence recovery, drift decay, restart impact, and the
+  notification ticker's contract (`tests/test_ui_refinements.py`): the category→level map, that
+  the UI-detected conditions emit real ticker levels, and that the ring ingests only NEW lines
+  (a first call is seeded at EOF, a partial trailing record waits, and a re-read yields nothing).
 - **Dockhand desired-state ingest** (`tests/test_dockhand_ingest.py`, 25 tests) — DB pull
   (ok / missing-DB / missing-table, host path mapping), `normalize` (compose parse,
   grouped by stack, unreadable-file degradation, `build:` capture),

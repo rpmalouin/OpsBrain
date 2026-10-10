@@ -34,6 +34,25 @@ milestone).
   `_read_notifications_tail` only treated `gpu_drift`/restart categories as critical and mapped
   everything else to warning, so a blocked manual stop, a GPU driver mismatch or a cluster node
   down was indistinguishable from a vault note. Categories now map to critical / warning / info.
+- **The notification ticker was not live — it replayed history on every dashboard restart.**
+  `ui/server.py::_read_notifications_tail` ignored its own `max_lines` cap and read the WHOLE
+  `logs/notifications.jsonl` on the first call after a UI start (34,262 records on 2026-10-10);
+  the 100-entry ring kept only the last of them, so every `opsbrain-ui` restart pushed the last
+  100 historical records — including the bare-name junk written before the ticker-text fix
+  ("cluster", "radarr") — into the "Live notifications" panel as if they had just happened, while
+  re-reading all 34k lines on every cycle and stamping each entry with the dashboard's read time
+  instead of the event's own. The ring is now a **byte offset seeded at EOF**: the panel shows
+  only what happens while the dashboard runs, a partial trailing record waits for the next read,
+  a truncated/rotated file re-seeds, and each entry keeps the record's own `ts`. The dashboard's
+  own condition detector (`_check_notifications`) emitted the severity `"crit"`, which the
+  frontend does not recognise — so a 0.20-confidence cycle (the signal that the reasoning half is
+  degraded) rendered as the calmest "info" chip, and a restart loop as info too; those now use
+  `critical`/`warning`/`info`, and `ui/static/app.js::notifLevel` normalizes `crit*`/`warn*` so an
+  older payload cannot reintroduce it. The header chip counts what is wrong (`⚠ N critical`, else
+  `N warn`) instead of printing the raw backlog length (`⚠ 50`), each row shows the event time,
+  and browser alerts no longer die silently: `ws.onmessage` diffed by array length, so once the
+  100-entry ring saturated the 50-entry payload never grew again and no desktop alert fired for
+  the rest of the session.
 - **The test suite wrote into the live logs.** `logs/opsbrain.log` and
   `logs/notifications.jsonl` are append-only pipeline output, but four suites reached
   `notify()`/the shared reasoner logger without redirecting them, so a pytest run left lines at

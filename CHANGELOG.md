@@ -7,6 +7,33 @@ milestone).
 
 ## [Unreleased]
 
+### Fixed
+- **Cluster Overview could only ever read red.** `federation.nodes` pointed `dockervm` at
+  `http://dockervm:8099/api/status` — and `:8099` on this host is *caddy-editor* (401/404), not
+  an OpsBrain — while `truenas` pointed at a box with nothing listening. Both nodes were
+  therefore permanently offline, so the panel showed "0/2 online, stability 0" and the pipeline
+  raised a critical `cluster_health_warning` + `escalate_cluster` every federation cycle. The
+  `dockervm` node now polls this host's own dashboard (`http://127.0.0.1:9120/api/status`, the
+  route that actually serves the `/api/status` envelope) and the unservable `truenas` node is
+  commented out in the config. Verified live: 1/1 online, stability 98/100, no recommendations.
+- **Notification ticker: unreadable and duplicated entries.** `Engine.dispatch` used the
+  *target* as the notification text, and callers passed the event COUNT there — so the ticker
+  showed bare values ("3", "1", "sonarr", "stale") and, because the callers also called
+  `notify()` themselves after dispatching, every event was written twice (a bare number plus the
+  real sentence). dispatch now notifies with the **reason** (the ticker entry's text), each
+  caller notifies once, and the reasons are self-contained sentences (e.g. "Dockhand restart
+  storm sonarr: 4 in 30m"). The generic `notify` verb no longer stores the caller's explanation
+  as the CATEGORY.
+- **Every notification rendered as the same yellow "warn" chip.** `ui/server.py`
+  `_read_notifications_tail` only treated `gpu_drift`/restart categories as critical and mapped
+  everything else to warning, so a blocked manual stop, a GPU driver mismatch or a cluster node
+  down was indistinguishable from a vault note. Categories now map to critical / warning / info.
+- **The test suite wrote into the live logs.** `logs/opsbrain.log` and
+  `logs/notifications.jsonl` are append-only pipeline output, but four suites reached
+  `notify()`/the shared reasoner logger without redirecting them, so a pytest run left lines at
+  an off-cycle minute that read as real cycle output. All four now patch the ticker/state files
+  AND the logger; the suite leaves the live log byte-identical (verified: 0-line delta).
+
 ### Added
 - **GPU driver-reconcile ingest (`gpu_reconcile`, notify-only).** The host's new
   `/etc/apt/apt.conf.d/99-nvidia-module-reconcile` hook (`DPkg::Post-Invoke` →

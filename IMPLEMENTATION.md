@@ -65,7 +65,7 @@ common/             Cfg, ManualStops registry, JSON/log helpers
 config/             ops_brain.yaml (all settings)
 ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
 deploy/             systemd units + installer
-tests/              244 tests
+tests/              250 tests
 docs/               these implementation docs
 IMPLEMENTATION.md   this entry point
 CHANGELOG.md, README.md, MEMORY.md
@@ -104,7 +104,7 @@ CHANGELOG.md, README.md, MEMORY.md
 - **A driver/library mismatch is not silent** — when the loaded nvidia module no longer matches
   the one on disk, the apt hook (`nvidia-module-reconcile`) reloads it or defers with a remedy,
   and `collector/gpu_reconcile_ingest.py` surfaces that as `gpu_reconcile` + a notify-only event.
-- **244 tests** cover the decision-critical logic with mocks (docs/tests.md).
+- **250 tests** cover the decision-critical logic with mocks (docs/tests.md).
 
 ## Release history
 

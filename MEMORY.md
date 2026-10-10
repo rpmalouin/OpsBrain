@@ -50,9 +50,9 @@ truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.
   restart-impact + drift-decay metrics, **Manual Stop Protection (HARD INVARIANT)**,
   **Dockhand desired-state drift** (notify-only), **Hatchdoor vault drift**
   (notify-only), **TrueNAS SCALE panel**,
-  **Federation Layer** (multi-node cluster reasoning; nodes configured at
-  `dockervm:8099`/`truenas:8099`, currently OFFLINE/degrading gracefully on this single VM
-  — test against `127.0.0.1:9120` to see live data).
+  **Federation Layer** (multi-node cluster reasoning; `dockervm` polls this host's own
+  dashboard at `http://127.0.0.1:9120/api/status`; the `truenas` node is disabled — see the
+  Federation section for why the old `:8099` endpoints were wrong).
 - **Dashboard:** `opsbrain-ui` service on `:9120`, published as https://opsbrain.home
   via Caddy. Panels now include System, Cluster Overview, Node Comparison, TrueNAS,
   **Dockhand**, GPU Drift, OpsBrain Decisions, Container Health, Manual Stop Protection,
@@ -197,7 +197,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**244 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**250 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -313,9 +313,46 @@ scan `grid.innerHTML` for container names will false-fail.
   rankings, cross-node anomalies/drift, recommended actions, node online status).
 - Scheduler `run_federation(cycle_no)` runs collector+reasoner every
   `federation.poll_interval_cycles` (default 2 cycles = 4 min), gated by enabled.
-- The configured production endpoints (`dockervm:8099`, `truenas:8099`) are the real
-  multi-node addresses; on the single-VM box they aren't live, so nodes degrade to
-  offline gracefully. Test locally by pointing endpoints at `127.0.0.1:9120`.
+- **Endpoints were wrong until 2026-10-10** — the Cluster Overview could only ever read
+  "0/2 online, stability 0" with a critical `cluster_health_warning` every cycle.
+  `collector_endpoint` must be a node's **OpsBrain dashboard `/api/status`** (or a raw
+  `collector.json`), and on this host `:8099` is **caddy-editor**, which answers 401/404 —
+  never an OpsBrain. Now `dockervm -> http://127.0.0.1:9120/api/status` (online, stability
+  ~92-98) and the `truenas` node is **commented out** in `config/ops_brain.yaml` (nothing
+  there serves the route; it only produced a standing "1 node(s) offline"). Re-enable it only
+  alongside a real per-node OpsBrain.
+- An offline node degrades gracefully (`_failed_node` records `err`, the reasoner scores it 0)
+  but a *permanently configured* offline node is NOT quiet: it fires `cluster_health_warning`
+  (critical) + `escalate_cluster` on every federation cycle. A stale endpoint is a standing
+  alarm, not an all-clear.
+- Actions consume the federation result from the PREVIOUS cycle (stage order is
+  collector → reasoner → actions → federation), so a cluster fix shows in the notifications one
+  cycle later — run `python3 scheduler/scheduler.py --once` twice when verifying by hand.
+- A one-node cluster is a normal state: summary reads "Single-node cluster (dockervm):
+  stability 98.0/100, confidence 0.95." and `recommendations` is empty.
+
+## Notification ticker (message, dedupe, level)
+
+- **`Engine.dispatch` OWNS the notification** for every notify-only verb and uses the **reason**
+  as the ticker text: `notify(str(reason) or str(target) or "<default>", category)`. The target
+  is a count, a list or a name — it must never be relied on as the message (it used to print
+  "3", "sonarr", "stale").
+- **Callers must NOT call `notify()` after `engine.dispatch()`** — doing so wrote two ticker
+  entries per event for months (a bare number plus the real sentence). Deliberate exception:
+  `gpu_unavailable_notice` notifies directly, it does not go through dispatch.
+- The generic verb is `dispatch("notify", <message>, <explanation>)`; the explanation is NOT the
+  category (an LLM sentence landed there and left the entry unclassified). It is now `action`.
+- `ui/server.py::_read_notifications_tail` maps category → level: gpu_drift / gpu_reconcile /
+  gpu_unavailable / manual_stop / restart / loop / prune / cluster_health_warning /
+  reasoner_stale → **critical**; dockhand / vault / cluster_escalate / cluster_notify / disk /
+  low_confidence / packet_drop → **warning**; anything else → **info**. Before this map every
+  category except gpu_drift/restart rendered as the same yellow "warn" chip, so the ticker read
+  as a wall of warnings with no way to spot a real one.
+- Tests that reach `notify` must patch `A.NOTIF_FILE`, `A.STATE_FILE` **and** `A.log` (or `R.log`
+  for the reasoner) — the first two alone still wrote into the live `logs/opsbrain.log`. All
+  four notify/reasoner-touching test files now do this; the suite leaves the live log
+  byte-identical (verified: line delta 0). A pytest burst at an off-cycle minute in
+  `logs/opsbrain.log`/`notifications.jsonl` is still the signature of a suite that isn't guarded.
 
 ## Manual Stop Protection (HARD INVARIANT)
 
@@ -580,7 +617,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **244 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **250 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

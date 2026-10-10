@@ -13,10 +13,10 @@ federation:
   nodes:
     - name: dockervm
       type: linux
-      collector_endpoint: "http://dockervm:8099/api/status"
-    - name: truenas
-      type: storage
-      collector_endpoint: "http://truenas:8099/api/status"
+      collector_endpoint: "http://127.0.0.1:9120/api/status"
+    # - name: truenas
+    #   type: storage
+    #   collector_endpoint: "http://truenas:9120/api/status"
   cluster_stability_weights:   # weights in the stability formula
     confidence: 0.4
     drift: 0.3
@@ -26,6 +26,23 @@ federation:
 ```
 
 Replace the endpoints with your nodes' actual snapshot URLs, then restart the daemon.
+
+**The endpoint is the node's dashboard port (`:9120`), not an arbitrary one.** A wrong port
+does not fail loudly — the node just reads offline forever: on dockerVM, `:8099` is
+*caddy-editor* (HTTP 401/404), so a `http://dockervm:8099/api/status` endpoint produced a
+permanent "0/2 online, stability 0" Cluster Overview and a critical `cluster_health_warning`
+plus `escalate_cluster` on **every** federation cycle. Verify a candidate endpoint by hand
+before wiring it in — it must return HTTP 200 with the `/api/status` envelope (or a raw
+`collector.json`):
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' http://<node>:9120/api/status
+```
+
+A node you cannot serve yet is better commented out than left configured: an offline node
+degrades gracefully at the collector level but still raises a standing critical recommendation.
+Note also that the actions stage consumes the PREVIOUS cycle's cluster result (stage order is
+collector → reasoner → actions → federation), so a fix shows up one cycle later.
 
 ## What it computes
 

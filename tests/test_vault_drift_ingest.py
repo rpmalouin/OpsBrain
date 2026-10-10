@@ -34,9 +34,28 @@ def _write(path, doc):
 _CFG = {"sources": {"vault_drift": {"enabled": True}}}
 
 
+class _NullLog:
+    """Keep this suite out of the LIVE logs: A.notify() writes the ticker file AND logs."""
+
+    def info(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
+
+    def debug(self, *a, **k):
+        pass
+
+
 @pytest.fixture(autouse=True)
-def base_config(monkeypatch):
+def base_config(tmp_path, monkeypatch):
     monkeypatch.setattr(Cfg, "data", deepcopy(_CFG))
+    monkeypatch.setattr(A, "NOTIF_FILE", tmp_path / "notifications.jsonl", raising=False)
+    monkeypatch.setattr(A, "STATE_FILE", tmp_path / "action_state.json", raising=False)
+    monkeypatch.setattr(A, "log", _NullLog())
 
 
 # --------------------------------------------------------------------------- pull_report

@@ -36,9 +36,29 @@ FALLBACK = "deepseek-r1:7b"
 ALT = "qwen2.5-7b-128k:latest"
 
 
+class _NullLog:
+    """The suite must not write into the LIVE logs/opsbrain.log (R.log is the shared logger)."""
+
+    def info(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
+
+    def debug(self, *a, **k):
+        pass
+
+
 @pytest.fixture(autouse=True)
 def cfg(monkeypatch):
     """Config identical in shape to config/ops_brain.yaml (ollama + floor)."""
+    monkeypatch.setattr(R, "log", _NullLog())
+    monkeypatch.setattr(A, "log", _NullLog())
+    monkeypatch.setattr(A, "NOTIF_FILE", Path("/dev/null"), raising=False)
+    monkeypatch.setattr(A, "STATE_FILE", Path("/dev/null"), raising=False)
     monkeypatch.setattr(Cfg, "data", {
         "hostname": "testvm",
         "ollama": {

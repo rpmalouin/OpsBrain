@@ -30,6 +30,22 @@ import collector.collector as C                        # noqa: E402
 
 
 # --------------------------------------------------------------------------- fixtures
+class _NullLog:
+    """The actions/reasoner loggers write to the LIVE logs/opsbrain.log — silence them here."""
+
+    def info(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
+
+    def debug(self, *a, **k):
+        pass
+
+
 @pytest.fixture(autouse=True)
 def base_config(tmp_path, monkeypatch):
     """Point every module at a minimal, reproducible config."""
@@ -67,6 +83,9 @@ def base_config(tmp_path, monkeypatch):
     monkeypatch.setattr(Cfg, "data", cfg)
     # keep notifications out of the real repo during drift tests
     monkeypatch.setattr(A, "notify", lambda *a, **k: None)
+    # ...and keep the suite out of the live logs/opsbrain.log
+    monkeypatch.setattr(A, "log", _NullLog())
+    monkeypatch.setattr(R, "log", _NullLog())
     # stub subprocess execution so unit tests never touch docker/kill/systemctl
     monkeypatch.setattr(A, "run", lambda *a, **k: {"ok": True, "rc": 0, "out": "ok", "err": ""})
     return cfg

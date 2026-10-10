@@ -140,7 +140,14 @@ def _collect_node(node, timeout):
                  "alerts_count": alerts_count}
     # federation_reasoner correlates alarm names / GPU drift flags across nodes by reading
     # node["raw"]; without this key cross-node correlation could never fire for ANY node.
-    node_dict["raw"] = {"collector": coll}
+    # COMPACT on purpose: the shapes it reads are the only ones kept — attaching the whole
+    # collector doc here pushed the cluster snapshot from ~0.5 KB to ~255 KB per cycle.
+    node_dict["raw"] = {"collector": {
+        "netdata": {"alarms_active": [
+            {"name": a.get("name")}
+            for a in (_get(coll, "netdata", "alarms_active") or []) if isinstance(a, dict)]},
+        "gpu": {"drift_flags": [str(f) for f in (_get(coll, "gpu", "drift_flags") or [])]},
+    }}
 
     pools_healthy = _num(_get(coll, "truenas", "pools_healthy"))
     pool_count = _num(_get(coll, "truenas", "pool_count"))
@@ -153,18 +160,42 @@ def _collect_node(node, timeout):
     return node_dict
 
 
+def _merge_local_snapshot(node_dict, node_cfg):
+    """Merge a node's producer snapshot file (Phase 2) into its collected block.
+
+    Never raises: an absent/foreign/old file leaves a `snapshot` block that says so. The producer
+    owns the file; this host only reads it (same rule as the vault-drift report).
+    """
+    from federation.local_snapshot import read_snapshot, merge_snapshot
+    try:
+        path = node_cfg.get("snapshot_file")
+        if not str(path).startswith("/"):
+            path = str(REPO / path)
+        snap = read_snapshot(path, max_age_s=node_cfg.get("snapshot_max_age_s") or 3600)
+        return merge_snapshot(node_dict, snap, source=str(node_cfg.get("snapshot_file")))
+    except Exception as exc:  # noqa: BLE001 - a snapshot must never take a cluster poll down
+        log.warning("local snapshot merge failed for %s: %s", node_cfg.get("name"), exc)
+        return node_dict
+
+
 def collect_cluster(node_list, timeout=6):
     """Collect each node's snapshot and roll up cluster metrics.
 
     A node may override the poll default with its own `timeout_s` (a Netdata-sourced node does
-    several HTTP reads per cycle, so it can be slower than a single /api/status fetch).
+    several HTTP reads per cycle, so it can be slower than a single /api/status fetch), and may
+    carry a `snapshot_file` — a producer snapshot written by the node itself for whatever the live
+    poll cannot see (see federation/local_snapshot.py). The merge runs for offline nodes too, so a
+    dead poll beside a live producer is distinguishable from a dead node.
     """
     timeout = float(timeout)  # urllib accepts float seconds
     nodes = {}
     for node in node_list:
         name = node.get("name") or node.get("collector_endpoint") or "unknown"
         node_timeout = _num(node.get("timeout_s")) or timeout
-        nodes[name] = _collect_node(node, node_timeout)
+        node_dict = _collect_node(node, node_timeout)
+        if node.get("snapshot_file"):
+            node_dict = _merge_local_snapshot(node_dict, node)
+        nodes[name] = node_dict
 
     online = [n for n in nodes.values() if n.get("online")]
     confidences = [n["confidence"] for n in online if n.get("confidence") is not None]

@@ -133,6 +133,13 @@ federation:
       kind: netdata
       collector_endpoint: "http://10.1.10.34:19999"
       timeout_s: 6
+      # Phase 2 (live 2026-10-10): the Mac's own 15-minute cron producer writes the things the
+      # Netdata poll cannot see (Time Machine's last successful backup, mount health, Hermes cron
+      # health, the loopback-only services) into the SMB share, i.e. THIS file. OpsBrain is the
+      # CONSUMER only — never write it from here. Its own `alerts` become the node's anomalies
+      # (a stale file counts once, a missing one is not a fault — see federation/local_snapshot.py).
+      snapshot_file: "logs/macstudio_node.json"
+      snapshot_max_age_s: 3600   # 4 missed ticks of the 15-minute producer
       volumes:                 # explicit list: the Mac exposes 3288 charts, most of them Time
         - "/"                  # Machine snapshot mounts and mounted DMG volumes, so the volumes
         - "/Volumes/Data"      # that matter are named rather than discovered. This is the Mac's

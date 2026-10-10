@@ -163,6 +163,70 @@ def test_collect_node_attaches_raw_so_cross_node_correlation_fires(fake_net):
     assert len(c["drift_correlations"]) == 1                   # both report vram_drift
 
 
+def test_raw_payload_stays_compact(fake_net):
+    """`raw` exists for correlation only: attaching the whole collector doc blew the cluster
+    snapshot up from ~0.5 KB to ~255 KB per cycle."""
+    fd_sentinel = "\"containers_count\""           # a marker only the full collector doc carries
+    doc = FC.collect_cluster([{"name": "a", "collector_endpoint": "http://a:1"}], timeout=2)
+    raw = doc["nodes"]["a"]["raw"]
+    assert set(raw["collector"]) == {"netdata", "gpu"}
+    assert set(raw["collector"]["netdata"]) == {"alarms_active"}
+    assert len(json.dumps(raw)) < 500
+    assert fd_sentinel not in json.dumps(doc)      # no bulk collector payload smuggled through
+
+
+def test_cluster_snapshot_carries_a_node_snapshot_file(tmp_path, monkeypatch):
+    """A node with a `snapshot_file` merges its producer's file: the producer's own alerts become
+    anomalies while the live poll keeps its own fields."""
+    producer = {"schema": 1, "node": "macstudio", "generated_at_utc": "2026-10-10T18:22:24Z",
+                "interval_minutes": 15, "alert_count": 1,
+                "alerts": ["cron: hermes-patch-watchdog last_status=error streak=533"],
+                "host": {"model": "Mac17,14", "load_avg": [5.3, 4.5, 3.4]},
+                "time_machine": {"latest_backup_age_hours": 0.72}}
+    path = tmp_path / "macstudio_node.json"
+    path.write_text(json.dumps(producer))
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, *a):
+            return json.dumps(_status_payload()).encode()
+
+    monkeypatch.setattr(FC.urllib.request, "urlopen", lambda url, timeout=None: Resp())
+    doc = FC.collect_cluster([{"name": "macstudio", "type": "macos", "kind": "netdata",
+                               "collector_endpoint": "http://127.0.0.1:9120/api/status",
+                               "snapshot_file": str(path), "snapshot_max_age_s": 3600}], timeout=2)
+    node = doc["nodes"]["macstudio"]
+    assert node["snapshot"]["state"] == "ok"
+    assert node["snapshot"]["alert_count"] == 1
+    assert node["snapshot"]["time_machine"]["latest_backup_age_hours"] == 0.72
+    assert node["host"]["model"] == "Mac17,14"          # from the producer...
+    assert node["host"]["load_avg"]                     # ...and it adds what the poll lacks
+    assert node["anomalies"] == 1                       # the producer's own alert
+
+
+def test_cluster_snapshot_missing_file_is_not_an_anomaly(tmp_path, monkeypatch):
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, *a):
+            return json.dumps(_status_payload()).encode()
+
+    monkeypatch.setattr(FC.urllib.request, "urlopen", lambda url, timeout=None: Resp())
+    doc = FC.collect_cluster([{"name": "n", "collector_endpoint": "http://n:1",
+                               "snapshot_file": str(tmp_path / "absent.json")}], timeout=2)
+    assert doc["nodes"]["n"]["snapshot"]["state"] == "missing"
+    assert doc["nodes"]["n"]["anomalies"] == 1          # only the stub's own alarm
+
+
 NN_FIXTURES = Path(__file__).parent / "fixtures" / "netdata_mac"
 
 
@@ -259,6 +323,22 @@ def test_per_node_timeout_overrides_the_poll_default(monkeypatch):
     monkeypatch.setattr(FC.urllib.request, "urlopen", urlopen)
     FC.collect_cluster([{"name": "a", "collector_endpoint": "http://a:1", "timeout_s": 2}], timeout=9)
     assert seen and set(seen) == {2.0}
+
+
+def test_cluster_recommendations_name_the_nodes_behind_them():
+    """A bare count ('1 total anomaly(ies) across cluster') is unactionable; with a per-node source
+    like the Mac's snapshot alerts, the ticker entry must name the node."""
+    snap = {"nodes": {
+        "dockervm": {"online": True, "confidence": 0.9, "drift_events": 1,
+                     "anomalies": 0, "restart_events": 0},
+        "macstudio": {"online": True, "confidence": None, "drift_events": 0,
+                      "anomalies": 1, "restart_events": 0}},
+        "cluster_metrics": {"avg_confidence": 0.9, "total_anomalies": 1,
+                            "drift_events": 1, "restart_events": 0}}
+    doc = FR.cluster_reason(snap, WEIGHTS)
+    texts = [r["reason"] for r in doc["recommendations"]]
+    assert any(t.startswith("1 total anomaly(ies) across cluster: macstudio") for t in texts), texts
+    assert any(t.startswith("1 GPU drift event(s) across cluster: dockervm") for t in texts), texts
 
 
 def test_netdata_kind_node_goes_offline_without_crashing_the_cluster(monkeypatch):

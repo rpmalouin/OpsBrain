@@ -1,0 +1,229 @@
+{
+  "schema": 1,
+  "node": "macstudio",
+  "kind": "macos",
+  "label": "Mac Studio (M5 Max)",
+  "hostname": "Mac-Studio.local",
+  "dns_name": "macstudio.home",
+  "address": "10.1.10.34",
+  "generated_at": "2026-10-10T14:22:24-0400",
+  "generated_at_utc": "2026-10-10T18:22:24Z",
+  "producer": "hermes-mac cron mac-node-snapshot (~/.hermes/scripts/mac-node-snapshot.py)",
+  "interval_minutes": 15,
+  "host": {
+    "model": "Mac17,14",
+    "os": "27.0.1",
+    "kernel": "27.0.0",
+    "arch": "arm64",
+    "cpu_cores": 18,
+    "load_avg": [
+      5.33,
+      4.55,
+      3.45
+    ],
+    "uptime_hours": 122.81
+  },
+  "time_machine": {
+    "latest_backup": "/Volumes/.timemachine/D4BD40CE-D911-4470-9D12-C28561705F39/2026-10-10-133911.backup/2026-10-10-133911.backup",
+    "latest_backup_age_hours": 0.72,
+    "destinations": [
+      {
+        "name": "TimeMachine",
+        "kind": "Local"
+      }
+    ]
+  },
+  "disks": [
+    {
+      "path": "/",
+      "total_gib": 926.3,
+      "used_gib": 317.2,
+      "free_gib": 609.1,
+      "used_percent": 34.2
+    },
+    {
+      "path": "/Volumes/Data",
+      "total_gib": 3815.3,
+      "used_gib": 86.3,
+      "free_gib": 3729.0,
+      "used_percent": 2.3
+    },
+    {
+      "path": "/Volumes/Data2",
+      "total_gib": 3725.8,
+      "used_gib": 3066.9,
+      "free_gib": 658.9,
+      "used_percent": 82.3
+    },
+    {
+      "path": "/Volumes/Data3",
+      "total_gib": 3725.8,
+      "used_gib": 32.4,
+      "free_gib": 3693.4,
+      "used_percent": 0.9
+    },
+    {
+      "path": "/Volumes/Data4",
+      "total_gib": 3725.8,
+      "used_gib": 1.6,
+      "free_gib": 3724.2,
+      "used_percent": 0.0
+    },
+    {
+      "path": "/Volumes/TimeMachine",
+      "total_gib": 931.3,
+      "used_gib": 766.2,
+      "free_gib": 165.1,
+      "used_percent": 82.3
+    }
+  ],
+  "mounts": [
+    {
+      "path": "/Volumes/Data",
+      "mounted": true,
+      "read_only": false,
+      "source": "/dev/disk9s1",
+      "fstype": "apfs"
+    },
+    {
+      "path": "/Volumes/Data2",
+      "mounted": true,
+      "read_only": false,
+      "source": "/dev/disk13s1",
+      "fstype": "apfs"
+    },
+    {
+      "path": "/Volumes/Data3",
+      "mounted": true,
+      "read_only": false,
+      "source": "/dev/disk12s1",
+      "fstype": "apfs"
+    },
+    {
+      "path": "/Volumes/Data4",
+      "mounted": true,
+      "read_only": false,
+      "source": "/dev/disk11s1",
+      "fstype": "apfs"
+    },
+    {
+      "path": "/Volumes/TimeMachine",
+      "mounted": true,
+      "read_only": false,
+      "source": "/dev/disk13s3",
+      "fstype": "apfs"
+    },
+    {
+      "path": "/Volumes/hermes",
+      "mounted": true,
+      "read_only": false,
+      "source": "//ron@dockervm/hermes",
+      "fstype": "smbfs"
+    },
+    {
+      "path": "/Volumes/appdata",
+      "mounted": true,
+      "read_only": false,
+      "source": "//ron@dockervm/appdata",
+      "fstype": "smbfs"
+    }
+  ],
+  "volumes_watched": [
+    "/",
+    "/Volumes/Data",
+    "/Volumes/Data2",
+    "/Volumes/Data3",
+    "/Volumes/Data4",
+    "/Volumes/TimeMachine"
+  ],
+  "volumes_skipped": [
+    "/Volumes/makemkv_v2.0.0",
+    "/Volumes/Gemini *",
+    "/Volumes/Install Google Drive",
+    "/Volumes/MusicBrainz Picard 3.0",
+    "/Volumes/documents",
+    "/Volumes/mystuff",
+    "/Volumes/.timemachine/*",
+    "/Volumes/com.apple.TimeMachine.localsnapshots/*",
+    "/System/Volumes/*",
+    "/Volumes/Recovery",
+    "/Volumes/downloads",
+    "/Volumes/music",
+    "/Volumes/media"
+  ],
+  "services": [
+    {
+      "name": "hermes-portal",
+      "port": 8087,
+      "listening": true
+    },
+    {
+      "name": "hindsight-api",
+      "port": 9177,
+      "listening": true
+    },
+    {
+      "name": "llamacpp-router",
+      "port": 18434,
+      "listening": true
+    },
+    {
+      "name": "netdata",
+      "port": 19999,
+      "listening": true
+    }
+  ],
+  "gateway": {
+    "heartbeat_file": "/Users/ron/.hermes/state/gateway.heartbeat",
+    "present": true,
+    "age_seconds": 18.4,
+    "pid": 2166
+  },
+  "hermes_cron": {
+    "jobs_total": 21,
+    "jobs_enabled": 21,
+    "jobs_paused": 0,
+    "jobs_failing": [
+      {
+        "name": "hermes-patch-watchdog",
+        "last_status": "error",
+        "failure_streak": 533,
+        "last_error": "Script exited with code 1\nstderr:\nERROR: /Users/ron/.hermes/patches/bridge-tool-rename.patch no longer applies cleanly to tools/tool_search_catalog.py \u2014 upstrea"
+      }
+    ],
+    "oldest_last_run_hours": 221.37,
+    "unreadable": false
+  },
+  "local_model": {
+    "endpoint": "http://127.0.0.1:18434/v1",
+    "pid": 2512,
+    "process_alive": true,
+    "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+    "reachable": true,
+    "requires_key": true
+  },
+  "netdata": {
+    "up": true,
+    "version": "v2.11.1",
+    "url": "http://127.0.0.1:19999",
+    "alarms": {
+      "normal": 873,
+      "warning": 0,
+      "critical": 1
+    },
+    "alarms_non_normal": [
+      {
+        "name": "disk_space./Volumes/makemkv_v2.0.0.disk_space_usage",
+        "status": "CRITICAL",
+        "value": 98.7848224,
+        "chart": "disk_space./Volumes/makemkv_v2.0.0"
+      }
+    ],
+    "charts": 3310
+  },
+  "alerts": [
+    "cron: hermes-patch-watchdog last_status=error streak=533"
+  ],
+  "alert_count": 1,
+  "build_seconds": 0.18
+}

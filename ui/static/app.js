@@ -111,6 +111,22 @@ function nodeHostLine(n) {
   return parts.length ? escapeHtml(parts.join(" · ")) : "";
 }
 
+// A node's own producer snapshot (Phase 2) carries what no poll can see; show its freshness and its
+// first finding, because a "stale"/"missing" producer is itself worth seeing on the board.
+function nodeSnapshotLine(n) {
+  const s = n.snapshot || {};
+  if (!s.state) return "";
+  const bits = [s.state];
+  const age = num(s.age_s);
+  if (age !== null) bits.push(Math.round(age / 60) + "m old");
+  const tm = s.time_machine && num(s.time_machine.latest_backup_age_hours);
+  if (tm !== null) bits.push("TM " + tm.toFixed(1) + "h");
+  let line = "snapshot " + bits.join(" · ");
+  const alerts = Array.isArray(s.alerts) ? s.alerts : [];
+  if (alerts.length) line += " · " + alerts[0];
+  return escapeHtml(line);
+}
+
 function renderNodeComparison() {
   const snap = state.cluster_snapshot || {};
   const cr = state.cluster_reasoner || {};
@@ -125,9 +141,11 @@ function renderNodeComparison() {
     const dot = n.online ? "#4ade80" : "#f87171";
     const sColor = (s === null) ? "#64748b" : (s >= 80 ? "#4ade80" : (s >= 60 ? "#facc15" : "#f87171"));
     const hostLine = nodeHostLine(n);
+    const snapLine = nodeSnapshotLine(n);
     rows += `<tr class="border-t border-slate-800">` +
       `<td class="py-1"><span class="drift-dot" style="background:${dot}"></span> ${escapeHtml(name)} <span class="text-xs text-slate-500">(${escapeHtml(n.type || "?")})</span>` +
       (hostLine ? `<div class="text-xs text-slate-500">${hostLine}</div>` : "") +
+      (snapLine ? `<div class="text-xs text-slate-500">${snapLine}</div>` : "") +
       `</td>` +
       `<td class="py-1 text-center">${num(n.confidence) === null ? "—" : num(n.confidence).toFixed(2)}</td>` +
       `<td class="py-1 text-center">${num(n.drift_events) ?? 0}</td>` +

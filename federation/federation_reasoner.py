@@ -175,7 +175,12 @@ def _alarm_names(node):
 
 
 def _recommendations(snapshot, score, weights):
-    """Deterministic cluster-level recommendations (notify-only)."""
+    """Deterministic cluster-level recommendations (notify-only).
+
+    Each reason must be a self-contained sentence that NAMES the nodes behind it — a count with no
+    subject ("1 total anomaly(ies) across cluster") is unactionable in the ticker, and with a
+    per-node source like the Mac's snapshot alerts it is now the common case.
+    """
     recs = []
     nodes = snapshot.get("nodes", {}) or {}
     offline = [n for n, nd in nodes.items() if not nd.get("online")]
@@ -191,15 +196,21 @@ def _recommendations(snapshot, score, weights):
             "type": "escalate_cluster", "target": "cluster",
             "reason": f"cluster stability {score}/100 below 60",
             "severity": "warning"})
+    anom_nodes = [n for n, nd in nodes.items()
+                  if nd.get("online") and int(nd.get("anomalies") or 0) > 0]
     if int(metrics.get("total_anomalies", 0)) > 0:
         recs.append({
             "type": "notify_cluster", "target": "cluster",
-            "reason": f"{metrics['total_anomalies']} total anomaly(ies) across cluster",
+            "reason": (f"{metrics['total_anomalies']} total anomaly(ies) across cluster"
+                       + (f": {', '.join(anom_nodes)}" if anom_nodes else "")),
             "severity": "info"})
+    drift_nodes = [n for n, nd in nodes.items()
+                   if nd.get("online") and int(nd.get("drift_events") or 0) > 0]
     if int(metrics.get("drift_events", 0)) > 0:
         recs.append({
             "type": "notify_cluster", "target": "cluster",
-            "reason": f"{metrics['drift_events']} GPU drift event(s) across cluster",
+            "reason": (f"{metrics['drift_events']} GPU drift event(s) across cluster"
+                       + (f": {', '.join(drift_nodes)}" if drift_nodes else "")),
             "severity": "info"})
     return recs
 

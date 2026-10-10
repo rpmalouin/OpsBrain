@@ -98,6 +98,25 @@ notification fires at most once per UTC day.
 A failed reasoner stage is therefore visible in three places: the stage's rc in
 `logs/opsbrain.log`, `reasoner.fresh` in `actions_result.json`, and the notification queue.
 
+## Below-floor capture (why a 0.00 is now readable)
+
+A decision below `actions.qwen_confidence_floor` suppresses the LLM half of the cycle, so nothing
+downstream can show *why* it was low. `reasoner.capture_low_confidence()` therefore appends one
+record per such cycle to **`logs/reasoner_low_conf.jsonl`** — `ts`, `snapshot`, `model`, `thinking`,
+`confidence`, `floor`, `eval_count`, `warnings`/`actions` counts, `summary`, `raw_chars` and the
+model's `raw` text (capped at 4000 chars) — and logs
+`confidence X < floor Y — raw model text kept in logs/reasoner_low_conf.jsonl`. The parse-failure
+path is captured too (it also lands at 0.0), and the capture never changes a decision or notifies.
+
+```bash
+tail -1 logs/reasoner_low_conf.jsonl | python3 -m json.tool | head -20
+```
+
+Diagnostic only, and deliberately not config-gated: an empty file means every cycle cleared the
+floor. Measured 2026-10-10: the answer is sporadically degenerate (0.00 with an "all healthy"
+summary on an input that yields 0.75-0.85 in fresh runs; 7.2 % of 6,243 cycles below the floor),
+so the raw text is the only way to tell "the model said nothing useful" from "we could not read it".
+
 ## Verifying a model change end-to-end
 
 ```bash

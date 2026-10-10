@@ -285,3 +285,98 @@ def test_extract_json_prefers_latest_decision_object():
 def test_extract_json_raises_without_object():
     with pytest.raises(ValueError):
         R.extract_json("no json here at all")
+
+
+# ------------------------------------------------- below-floor raw capture (diagnostics)
+class _StubCfg:
+    """Hermetic Cfg for main(): the real Cfg.load would read the repo config and, worse,
+    write the LIVE logs/reasoner_result.json."""
+
+    def __init__(self, out_path):
+        self._out = out_path
+        self.data = {"hostname": "testvm", "actions": {"qwen_confidence_floor": 0.6},
+                     "paths": {}}
+
+    def load(self, path=None):
+        return self.data
+
+    def get(self, dotted, default=None):
+        node = self.data
+        for key in dotted.split("."):
+            if not isinstance(node, dict) or key not in node:
+                return default
+            node = node[key]
+        return node
+
+    def resolve(self, dotted, base=None):
+        return self._out
+
+
+def _run_reasoner_main(tmp_path, monkeypatch, response, eval_count=11):
+    """Exercise R.main() end to end with a stubbed ollama and a temp output path."""
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    coll = tmp_path / "collector.json"
+    coll.write_text(json.dumps({"timestamp": "2026-10-10T19:02:31+00:00"}))
+    out = tmp_path / "logs" / "reasoner_result.json"
+    monkeypatch.setattr(R, "REPO", tmp_path)
+    monkeypatch.setattr(R, "Cfg", _StubCfg(out))
+    monkeypatch.setattr(R, "resolve_model", lambda *a, **k: PRIMARY)
+    monkeypatch.setattr(R, "fetch_capabilities", lambda *a, **k: {"completion", "thinking"})
+    monkeypatch.setattr(R, "summarize_collector", lambda c: {"host": "testvm"})
+    monkeypatch.setattr(R, "call_ollama",
+                        lambda *a, **k: {"response": response, "eval_count": eval_count})
+    monkeypatch.setattr(sys, "argv", ["reasoner.py", "--collector", str(coll)])
+    monkeypatch.delenv("OPSBRAIN_MODEL", raising=False)
+    assert R.main() == 0
+    return out, tmp_path / "logs" / R.LOW_CONF_FILE
+
+
+def test_low_confidence_capture_writes_the_raw_text(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "REPO", tmp_path)
+    (tmp_path / "logs").mkdir()
+    raw = '{"confidence": 0.0, "summary": "The system is in a healthy state"}'
+    rec = R.capture_low_confidence({"response": raw, "eval_count": 37},
+                                   {"confidence": 0.0, "warnings": [], "actions": [],
+                                    "summary": "healthy"},
+                                   PRIMARY, "2026-10-10T19:02:31+00:00", 0.6)
+    line = json.loads((tmp_path / "logs" / R.LOW_CONF_FILE).read_text().strip())
+    assert line["confidence"] == 0.0 and line["floor"] == 0.6
+    assert line["model"] == PRIMARY and line["eval_count"] == 37
+    assert line["snapshot"] == "2026-10-10T19:02:31+00:00"
+    assert line["raw"] == raw and line["raw_chars"] == len(raw)
+    assert rec["raw"] == raw
+
+
+def test_low_confidence_capture_appends_and_truncates(tmp_path, monkeypatch):
+    """The model text is capped but the file grows: a below-floor pattern is the point."""
+    monkeypatch.setattr(R, "REPO", tmp_path)
+    (tmp_path / "logs").mkdir()
+    R.capture_low_confidence({"response": "x" * (R.RAW_KEEP_CHARS + 500), "eval_count": 1},
+                             {"confidence": 0.1}, PRIMARY, "s1", 0.6)
+    R.capture_low_confidence({"response": "short", "eval_count": 2},
+                             {"confidence": 0.2}, PRIMARY, "s2", 0.6)
+    lines = (tmp_path / "logs" / R.LOW_CONF_FILE).read_text().strip().splitlines()
+    assert len(lines) == 2
+    assert len(json.loads(lines[0])["raw"]) == R.RAW_KEEP_CHARS
+    assert json.loads(lines[0])["raw_chars"] == R.RAW_KEEP_CHARS + 500
+    assert json.loads(lines[1])["raw"] == "short"
+
+
+def test_main_keeps_raw_text_when_the_decision_is_below_the_floor(tmp_path, monkeypatch):
+    """A 0.00 cycle suppresses the LLM half; without this the reason could never be read back."""
+    out, low = _run_reasoner_main(
+        tmp_path, monkeypatch,
+        '{"confidence": 0.0, "summary": "The system is in a healthy state, no findings"}')
+    assert low.exists()
+    rec = json.loads(low.read_text().strip())
+    assert rec["confidence"] == 0.0 and rec["eval_count"] == 11
+    assert "healthy state" in rec["raw"]
+    assert json.loads(out.read_text())["confidence"] == 0.0      # decision still written
+
+
+def test_main_captures_nothing_when_the_decision_is_healthy(tmp_path, monkeypatch):
+    out, low = _run_reasoner_main(
+        tmp_path, monkeypatch,
+        '{"confidence": 0.85, "summary": "restart storm on roonserver", "warnings": ["x"]}')
+    assert json.loads(out.read_text())["confidence"] == 0.85
+    assert not low.exists()

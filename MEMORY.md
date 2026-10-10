@@ -73,7 +73,8 @@ scheduler/report.py            -> reports/YYYY-MM-DD.md
 Extra runtime files (gitignored): `logs/action_state.json` (sustained-CPU counters &
 memory baselines), `logs/gpu_baseline.json`, `logs/gpu_drift_events.jsonl`,
 `logs/gpu_daily_stats.json`, `logs/manual_stops.json` (protected registry),
-`logs/prev_running.json`, `logs/notifications.jsonl`, `logs/opsbrain.log`.
+`logs/prev_running.json`, `logs/notifications.jsonl`, `logs/opsbrain.log`,
+`logs/reasoner_low_conf.jsonl` (below-floor model text, appended).
 
 ## CRITICAL — Qwen3 / Ollama quirk (do not "fix" this back)
 
@@ -148,6 +149,29 @@ and actions replayed the 2026-09-14 decision for ~2 days (`reasoner: {fresh: fal
   column is the truth about the window. Ladder + mechanism: skill `ollama-local-inference`,
   "VRAM fit".
 
+## Below-floor reasoner capture (added 2026-10-10)
+
+A decision under `actions.qwen_confidence_floor` (0.6) suppresses the LLM half for that cycle, and
+until now the only artefact was `confidence: 0.0` — the raw model text was never kept (only the
+manual `--raw` flag wrote `logs/reasoner_raw.json`, and the scheduler never passes it), so a
+degenerate answer could not be read back afterwards.
+
+`reasoner.capture_low_confidence()` now appends one record per below-floor cycle to
+**`logs/reasoner_low_conf.jsonl`**: `ts`, `snapshot`, `model`, `thinking`, `confidence`, `floor`,
+`eval_count`, warning/action counts, `summary`, `raw_chars`, and `raw` (capped at 4000 chars), with
+a `log.warning("confidence X < floor Y — raw model text kept…")` line in `logs/opsbrain.log`. The
+parse-failure path (also 0.0) is captured too, which is what makes "the model said nothing useful"
+decidable from "we could not read its output".
+
+**Measured 2026-10-10 (do not chase this as a pipeline bug):** the reasoner is sporadically
+degenerate — a live cycle answered `confidence 0.00` with an "all healthy, no findings" summary on
+a digest that yields **0.85 / 0.75 / 0.80** across three fresh runs on the same input, and the
+confidence key is present in every response (a parse failure looks different: empty findings +
+a `parse error:` summary). Over 6,243 logged cycles **7.2 %** sit below the floor; 84 are exactly
+0.00, 60 of those with findings. The rate tracks cadence, not load: 26-140/day in the 2-minute era
+vs **1-5/day** since the 2026-09-04 hourly retune. The floor does its job — the deterministic rules
+keep running — and the dashboard ticker surfaces it as a *warn*.
+
 ## Naming / data-source gotchas
 
 - **`dockpeek`** (not "dockpeak") is the real container. It is a Flask app: `/health` is
@@ -198,7 +222,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**304 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**308 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -744,7 +768,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **304 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **308 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

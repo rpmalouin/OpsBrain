@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 304 tests
+python3 -m pytest        # 308 tests
 python3 -m pytest -q     # quiet
 ```
 
@@ -25,12 +25,14 @@ python3 -m pytest -q     # quiet
   on disk, and drives `state`/`attention` (`ok` / `mismatch` / `deferred` / `failed`); a
   deferral the hook later reloaded past stops alarming. `gpu_reconcile_actions` is notify-only
   (once per UTC day, never `docker_restart`/`gpu_kill`/`docker_prune`).
-- **Model selection + `think` gate** (`tests/test_reasoner_models.py`, 23 tests) —
+- **Model selection + `think` gate** (`tests/test_reasoner_models.py`, 32 tests) —
   `pick_model`/`resolve_model` (primary → fallback → alt, `:latest` normalization, never an
   unconfigured substitution), `decide_think` (thinking / non-thinking / unknown
   capability), `build_body` (think sent, `format` never), `call_ollama` (400-with-thinking →
-  one retry without), `extract_json` resilience, and the stale-decision guard
-  `actions.reasoner_decision_state`.
+  one retry without), `extract_json` resilience, the stale-decision guard
+  `actions.reasoner_decision_state`, and the below-floor raw capture
+  (`capture_low_confidence` writes/appends/truncates, `main()` captures at 0.0 and stays silent
+  at 0.85 — both end-to-end through a stubbed ollama and a temp output path).
 - **`actions.gpu_drift_actions`** — stuck_process kill (conf>0.8) vs notify-only
   (conf<=0.8), notify-only for the other four flags, Qwen∪deterministic flag union.
 - **`Engine.dispatch`** — ollama-restart guard, manual-stop gate, cluster verbs.

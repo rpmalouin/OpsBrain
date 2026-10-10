@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -29,6 +30,47 @@ log = get_logger("reasoner")
 TEMPLATE_PATH = REPO / "reasoner" / "prompt.txt"
 ALLOWED_VERBS = {"docker_restart", "docker_prune", "service_restart", "gpu_kill", "notify"}
 GPU_DRIFT_FLAGS = {"vram_drift", "vram_overload", "stuck_process", "power_drift", "temp_drift"}
+LOW_CONF_FILE = "reasoner_low_conf.jsonl"
+RAW_KEEP_CHARS = 4000        # model text kept per below-floor record
+
+
+def capture_low_confidence(resp, decision, model, snapshot, floor):
+    """Keep the raw model text + eval count for a below-floor decision.
+
+    A decision under the action floor suppresses the LLM half for that cycle, and the only
+    artefact it left behind was `confidence: 0.0` — the raw text was never kept (only the
+    manual ``--raw`` flag saved it, and the scheduler never passes it), so a degenerate
+    answer could not be read back afterwards. Measured 2026-10-10: the live reasoner
+    answered `0.00` with an "all healthy, no findings" summary on a digest that yields
+    0.75-0.85 in fresh runs on the same input, and across 6,243 logged cycles 7.2 % sat
+    below the floor (1-5/day since the hourly retune). This appends one record per such
+    cycle — the parse-failure path (also confidence 0.0) included, which is what makes the
+    difference between "the model said nothing useful" and "we could not read it"
+    decidable later. Diagnostic only: it changes no decision and notifies nobody.
+    """
+    raw = str(resp.get("response", "") or "")
+    rec = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "snapshot": snapshot,
+        "model": model,
+        "thinking": bool(_LAST_CALL.get("thinking")),
+        "confidence": decision.get("confidence"),
+        "floor": floor,
+        "eval_count": resp.get("eval_count"),
+        "warnings": len(decision.get("warnings") or []),
+        "actions": len(decision.get("actions") or []),
+        "summary": str(decision.get("summary") or "")[:500],
+        "raw_chars": len(raw),
+        "raw": raw[:RAW_KEEP_CHARS],
+    }
+    path = REPO / "logs" / LOW_CONF_FILE
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError as e:
+        log.warning("could not append %s: %s", LOW_CONF_FILE, e)
+    return rec
 
 
 def load_manual_stop_names():
@@ -371,6 +413,16 @@ def main():
     decision["timestamp"] = collector.get("timestamp")
     out = Cfg.resolve("paths.reasoner_json")
     write_json(out, decision)
+    # Below the floor the LLM half is suppressed for this cycle, so nothing downstream will
+    # show WHY: keep the raw text (and the eval count) for the after-the-fact read.
+    floor_raw = Cfg.get("actions.qwen_confidence_floor", 0.6)
+    floor = float(floor_raw) if isinstance(floor_raw, (int, float, str)) else 0.6
+    conf = float(decision.get("confidence") or 0.0)
+    if conf < floor:
+        rec = capture_low_confidence(resp, decision, model, decision["timestamp"], floor)
+        log.warning("confidence %.2f < floor %.2f — raw model text kept in logs/%s "
+                    "(eval_count=%s, %s chars)", conf, floor,
+                    LOW_CONF_FILE, rec["eval_count"], rec["raw_chars"])
     log.info("decision: conf=%.2f warnings=%s actions=%s",
              decision["confidence"], len(decision["warnings"]), len(decision["actions"]))
     return 0

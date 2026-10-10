@@ -7,6 +7,21 @@ milestone).
 
 ## [Unreleased]
 
+### Added
+- **Below-floor reasoner capture — a `confidence: 0.0` cycle is now readable after the fact.**
+  The raw model text was only ever kept by the manual `--raw` flag (the scheduler never passes it),
+  so a decision that landed under `actions.qwen_confidence_floor` — which suppresses the LLM half
+  of that cycle — left `confidence: 0.0` and nothing else. `reasoner.capture_low_confidence()` now
+  appends one record per below-floor cycle to `logs/reasoner_low_conf.jsonl` (`ts`, `snapshot`,
+  `model`, `thinking`, `confidence`, `floor`, `eval_count`, warning/action counts, `summary`,
+  `raw_chars`, and the `raw` text capped at 4000 chars) and logs
+  `confidence X < floor Y — raw model text kept in logs/reasoner_low_conf.jsonl`. The parse-failure
+  path is captured too (it also lands at 0.0), which is what separates "the model said nothing
+  useful" from "we could not read its output". Diagnostic only — it changes no decision and notifies
+  nobody. Measured 2026-10-10: the answer is sporadically degenerate (0.00 with an "all healthy, no
+  findings" summary on a digest that yields 0.85/0.75/0.80 across three fresh runs on the same
+  input; 7.2 % of 6,243 logged cycles sit below the floor, 1-5/day since the hourly retune).
+
 ### Fixed
 - **Cross-node correlation was dead code.** `federation_reasoner.detect_cross_correlations()` reads
   `node["raw"]["collector"]["netdata"]["alarms_active"]` / `["gpu"]["drift_flags"]`, but

@@ -53,6 +53,12 @@ milestone).
   and browser alerts no longer die silently: `ws.onmessage` diffed by array length, so once the
   100-entry ring saturated the 50-entry payload never grew again and no desktop alert fired for
   the rest of the session.
+- **A "live" notification could be an hour late.** `refresh_snapshot` only read
+  `notifications.jsonl` when `collector.json` had changed, but the pipeline writes notifications
+  AFTER the collector (actions are the last stage of a cycle) and that file is not watched — so
+  each event waited for the next cycle's collector write to be shown. The ring is now read on
+  every refresh and a new alert is itself a reason to push to clients; verified live: a forced
+  cycle's notifications rendered within ~4 s.
 - **The test suite wrote into the live logs.** `logs/opsbrain.log` and
   `logs/notifications.jsonl` are append-only pipeline output, but four suites reached
   `notify()`/the shared reasoner logger without redirecting them, so a pytest run left lines at

@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 303 tests
+python3 -m pytest        # 304 tests
 python3 -m pytest -q     # quiet
 ```
 

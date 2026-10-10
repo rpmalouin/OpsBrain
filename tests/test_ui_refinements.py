@@ -49,6 +49,34 @@ def test_ticker_detected_conditions_use_ticker_levels():
     S._notifications.clear()
 
 
+def test_notifications_ingest_without_a_collector_change(tmp_path, monkeypatch):
+    """notifications.jsonl is not a watched file and the pipeline writes it AFTER the collector
+    (actions run last), so an ingest gated on a collector change showed each notification up to
+    an hour late."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "notifications.jsonl").write_text("")     # first refresh seeds the ring at EOF
+    actions = logs / "actions_result.json"
+    actions.write_text(json.dumps({"actions": [], "dry_run": False}))
+    monkeypatch.setattr(S, "REPO", tmp_path)
+    monkeypatch.setattr(S, "CFG", {"refresh_seconds": 2, "watch": [actions]})
+    monkeypatch.setattr(S, "_ingest_offset", None)
+    monkeypatch.setattr(S, "_last_state", {})
+    S._notifications.clear()
+    S.refresh_snapshot()
+
+    with (logs / "notifications.jsonl").open("a") as fh:
+        fh.write(json.dumps({"ts": time.time(), "category": "manual_stop_protection",
+                             "message": "Manual-stop protection BLOCKED restart of plex"}) + "\n")
+    actions.write_text(json.dumps({"actions": [{"verb": "docker_restart"}], "dry_run": False}))
+
+    assert S.refresh_snapshot() is True               # a new alert is reason enough to push
+    assert [n["msg"] for n in S._snapshot["notifications"]] == \
+        ["Manual-stop protection BLOCKED restart of plex"]
+    assert S._snapshot["notifications"][0]["severity"] == "critical"
+    S._notifications.clear()
+
+
 def test_tail_ingests_only_new_lines(tmp_path, monkeypatch):
     """History must NOT be replayed: a dashboard restart used to dump the last 100 records
     of the (34k-line) notifications log into the ticker as if they were live."""

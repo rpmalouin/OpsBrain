@@ -198,7 +198,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**303 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**304 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -474,6 +474,13 @@ default / `netdata`), and `collect_cluster` honours a per-node `timeout_s`.
   50-entry cap and no desktop alert ever fired again for that tab. The client now scans the list
   each tick and dedupes by `type:message` (`handleNewNotifications`).
 
+- **The ticker must not wait for a collector change.** `logs/notifications.jsonl` is not a watched
+  file, and the pipeline writes it AFTER the collector doc (actions run last in a cycle), so the
+  ingest used to happen only on the NEXT collector change — up to an hour later, on a panel called
+  "Live". `refresh_snapshot` now ingests the ring on every refresh and treats new alerts as a
+  reason to push to clients (`changed = True`); verified live 2026-10-10: a forced cycle's records
+  were rendered within ~4 s of being written.
+
 ## Manual Stop Protection (HARD INVARIANT)
 
 Rule: **"Manually stopped containers must stay stopped"** — OpsBrain must NEVER
@@ -737,7 +744,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **303 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **304 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

@@ -462,6 +462,17 @@ def refresh_snapshot():
     merged["cluster_snapshot"] = merged["sources"].get("cluster_snapshot.json", {"nodes": {}, "cluster_metrics": {}})
     merged["cluster_reasoner"] = merged["sources"].get("cluster_reasoner_result.json", {})
 
+    # notifications.jsonl is NOT one of the watched files, and the pipeline writes it AFTER the
+    # collector file (actions run last in a cycle), so ingest it on EVERY refresh: gating this on
+    # a collector change showed each notification up to an hour late — a panel called "Live"
+    # that lags the cycle it describes.
+    log_notifs = _read_notifications_tail()
+    for n in log_notifs:
+        _notifications.append(n)
+    if log_notifs:
+        merged["notifications"] = list(_notifications)[-50:]
+        changed = True                      # a new alert is a reason to push to clients
+
     if changed:
         rea = merged["reasoner"] or {}
         act = merged["actions"] or {}
@@ -469,10 +480,6 @@ def refresh_snapshot():
             col = merged["collector"] or {}
             _update_history(col, rea)
             _check_notifications(col, rea, act)
-            # ingest any new agent-side notifications from notifications.jsonl
-            log_notifs = _read_notifications_tail()
-            for n in log_notifs:
-                _notifications.append(n)
             merged["notifications"] = list(_notifications)[-50:]
             merged["history"] = _history_payload()
 

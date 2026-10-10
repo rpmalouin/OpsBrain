@@ -54,8 +54,11 @@ level chip and the event's own UTC time (`HH:MMZ`). Two producers feed it:
 
 The panel is LIVE-ONLY: the JSONL ring is a byte offset seeded at EOF on the first read after a
 UI start, so a restart never replays historical records (it used to dump the last 100 of a
-34k-line log into the ticker). The header chip counts what is wrong (`⚠ N critical`, else
-`N warn`), not the length of the in-memory list.
+34k-line log into the ticker). The ring is read on EVERY refresh — `notifications.jsonl` is not a
+watched file and the pipeline writes it after the collector, so an ingest tied to a collector
+change showed each event up to an hour late — and a new alert is itself a reason to broadcast to
+clients. The header chip counts what is wrong (`⚠ N critical`, else `N warn`), not the length of
+the in-memory list.
 
 ## Files streamed (WebSocket, every 2s on change)
 

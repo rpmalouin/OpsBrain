@@ -94,6 +94,23 @@ function renderClusterOverview() {
 }
 
 // ------------------------------------------------- Node Comparison
+// Nodes are not all container hosts: a node with a `host` block (a Netdata-sourced node, e.g.
+// the Mac) reports OS/CPU/RAM instead of containers. Render that as a sub-line, not a new column,
+// so the table shape stays stable for every node kind.
+function nodeHostLine(n) {
+  const h = n.host || {};
+  const parts = [];
+  if (h.os) parts.push(h.os);
+  if (h.cpu) parts.push(h.cpu);
+  if (h.cores !== undefined && h.cores !== null) parts.push(h.cores + "c");
+  if (h.ram_total_gb) parts.push(h.ram_total_gb + " GB");
+  const ram = num(h.ram_used_percent);
+  if (ram !== null) parts.push("RAM " + ram.toFixed(0) + "%");
+  const disk = num(n.disk_used_percent);
+  if (disk !== null) parts.push("worst disk " + disk.toFixed(0) + "%");
+  return parts.length ? escapeHtml(parts.join(" · ")) : "";
+}
+
 function renderNodeComparison() {
   const snap = state.cluster_snapshot || {};
   const cr = state.cluster_reasoner || {};
@@ -107,8 +124,11 @@ function renderNodeComparison() {
     const s = num(stab[name]);
     const dot = n.online ? "#4ade80" : "#f87171";
     const sColor = (s === null) ? "#64748b" : (s >= 80 ? "#4ade80" : (s >= 60 ? "#facc15" : "#f87171"));
+    const hostLine = nodeHostLine(n);
     rows += `<tr class="border-t border-slate-800">` +
-      `<td class="py-1"><span class="drift-dot" style="background:${dot}"></span> ${escapeHtml(name)} <span class="text-xs text-slate-500">(${escapeHtml(n.type || "?")})</span></td>` +
+      `<td class="py-1"><span class="drift-dot" style="background:${dot}"></span> ${escapeHtml(name)} <span class="text-xs text-slate-500">(${escapeHtml(n.type || "?")})</span>` +
+      (hostLine ? `<div class="text-xs text-slate-500">${hostLine}</div>` : "") +
+      `</td>` +
       `<td class="py-1 text-center">${num(n.confidence) === null ? "—" : num(n.confidence).toFixed(2)}</td>` +
       `<td class="py-1 text-center">${num(n.drift_events) ?? 0}</td>` +
       `<td class="py-1 text-center">${num(n.anomalies) ?? 0}</td>` +

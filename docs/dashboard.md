@@ -19,7 +19,8 @@ list of log files streamed on change).
 2. **Cluster Overview** — cluster stability score (0–100), nodes online, avg confidence,
    total anomalies / drift / restart events, recommendations.
 3. **Node Comparison** — per-node confidence / drift / anomalies / restarts / stability
-   table with online/offline health dots.
+   table with online/offline health dots, plus a host-facts sub-line (OS, CPU, cores, RAM,
+   worst watched disk) for nodes that report a `host` block instead of containers.
 4. **TrueNAS** — pool status + health, system version/model/RAM/uptime, disk count,
    active alerts.
 5. **Container Health** — running/exited, per-container CPU/RAM, restart-loop badge,

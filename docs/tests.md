@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 250 tests
+python3 -m pytest        # 272 tests
 python3 -m pytest -q     # quiet
 ```
 
@@ -40,6 +40,12 @@ python3 -m pytest -q     # quiet
 - **Federation** — `_num`/`_cnt` coercion, `reverse_normalize`, cluster stability score
   (spec math), node stability (null-conf-online credit, offline=0), ranking,
   recommendations, empty/all-offline, cross-node correlation.
+- **Netdata-sourced node** (`tests/test_netdata_node.py`, 17 tests) — `parse_info` host facts,
+  the alarm keep-set plus the name/mount skip-lists (a mounted-DMG CRITICAL must NOT survive),
+  GiB→percent volume math, the macOS RAM definition, the node-block contract, and degradation to
+  `null` fields (a 404 chart is never an offline node). `test_federation.py` adds the
+  `kind: netdata` dispatch, the per-node `timeout_s` override, and the regression that
+  `_collect_node` attaches `raw` — cross-node correlation was dead code without it.
 - **Dashboard refinements** — confidence recovery, drift decay, restart impact.
 - **Dockhand desired-state ingest** (`tests/test_dockhand_ingest.py`, 25 tests) — DB pull
   (ok / missing-DB / missing-table, host path mapping), `normalize` (compose parse,
@@ -59,7 +65,7 @@ Run it after touching `actions.py`, `reasoner.py`, `common/`, `collector/`, or
 
 `pytest.ini` sets `testpaths = tests` and quiet output. The test files live in `tests/`
 (`test_opsbrain.py`, `test_manual_stops.py`, `test_collector_manual_stops.py`,
-`test_truenas.py`, `test_federation.py`, `test_ui_refinements.py`,
+`test_truenas.py`, `test_federation.py`, `test_netdata_node.py`, `test_ui_refinements.py`,
 `test_dockhand_ingest.py`, `test_vault_drift_ingest.py`, `test_scheduler_cadence.py`,
 `test_reasoner_models.py`, `test_gpu_visibility.py`, `test_gpu_reconcile_ingest.py`, plus the
 dashboard tests).

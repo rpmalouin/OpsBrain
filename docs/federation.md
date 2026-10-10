@@ -1,9 +1,12 @@
 # Federation layer (multi-node)
 
-Ops Brain can reason about **multiple nodes as a unified cluster**. Each node must expose
-a collector snapshot as JSON over HTTP — the easiest way is to run Ops Brain on that node
-too and use its dashboard endpoint (`http://<node>:9120/api/status`, which includes the
-`collector` doc). The federation collector also tolerates a raw `collector.json` document.
+Ops Brain can reason about **multiple nodes as a unified cluster**. A node is polled over HTTP and
+must serve JSON in one of two shapes, selected by the node's `kind` (absent = `opsbrain`):
+
+| `kind` | What the endpoint must serve | Use for |
+|---|---|---|
+| `opsbrain` (default) | this host's dashboard envelope `http://<node>:9120/api/status` (which embeds the `collector` doc), or a raw `collector.json` | a host running Ops Brain |
+| `netdata` | a **Netdata HTTP API** (`http://<node>:19999`) | a host running Netdata but **not** Ops Brain — reduced by `federation/netdata_node.py` |
 
 ## Configure nodes
 
@@ -14,6 +17,17 @@ federation:
     - name: dockervm
       type: linux
       collector_endpoint: "http://127.0.0.1:9120/api/status"
+    - name: macstudio                # Netdata-sourced: nothing is installed on the Mac
+      type: macos
+      kind: netdata
+      collector_endpoint: "http://10.1.10.34:19999"
+      timeout_s: 6
+      volumes: ["/", "/Volumes/Data", "/Volumes/Data2", "/Volumes/Data3",
+                "/Volumes/Data4", "/Volumes/TimeMachine"]
+      alarm_keep: ["CRITICAL", "WARNING", "ERROR"]
+      alarm_skip_names: ["disk_fill_rate", "disk_inode_rate"]
+      alarm_skip_mounts: ["/Volumes/makemkv", "/Volumes/Gemini", "/Volumes/Install",
+                          "/Volumes/MusicBrainz", "com.apple.TimeMachine.localsnapshots"]
     # - name: truenas
     #   type: storage
     #   collector_endpoint: "http://truenas:9120/api/status"
@@ -25,7 +39,9 @@ federation:
   poll_interval_cycles: 2      # run federation every N scheduler cycles (2 h at 3600s cadence)
 ```
 
-Replace the endpoints with your nodes' actual snapshot URLs, then restart the daemon.
+Replace the endpoints with your nodes' actual snapshot URLs, then restart the daemon (a config-only
+change needs no restart: the scheduler shells out to the federation scripts per run, so the next
+federation cycle picks it up).
 
 **The endpoint is the node's dashboard port (`:9120`), not an arbitrary one.** A wrong port
 does not fail loudly — the node just reads offline forever: on dockerVM, `:8099` is
@@ -43,6 +59,43 @@ A node you cannot serve yet is better commented out than left configured: an off
 degrades gracefully at the collector level but still raises a standing critical recommendation.
 Note also that the actions stage consumes the PREVIOUS cycle's cluster result (stage order is
 collector → reasoner → actions → federation), so a fix shows up one cycle later.
+
+## Netdata-sourced nodes (`kind: netdata`)
+
+`federation/netdata_node.py` reduces a remote Netdata API into the same node block an OpsBrain node
+produces, so a host that runs Netdata but not Ops Brain (the Mac Studio) joins the cluster with
+**nothing installed on it** — no agent, no Ops Brain, no writes. Per cycle it reads:
+
+```
+GET /api/v1/info                            -> host facts (os, cpu model, cores, RAM, uptime)
+GET /api/v1/alarms?all                      -> active alarms, filtered (see below)
+GET /api/v1/data?chart=disk_space.<mount>   -> per-configured-volume usage
+GET /api/v1/data?chart=system.ram           -> RAM in use
+```
+
+Node block: `confidence: null` (there is no reasoner on that host — the federation reasoner gives an
+online node with null confidence **full credit**, and `cluster_confidence` ignores it rather than
+averaging a fake 0), `anomalies` = kept alarm count, `drift_events`/`restart_events` = 0,
+`containers` = `0/0` (no Docker there), plus display-only `host`, `volumes`, `alarms`, `uptime_s`.
+
+Three traps this adapter exists to absorb — each measured on the Mac, 2026-10-10:
+
+1. **The only CRITICAL there is a mounted installer disk image.** Per-mount alarms are the host's own
+   verdicts, but a DMG mount (`/Volumes/makemkv_v2.0.0` at 98.8 %) is transient and immaterial; left
+   unfiltered it becomes a permanent `anomalies: 1`, a `notify_cluster` every federation cycle and a
+   Mac stuck below 100 stability. Hence `alarm_skip_mounts` (and `alarm_skip_names` for the
+   `disk_fill_rate`/`disk_inode_rate` alarms, which are UNINITIALIZED on every Time Machine snapshot
+   mount).
+2. **Never enumerate disk charts.** The Mac exposes 3288 charts, most of them Time Machine
+   snapshot and DMG mounts, so the worst-volume metric would be garbage. `volumes:` is an explicit
+   list.
+3. **`disk_space.*` dimensions are GiB, not percent.** The root volume reports `used=315.3` on a
+   34 % full disk; the percentage is computed from `used / (used + avail)`. RAM is
+   `active + wired + compressor` (Activity Monitor's "Memory Used") — the naive
+   `total - free` reports ~98 % on a healthy macOS box, because macOS counts cache as occupied.
+
+Alarms and per-volume disk are best-effort: a chart that 404s leaves a null field, never an offline
+node. Only `/info` and `/alarms` failing marks the node offline.
 
 ## What it computes
 
@@ -70,7 +123,8 @@ and restart caps.
 - **Cluster Overview** panel: stability score, nodes online, avg confidence, totals,
   recommendations.
 - **Node Comparison** panel: per-node confidence / drift / anomalies / restarts /
-  stability with online/offline health dots.
+  stability with online/offline health dots, plus a sub-line of host facts (OS, CPU, cores, RAM,
+  worst watched disk) for nodes that report a `host` block instead of containers.
 - Daily report gains a **Cluster Summary** section.
 
 ## Degradation

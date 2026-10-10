@@ -39,7 +39,7 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
   reports/            daily markdown reports
   ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
   deploy/             systemd units + installer
-  tests/              pytest suite (250 tests)
+  tests/              pytest suite (272 tests)
   docs/               per-feature implementation guides
   Dockerfile, docker-compose.yml, README.md, IMPLEMENTATION.md, CHANGELOG.md, .gitignore
 ```
@@ -149,9 +149,12 @@ recommendations, and any Qwen-generated action. It must also not destroy one via
 
 ## Federation Layer (multi-node)
 
-OpsBrain can reason about multiple nodes as one cluster. Configure `federation.nodes`
-with each node's collector snapshot endpoint; every 2 cycles the federation collector
-merges them and the reasoner computes:
+OpsBrain can reason about multiple nodes as one cluster. Each entry in `federation.nodes`
+names a `kind`: `opsbrain` (default) points at a node's OpsBrain dashboard
+(`http://<node>:9120/api/status`) or a raw `collector.json`, and `netdata` points at a host's
+**Netdata API** — for a machine that runs Netdata but not OpsBrain (the Mac Studio), which joins
+the cluster with nothing installed on it. Every 2 cycles the federation collector merges them and
+the reasoner computes:
 
 - **Cluster stability score** (0–100): `(conf*0.4 + drift*0.3 + anomalies*0.2 + restarts*0.1) * 100`
   (drift/anomalies/restarts reverse-normalized to 0..1)
@@ -162,7 +165,8 @@ merges them and the reasoner computes:
   per-node remediation still obeys confidence gating, manual-stop protection, and caps.
 
 The dashboard surfaces a **Cluster Overview** (stability, avg confidence, totals) and a
-**Node Comparison** table; the daily report gains a **Cluster Summary** section.
+**Node Comparison** table (with a host-facts sub-line for nodes that report a `host` block instead
+of containers); the daily report gains a **Cluster Summary** section.
 
 Federation degrades gracefully: if a node endpoint is unreachable it is marked offline,
 the cluster score drops, and a health warning is emitted rather than any automation.
@@ -202,7 +206,7 @@ deterministic (no LLM).**
 
 ## Tests
 
-`python3 -m pytest` — **250 tests** across `tests/` (whitelist gate, deterministic rules,
+`python3 -m pytest` — **272 tests** across `tests/` (whitelist gate, deterministic rules,
 output sanitization, GPU drift + GPU visibility + GPU driver reconcile, manual-stop invariant,
 TrueNAS parse, federation math & correlations, dashboard refinements, Dockhand desired-state
 ingest, model selection / `think` gate, stale-decision guard). Run before pushing changes to

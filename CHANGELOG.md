@@ -8,6 +8,12 @@ milestone).
 ## [Unreleased]
 
 ### Fixed
+- **Cross-node correlation was dead code.** `federation_reasoner.detect_cross_correlations()` reads
+  `node["raw"]["collector"]["netdata"]["alarms_active"]` / `["gpu"]["drift_flags"]`, but
+  `federation_collector._collect_node()` never put a `raw` key in the node block — so
+  `anomaly_correlations` / `drift_correlations` could never fire, for any node, in any cluster
+  size. The collector now attaches `raw`; a regression test collects two nodes and asserts the
+  shared alarm name and drift flag are correlated.
 - **Cluster Overview could only ever read red.** `federation.nodes` pointed `dockervm` at
   `http://dockervm:8099/api/status` — and `:8099` on this host is *caddy-editor* (401/404), not
   an OpsBrain — while `truenas` pointed at a box with nothing listening. Both nodes were
@@ -35,6 +41,23 @@ milestone).
   AND the logger; the suite leaves the live log byte-identical (verified: 0-line delta).
 
 ### Added
+- **Netdata-sourced cluster nodes (`kind: netdata`) — the Mac Studio joins the cluster.**
+  `federation.nodes[]` entries now select their source with `kind` (`opsbrain`, the default, or
+  `netdata`). A `netdata` node is reduced from a host's own Netdata HTTP API by the new
+  `federation/netdata_node.py` (`/api/v1/info`, `/api/v1/alarms?all`, per-volume
+  `/api/v1/data?chart=disk_space.<mount>`, `system.ram`, `system.uptime`) into the same node block
+  an OpsBrain node produces — so a machine that runs Netdata but not Ops Brain (the Mac Studio,
+  `macstudio`, `type: macos`, `http://10.1.10.34:19999`) contributes host facts, watched-volume
+  usage and its own active alarms to the cluster, with **nothing installed on it and nothing
+  written to it**. It is deliberately filtered: only CRITICAL/WARNING/ERROR alarms count, minus a
+  configured `alarm_skip_names`/`alarm_skip_mounts` list — without it the Mac's single CRITICAL
+  (`disk_space_usage` on a transient **mounted installer DMG**) would be a permanent cluster
+  anomaly and a `notify_cluster` every federation cycle. `volumes:` is likewise explicit: the host
+  exposes 3288 charts, mostly Time Machine snapshot mounts. Two measurement traps are handled in
+  the adapter: `disk_space.*` dimensions are **GiB, not percent**, and macOS RAM "used" is
+  `active + wired + compressor` (the naive `total - free` reads ~98 % on a healthy box).
+  `collect_cluster` also honours a node-level `timeout_s`. Verified live: 2/2 nodes online,
+  `macstudio` stability 100/100, `anomalies: 0`, `disk_used_percent` 82.3 (Data2).
 - **GPU driver-reconcile ingest (`gpu_reconcile`, notify-only).** The host's new
   `/etc/apt/apt.conf.d/99-nvidia-module-reconcile` hook (`DPkg::Post-Invoke` →
   `/usr/local/sbin/nvidia-module-reconcile`) compares the LOADED nvidia module with the one on

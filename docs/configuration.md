@@ -110,7 +110,10 @@ Disable any source you don't run (`enabled: false`); the pipeline degrades grace
 
 ## `federation` — multi-node
 
-See [docs/federation.md](federation.md).
+See [docs/federation.md](federation.md). Nodes carry a `kind`: `opsbrain` (default — an OpsBrain
+dashboard `/api/status` or a raw `collector.json`) or `netdata` (a host's Netdata API, reduced by
+`federation/netdata_node.py` with per-node `volumes`, `alarm_keep`, `alarm_skip_names`,
+`alarm_skip_mounts` and `timeout_s`).
 
 ## `manual_stop_protection` — hard invariant
 

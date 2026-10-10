@@ -51,8 +51,9 @@ truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.
   **Dockhand desired-state drift** (notify-only), **Hatchdoor vault drift**
   (notify-only), **TrueNAS SCALE panel**,
   **Federation Layer** (multi-node cluster reasoning; `dockervm` polls this host's own
-  dashboard at `http://127.0.0.1:9120/api/status`; the `truenas` node is disabled — see the
-  Federation section for why the old `:8099` endpoints were wrong).
+  dashboard at `http://127.0.0.1:9120/api/status`; `macstudio` is a **`kind: netdata`** node
+  reduced from the Mac Studio's own Netdata API — nothing runs on the Mac; the `truenas` node is
+  disabled — see the Federation section for why the old `:8099` endpoints were wrong).
 - **Dashboard:** `opsbrain-ui` service on `:9120`, published as https://opsbrain.home
   via Caddy. Panels now include System, Cluster Overview, Node Comparison, TrueNAS,
   **Dockhand**, GPU Drift, OpsBrain Decisions, Container Health, Manual Stop Protection,
@@ -197,7 +198,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**250 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**272 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -330,6 +331,51 @@ scan `grid.innerHTML` for container names will false-fail.
   cycle later — run `python3 scheduler/scheduler.py --once` twice when verifying by hand.
 - A one-node cluster is a normal state: summary reads "Single-node cluster (dockervm):
   stability 98.0/100, confidence 0.95." and `recommendations` is empty.
+
+### Netdata-sourced nodes — the Mac Studio (added 2026-10-10)
+
+The Mac Studio (Mac17.14, macOS 27.0.1, Apple M5 Max, 18 cores, 64 GiB, `Mac-Studio.local`,
+Netdata v2.11.1) is a cluster node without anything installed on it: it runs Netdata, and
+`federation/netdata_node.py` reduces that HTTP API (`/api/v1/info`, `/api/v1/alarms?all`, per-volume
+`/api/v1/data?chart=disk_space.<mount>`, `system.ram`, `system.uptime`) into the same node block an
+OpsBrain node produces. `federation.nodes[]` entries select a source with `kind` (`opsbrain`
+default / `netdata`), and `collect_cluster` honours a per-node `timeout_s`.
+
+- Endpoint is `http://10.1.10.34:19999` (the Mac's **en0** address, reported by Netdata as
+  `_net_default_iface_ip`; `10.1.10.20` is the same instance on another interface; the Netdata API
+  is unauthenticated on the LAN). **mDNS does not resolve from this host** — `Mac-Studio.local`
+  fails — so the address is pinned in config; if it ever moves, the node reads offline and the
+  cluster raises a standing critical `cluster_health_warning` (the `truenas` lesson).
+- **Its own alarms are the source of truth, minus what is real-but-immaterial.** The Mac exposes
+  847 alarms (CLEAR 526 / UNDEFINED 318 / UNINITIALIZED 2 / CRITICAL 1) and the single CRITICAL is
+  `disk_space_usage` on `/Volumes/makemkv_v2.0.0` — a **mounted installer DMG**. Unfiltered, that
+  is a permanent `anomalies: 1`, a `notify_cluster` every federation cycle, and a Mac stuck below
+  100 stability. Hence `alarm_keep: [CRITICAL, WARNING, ERROR]`, `alarm_skip_names`
+  (`disk_fill_rate`, `disk_inode_rate` — UNINITIALIZED on every Time Machine snapshot mount) and
+  `alarm_skip_mounts` (DMG/installer volumes, `com.apple.TimeMachine.localsnapshots`). With them,
+  the Mac reports `anomalies: 0` on a clean day.
+- **Two measurement traps are baked into the adapter, do not "simplify" them:** `disk_space.*`
+  dimensions are **GiB, not percent** (root reports `used=315.3` at 34 % full — the percent is
+  `used/(used+avail)`), and macOS RAM "used" is `active + wired + compressor` (the naive
+  `total - free` reads ~98 % on a healthy box because macOS counts cache as occupied).
+- `volumes:` is an explicit list on purpose: the Mac exposes **3288 charts**, dominated by Time
+  Machine snapshot and DMG mounts, so a discovered "worst volume" is meaningless. Measured
+  2026-10-10: `/` 34 %, `Data` 2 %, **`Data2` 82 %**, `Data3` 1 %, `Data4` 0 %, **`TimeMachine`
+  82 %** (that pair shares a physical disk). Netdata raises no alarm for those 82 % volumes, so the
+  Mac reads clean while they are near-full by design — OpsBrain reports the Mac's verdict, it does
+  not invent a stricter one.
+- Node block details: `confidence: null` (no reasoner on the Mac — an online node with null
+  confidence earns FULL credit in the stability formula), `containers: 0/0` (no Docker there),
+  `drift_events`/`restart_events` 0, plus display-only `host` (os/cpu/cores/RAM/arch/uptime) and
+  `volumes`. Only `/info` or `/alarms` failing marks the node offline; a missing chart is a null
+  field, never an outage.
+- **`_collect_node` now attaches `raw`** — `federation_reasoner._alarm_names()`/`_drift_flags_from_node()`
+  read `node["raw"]`, which the collector never set, so cross-node anomaly/drift correlation was
+  dead code for every node (bug found and fixed in the same change).
+- Verified live 2026-10-10: `python3 federation/federation_collector.py` → 2/2 online,
+  `macstudio` `anomalies: 0`, `disk_used_percent: 82.3`; reasoner → stability 96.5/100,
+  `macstudio` 100, ranking `[macstudio, dockervm]`; Node Comparison shows the Mac's row with its
+  host sub-line (`macOS 27.0.1 · Apple M5 Max · 18c · 64 GB · RAM 57% · worst disk 82%`).
 
 ## Notification ticker (message, dedupe, level)
 
@@ -617,7 +663,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **250 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **272 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

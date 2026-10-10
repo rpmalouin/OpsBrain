@@ -198,7 +198,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**272 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**291 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -364,15 +364,29 @@ default / `netdata`), and `collect_cluster` honours a per-node `timeout_s`.
   become a Mac anomaly. Also note the DMG alarm **stuck on stale data**: the image was not even
   mounted when the Mac checked (Netdata keeps serving the chart), so the skip-list is the fix, not a
   threshold change.
-- Phase 2 (a Mac-side 15-minute producer for Time Machine/cron/Hindsight/mount health) is **proposed
-  by the Mac, not built — it needs Ron's go-ahead**. Their design notes if it is green-lit:
-  `~/.hermes/scripts/mac-node-snapshot.py` (deliberately outside `/Volumes`), writing
-  `/Volumes/appdata/OpsBrain/logs/macstudio_node.json` tmp+rename; it must run under the **Hermes cron
-  runtime** to inherit the existing Full Disk Access grant (a new standalone launchd job lands back in
-  the TCC gate that broke smbd on 2026-09-24); python3 there is 3.12.1 with PyYAML only in
-  `~/.local/venvs/crg`. Services on `127.0.0.1` (Hermes Portal 8087, Hindsight 9177/19177, the
-  llama.cpp router 18434) are **loopback-only**, so any check of them has to run Mac-side. No
-  reciprocal federation exists today (the Mac reads this host over SMB JSON + the queue).
+- **Phase 2 is LIVE (2026-10-10, Ron's go-ahead): the Mac produces, OpsBrain consumes.** The Mac's own
+  15-minute cron (`~/.hermes/scripts/mac-node-snapshot.py`, running under the Hermes cron runtime so it
+  inherits the Full Disk Access grant) writes `logs/macstudio_node.json` over the SMB share with what
+  no poll can reach: Time Machine's last successful backup + age, per-mount health (mounted/read-only/
+  absent), Hermes cron health, the gateway heartbeat, the local llama.cpp router, and the
+  **loopback-only** services (Portal 8087, Hindsight 9177/19177, router 18434) that can only ever be
+  reported Mac-side. The node entry carries `snapshot_file` + `snapshot_max_age_s`, merged by
+  `federation/local_snapshot.py` (OpsBrain is CONSUMER-only — never write that file from here, same
+  rule as the vault-drift report). States: `ok` → the producer's own `alert_count` becomes the node's
+  anomalies; `stale` (default > 3600 s = 4 missed ticks) → **one** anomaly, because a producer that
+  stopped while the live poll stayed green is exactly the silent failure this pipeline exists to
+  catch; `missing` → NOT a fault (producer optional) but recorded as `snapshot.state: missing` so the
+  UI says so; `unreadable` → no anomaly, error kept. Host facts merge with the LIVE values winning
+  (Netdata's cpu/cores/RAM beside the producer's model/load_avg/uptime_hours). The merge also runs for
+  an offline node, so "producer alive, poll dead" is distinguishable from "machine down".
+- **The producer immediately surfaced a real Mac-side fault.** Its own alerts carry
+  `cron: hermes-patch-watchdog last_status=error streak=533` (a patch that "no longer applies cleanly"),
+  so `macstudio` reads `anomalies: 1` and the cluster emits an info `notify_cluster` naming it until
+  the Mac fixes it — that is the intended value of the node, not noise to filter.
+- `raw` in a node block is **compact by design** (alarm names + GPU drift flags only): that is all the
+  reasoner correlates on, and attaching the whole collector doc there grew `cluster_snapshot.json` from
+  ~0.5 KB to ~255 KB per cycle. Cluster recommendations also now **name the nodes behind a count**
+  ("1 total anomaly(ies) across cluster: macstudio" — a bare count is unactionable in the ticker).
 - **Its own alarms are the source of truth, minus what is real-but-immaterial.** The Mac reports
   ~850 alarms (1 CRITICAL, 0 WARNING, the rest CLEAR/UNDEFINED); unfiltered, that one CRITICAL is a
   permanent `anomalies: 1`, a `notify_cluster` every federation cycle and a Mac stuck below 100
@@ -687,7 +701,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **272 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **291 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

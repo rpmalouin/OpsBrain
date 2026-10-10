@@ -113,7 +113,9 @@ Disable any source you don't run (`enabled: false`); the pipeline degrades grace
 See [docs/federation.md](federation.md). Nodes carry a `kind`: `opsbrain` (default — an OpsBrain
 dashboard `/api/status` or a raw `collector.json`) or `netdata` (a host's Netdata API, reduced by
 `federation/netdata_node.py` with per-node `volumes`, `alarm_keep`, `alarm_skip_names`,
-`alarm_skip_mounts` and `timeout_s`).
+`alarm_skip_mounts` and `timeout_s`). A node may also carry `snapshot_file` / `snapshot_max_age_s`
+— a JSON file the node itself writes into `logs/` for what no poll can see (Time Machine, mount and
+cron health, loopback-only services), merged by `federation/local_snapshot.py`.
 
 ## `manual_stop_protection` — hard invariant
 

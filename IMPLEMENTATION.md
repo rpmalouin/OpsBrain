@@ -59,14 +59,15 @@ See **[docs/deployment.md](docs/deployment.md)** for the full step-by-step.
 collector/          polls & merges sources -> logs/collector.json (incl. truenas, dockhand, manual_stops)
 reasoner/           Qwen prompt + Ollama wrapper -> logs/reasoner_result.json
 hermes_actions/     remediation + deterministic rules -> logs/actions_result.json
-federation/         multi-node collector + reasoner (+ netdata_node.py, a Netdata-sourced node)
+federation/         multi-node collector + reasoner (+ netdata_node.py: a Netdata-sourced node;
+                    + local_snapshot.py: merges a node's own producer snapshot)
                     -> logs/cluster_{snapshot,reasoner_result}.json
 scheduler/          controller loop + daily report generator
 common/             Cfg, ManualStops registry, JSON/log helpers
 config/             ops_brain.yaml (all settings)
 ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
 deploy/             systemd units + installer
-tests/              272 tests
+tests/              291 tests
 docs/               these implementation docs
 IMPLEMENTATION.md   this entry point
 CHANGELOG.md, README.md, MEMORY.md
@@ -105,7 +106,7 @@ CHANGELOG.md, README.md, MEMORY.md
 - **A driver/library mismatch is not silent** — when the loaded nvidia module no longer matches
   the one on disk, the apt hook (`nvidia-module-reconcile`) reloads it or defers with a remedy,
   and `collector/gpu_reconcile_ingest.py` surfaces that as `gpu_reconcile` + a notify-only event.
-- **272 tests** cover the decision-critical logic with mocks (docs/tests.md).
+- **291 tests** cover the decision-critical logic with mocks (docs/tests.md).
 
 ## Release history
 

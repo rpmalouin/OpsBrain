@@ -41,6 +41,23 @@ milestone).
   AND the logger; the suite leaves the live log byte-identical (verified: 0-line delta).
 
 ### Added
+- **Node snapshot files — the Mac's Phase 2 producer is consumed (`snapshot_file`).** A node entry may
+  carry `snapshot_file` / `snapshot_max_age_s`, pointing at a JSON file the node itself writes into
+  this host's `logs/` (OpsBrain is the consumer only, the vault-drift rule). The Mac's 15-minute cron
+  supplies what no poll can reach — Time Machine's last successful backup, per-mount health, Hermes
+  cron health, the gateway heartbeat, the local model router and the loopback-only services
+  (Portal 8087, Hindsight 9177/19177, llama.cpp 18434) — and `federation/local_snapshot.py` merges it
+  into the same node block, with the producer's own `alert_count` becoming the node's anomalies (a
+  **stale** file counts once, a **missing** one is not a fault but is stated as
+  `snapshot.state: missing`, an unreadable one keeps its error). Host facts merge with the live poll's
+  values winning. Verified live: `macstudio` reports `anomalies: 1` from its own
+  `cron: hermes-patch-watchdog … streak=533` alert, `snapshot.state: ok`, `age_s` under 5 minutes.
+- **Cluster recommendations name the nodes behind them.** A ticker entry that read
+  "1 total anomaly(ies) across cluster" was unactionable; with per-node sources it now reads
+  "1 total anomaly(ies) across cluster: macstudio" (same for GPU drift events).
+- **`raw` in a node block is compact** (alarm names + GPU drift flags only). It exists for cross-node
+  correlation, and attaching the whole collector document there had grown `cluster_snapshot.json` from
+  ~0.5 KB to ~255 KB per cycle for no extra signal (now ~5 KB).
 - **Netdata-sourced cluster nodes (`kind: netdata`) — the Mac Studio joins the cluster.**
   `federation.nodes[]` entries now select their source with `kind` (`opsbrain`, the default, or
   `netdata`). A `netdata` node is reduced from a host's own Netdata HTTP API by the new

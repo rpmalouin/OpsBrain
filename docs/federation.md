@@ -114,6 +114,36 @@ Mac's en0 is a 24 h lease from `10.1.10.1` — put a DHCP reservation on the rou
 as an **offline node**, which is a standing critical `cluster_health_warning` on every federation
 cycle, not a quiet degradation.
 
+`raw` is deliberately **compact** (alarm names + GPU drift flags, nothing else): it exists so the
+reasoner can correlate signals across nodes, and attaching the whole collector document there once
+grew the cluster snapshot from ~0.5 KB to ~255 KB per cycle for no added signal.
+
+## Node snapshot files (Phase 2 — what the live poll cannot see)
+
+A node entry may also carry `snapshot_file` (and `snapshot_max_age_s`), pointing at a JSON file the
+**node itself** writes into this host's `logs/`. Ownership follows the vault-drift rule: **OpsBrain is
+the consumer only, never the writer.** The Mac's 15-minute cron
+(`~/.hermes/scripts/mac-node-snapshot.py`, writing over the SMB share) produces
+`logs/macstudio_node.json` with what a Netdata poll cannot reach: Time Machine's last successful
+backup, per-mount health (mounted / read-only / absent), Hermes cron health, the gateway heartbeat,
+the local model router, and the **loopback-only** services (Hermes Portal 8087, Hindsight 9177/19177,
+llama.cpp 18434) that no host off the machine can poll at all.
+
+`federation/local_snapshot.py` reads and merges it into the same node block:
+
+| `snapshot.state` | meaning | effect on `anomalies` |
+|---|---|---|
+| `ok` | fresh file | the producer's own `alert_count` (its real findings) |
+| `stale` | older than `snapshot_max_age_s` (default 3600 s = 4 missed ticks) | **+1** — a producer that stopped while the live poll stayed green is a silent failure |
+| `missing` | no file | +0 — the producer is optional; recorded so the dashboard can say so |
+| `unreadable` | half-written/foreign payload | +0, error kept in the block |
+
+The live poll keeps ownership of what it measures (online/offline, alarms, per-volume disk); the
+snapshot only adds. `host` facts merge with the **live values winning**, so the panel can show
+`Mac17,14`, `load_avg` and `uptime_hours` from the producer beside Netdata's `cpu`/`cores`/`RAM`.
+The merge runs for offline nodes too — a live producer beside a dead poll is a different fault from a
+dead machine.
+
 ## What it computes
 
 Every `poll_interval_cycles`, the federation collector merges each node into

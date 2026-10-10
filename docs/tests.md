@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 272 tests
+python3 -m pytest        # 291 tests
 python3 -m pytest -q     # quiet
 ```
 
@@ -40,12 +40,17 @@ python3 -m pytest -q     # quiet
 - **Federation** — `_num`/`_cnt` coercion, `reverse_normalize`, cluster stability score
   (spec math), node stability (null-conf-online credit, offline=0), ranking,
   recommendations, empty/all-offline, cross-node correlation.
-- **Netdata-sourced node** (`tests/test_netdata_node.py`, 17 tests) — `parse_info` host facts,
+- **Netdata-sourced node** (`tests/test_netdata_node.py`, 19 tests) — `parse_info` host facts,
   the alarm keep-set plus the name/mount skip-lists (a mounted-DMG CRITICAL must NOT survive),
   GiB→percent volume math, the macOS RAM definition, the node-block contract, and degradation to
-  `null` fields (a 404 chart is never an offline node). `test_federation.py` adds the
-  `kind: netdata` dispatch, the per-node `timeout_s` override, and the regression that
-  `_collect_node` attaches `raw` — cross-node correlation was dead code without it.
+  `null` fields (a 404 chart is never an offline node). One test loads the SHIPPED config and asserts
+  the whole Mac exclusion list (transient images, remote/SMB capacity, system views) while proving
+  `/Volumes/Data2` still raises.
+- **Node snapshot files** (`tests/test_local_snapshot.py`, 14 tests) — freshness states
+  (`ok`/`stale`/`missing`/`unreadable`), the anomaly semantics (the producer's own alerts count; a
+  stale producer counts ONCE, never per missed tick; an absent file is not a fault), host-fact merge
+  with the live poll winning, and a contract test over a real producer payload. `test_federation.py`
+  covers the merge through `collect_cluster` and that the compact `raw` stays under 500 bytes.
 - **Dashboard refinements** — confidence recovery, drift decay, restart impact.
 - **Dockhand desired-state ingest** (`tests/test_dockhand_ingest.py`, 25 tests) — DB pull
   (ok / missing-DB / missing-table, host path mapping), `normalize` (compose parse,
@@ -65,7 +70,8 @@ Run it after touching `actions.py`, `reasoner.py`, `common/`, `collector/`, or
 
 `pytest.ini` sets `testpaths = tests` and quiet output. The test files live in `tests/`
 (`test_opsbrain.py`, `test_manual_stops.py`, `test_collector_manual_stops.py`,
-`test_truenas.py`, `test_federation.py`, `test_netdata_node.py`, `test_ui_refinements.py`,
+`test_truenas.py`, `test_federation.py`, `test_netdata_node.py`,
+`test_local_snapshot.py`, `test_ui_refinements.py`,
 `test_dockhand_ingest.py`, `test_vault_drift_ingest.py`, `test_scheduler_cadence.py`,
 `test_reasoner_models.py`, `test_gpu_visibility.py`, `test_gpu_reconcile_ingest.py`, plus the
 dashboard tests).

@@ -372,13 +372,21 @@ def _read_notifications_tail(max_lines=30):
             continue
         cat = str(rec.get("category") or "info")
         msg = str(rec.get("message") or rec.get("category") or "")
-        # map category to a stable level
-        if "gpu_drift" in cat or any(f in cat for f in ("vram", "temp", "power", "stuck")):
+        # Map the pipeline's semantic categories to a ticker level. Without this the only
+        # critical categories were gpu_drift/restart and EVERYTHING else (a blocked manual
+        # stop, a GPU driver mismatch, a cluster node down, a vault note) rendered as the same
+        # yellow "warn" chip, which is why the ticker read as a broken wall of warnings.
+        critical_markers = ("gpu_drift", "gpu_reconcile", "gpu_unavailable", "manual_stop",
+                            "restart", "loop", "prune", "cluster_health_warning",
+                            "reasoner_stale", "vram", "temp", "power", "stuck")
+        warning_markers = ("dockhand", "vault", "cluster_escalate", "cluster_notify",
+                           "disk", "low_confidence", "packet_drop")
+        if any(m in cat for m in critical_markers):
             level = "critical"
-        elif "restart" in cat or "loop" in cat:
-            level = "critical"
-        else:
+        elif any(m in cat for m in warning_markers):
             level = "warning"
+        else:
+            level = "info"
         out.append({"type": "log", "severity": level, "ts": _now_iso(), "msg": msg or cat,
                     "category": cat})
     return out

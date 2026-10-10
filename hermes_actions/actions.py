@@ -277,7 +277,10 @@ class Engine:
             self.executed.append(rec)
             return rec
         if verb == "notify":
-            notify(target, reason)
+            # Generic notify: target IS the message the caller wants shown, and the reason is
+            # its explanation — so it must not be used as the CATEGORY (an LLM sentence there
+            # made every such entry unclassified in the ticker).
+            notify(str(target) or str(reason) or "notify", "action")
             rec["state"] = "notified"
             rec["detail"] = target
             self.executed.append(rec)
@@ -292,28 +295,28 @@ class Engine:
             catmap = {"notify_cluster": "cluster_notify",
                       "escalate_cluster": "cluster_escalate",
                       "cluster_health_warning": "cluster_health_warning"}
-            notify(str(target or reason), catmap.get(verb, "cluster"))
+            notify(str(reason) or str(target) or "cluster", catmap.get(verb, "cluster"))
             rec["state"] = "notified"
             rec["detail"] = target
             self.executed.append(rec)
             return rec
         # ---- Dockhand desired-state drift (NOTIFY ONLY, no remediation) ----
         if verb == "notify_dockhand_drift":
-            notify(str(target) or str(reason) or "Dockhand drift", "dockhand_drift")
+            notify(str(reason) or str(target) or "Dockhand drift", "dockhand_drift")
             rec["state"] = "notified"
             rec["detail"] = target
             self.executed.append(rec)
             return rec
         # ---- Vault drift (NOTIFY ONLY, never remediates the vault) ----
         if verb == "notify_vault_drift":
-            notify(str(target) or str(reason) or "Vault drift", "vault_drift")
+            notify(str(reason) or str(target) or "Vault drift", "vault_drift")
             rec["state"] = "notified"
             rec["detail"] = target
             self.executed.append(rec)
             return rec
         # ---- GPU driver/library reconcile (NOTIFY ONLY, never touches the driver) ----
         if verb == "notify_gpu_reconcile":
-            notify(str(target) or str(reason) or "GPU driver reconcile", "gpu_reconcile")
+            notify(str(reason) or str(target) or "GPU driver reconcile", "gpu_reconcile")
             rec["state"] = "notified"
             rec["detail"] = target
             self.executed.append(rec)
@@ -599,17 +602,22 @@ def dockhand_drift_actions(coll, engine):
                 cause = str(it.get("cause") or kind)
                 items.append(f"{svc}:{cause}" if svc else cause)
         msg = f"Dockhand drift ({drift_count}): " + "; ".join(items[:6])
+        # dispatch() owns the notification and uses the REASON as the ticker text, so every
+        # reason below is self-contained — the target stays a name/list/count for the record
+        # and must not be relied on as the message (NOTIFY[...] used to read "3"/"sonarr").
         results.append(engine.dispatch("notify_dockhand_drift", dash.get("stack_drift", []), msg))
-        notify(msg, "dockhand_drift")
     for s in correlated.get("restart_storms") or []:
-        results.append(engine.dispatch("notify_dockhand_drift", s.get("service"), f"restart storm: {s.get('count')} in {s.get('window_min')}m"))
-        notify(f"Dockhand restart storm {s.get('service')}: {s.get('count')} in {s.get('window_min')}m", "dockhand_drift")
+        results.append(engine.dispatch(
+            "notify_dockhand_drift", s.get("service"),
+            f"Dockhand restart storm {s.get('service')}: {s.get('count')} in {s.get('window_min')}m"))
     for f in correlated.get("health_flaps") or []:
-        results.append(engine.dispatch("notify_dockhand_drift", f.get("service"), f"health flap: {f.get('toggle_count')} toggles in {f.get('window_min')}m"))
-        notify(f"Dockhand health flap {f.get('service')}: {f.get('toggle_count')} toggles in {f.get('window_min')}m", "dockhand_drift")
+        results.append(engine.dispatch(
+            "notify_dockhand_drift", f.get("service"),
+            f"Dockhand health flap {f.get('service')}: {f.get('toggle_count')} toggles in {f.get('window_min')}m"))
     for name in (dash.get("orphaned_containers") or [])[:5]:
-        results.append(engine.dispatch("notify_dockhand_drift", name, f"orphan: container not in any stack"))
-        notify(f"Dockhand orphan: {name} not in any stack", "dockhand_drift")
+        results.append(engine.dispatch(
+            "notify_dockhand_drift", name,
+            f"Dockhand orphan: {name} not in any stack"))
     return results
 
 
@@ -636,11 +644,12 @@ def vault_drift_actions(coll, engine):
         actionable = int(vd.get("classify", {}).get("counts", {}).get("broken_links", 0)) \
             + int(vd.get("classify", {}).get("counts", {}).get("orphans", 0))
         kind = "vault drift" if actionable else "vault notes"
-        results.append(engine.dispatch("notify_vault_drift", total, f"{kind}: {summary}"))
-        notify(f"Vault drift ({total}): {summary}", "vault_drift")
+        # dispatch() notifies with the reason (one ticker entry per event) — do not notify
+        # again here, and keep the reason human-readable on its own.
+        results.append(engine.dispatch("notify_vault_drift", total, f"Vault drift ({total}): {summary}"))
     if vd.get("stale"):
-        results.append(engine.dispatch("notify_vault_drift", "stale", "vault-drift report is stale"))
-        notify("Vault-drift report is stale; cron may not have run", "vault_drift")
+        results.append(engine.dispatch("notify_vault_drift", "stale",
+                                       "Vault-drift report is stale; the weekly cron may not have run"))
     return results
 
 
@@ -665,8 +674,8 @@ def gpu_reconcile_actions(coll, engine, st):
     if st.get("gpu_reconcile_notified") == today:
         return []
     summary = (gr.get("dashboard", {}) or {}).get("summary") or "GPU driver mismatch"
+    # dispatch() notifies with the reason; no second notify() here (one entry per event).
     results = [engine.dispatch("notify_gpu_reconcile", ctx.get("state"), summary)]
-    notify(summary, "gpu_reconcile")
     st["gpu_reconcile_notified"] = today
     return results
 

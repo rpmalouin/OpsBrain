@@ -315,3 +315,70 @@ def test_engine_accepts_gpu_reconcile_verb():
     e.dispatch("notify_gpu_reconcile", "mismatch", "driver mismatch")
     assert e.executed and e.blocked == []
     assert e.executed[0]["verb"] == "notify_gpu_reconcile"
+
+
+# --------------------------------------------------------------------------- notification text
+
+def _entries():
+    """The notification entries written to the (tmp) ticker file."""
+    txt = A.NOTIF_FILE.read_text().strip()
+    return [json.loads(l) for l in txt.splitlines()] if txt else []
+
+
+def test_dispatch_notify_prefers_reason_text_over_target():
+    """NOTIFY[...] used to read "3"/"sonarr": the target (a count, a list, a name) was used as
+    the ticker message and the informative reason thrown away."""
+    e = A.Engine(True)
+    e.dispatch("notify_vault_drift", 3, "Vault drift (3): 3 vault finding(s)")
+    assert _entries()[-1]["message"] == "Vault drift (3): 3 vault finding(s)"
+    e.dispatch("notify_dockhand_drift", "sonarr", "Dockhand restart storm sonarr: 4 in 30m")
+    assert _entries()[-1]["message"] == "Dockhand restart storm sonarr: 4 in 30m"
+
+
+def test_dispatch_notify_falls_back_to_target_when_no_reason():
+    e = A.Engine(True)
+    e.dispatch("notify_vault_drift", "stale", "")
+    assert _entries()[-1]["message"] == "stale"
+
+
+def test_generic_notify_verb_keeps_its_category_stable():
+    """dispatch("notify", msg, explanation): the explanation is NOT the category (an LLM
+    sentence there left the ticker entry unclassifiable)."""
+    e = A.Engine(True)
+    e.dispatch("notify", "Vault drift: 10 orphaned notes need review", "explains the finding")
+    entry = _entries()[-1]
+    assert entry["message"] == "Vault drift: 10 orphaned notes need review"
+    assert entry["category"] == "action"
+
+
+def test_vault_drift_notifies_once_per_event_with_readable_text():
+    e = A.Engine(True)
+    coll = {"vault_drift": {
+        "up": True, "stale": True,
+        "classify": {"counts": {"broken_links": 1, "orphans": 1}},
+        "dashboard": {"summary": "2 vault finding(s): 1 broken links; 1 orphans"},
+        "context_nodes": {"drift_count": 2},
+    }}
+    recs = A.vault_drift_actions(coll, e)
+    entries = _entries()
+    assert len(recs) == 2 and len(entries) == len(recs)      # no dispatch+notify duplication
+    msgs = [x["message"] for x in entries]
+    assert all(m and not m.isdigit() for m in msgs)
+    assert any("stale" in m.lower() for m in msgs)
+
+
+def test_dockhand_notifies_once_per_event_and_names_the_service():
+    e = A.Engine(True)
+    coll = {"dockhand": {
+        "up": True,
+        "classify": {"drift_count": 0},
+        "correlate": {"restart_storms": [{"service": "sonarr", "count": 4, "window_min": 30}],
+                      "health_flaps": [{"service": "immich_server", "toggle_count": 3, "window_min": 30}]},
+        "dashboard": {"orphaned_containers": ["Firefox"]},
+    }}
+    recs = A.dockhand_drift_actions(coll, e)
+    entries = _entries()
+    assert len(entries) == len(recs) == 3
+    joined = " ".join(x["message"] for x in entries)
+    for name in ("sonarr", "immich_server", "Firefox"):
+        assert name in joined

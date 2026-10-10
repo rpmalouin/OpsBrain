@@ -1,5 +1,6 @@
 """Ops Brain - tests for dashboard refinements (confidence recovery,
 drift decay, restart impact). Tests the pure functions directly."""
+import json
 import sys
 import time
 from pathlib import Path
@@ -18,6 +19,33 @@ def _reset():
     for q in ("gpu_vram", "gpu_temp", "gpu_power", "gpu_baseline_vram", "confidence"):
         S._hist[q].clear()
     S._hist["containers"].clear()
+
+
+# ------------------------------------------------- notification ticker levels
+def test_notification_levels_follow_category(tmp_path, monkeypatch):
+    """A GPU/driver fault or a blocked manual stop must not render as the same yellow "warn"
+    chip as a vault note — the ticker's level comes from this category map."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    rows = [{"category": "gpu_reconcile", "message": "driver mismatch"},
+            {"category": "manual_stop_protection", "message": "blocked restart of x"},
+            {"category": "cluster_health_warning", "message": "2 node(s) offline"},
+            {"category": "vault_drift", "message": "10 vault finding(s)"},
+            {"category": "action", "message": "noticed something"}]
+    (logs / "notifications.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    monkeypatch.setattr(S, "REPO", tmp_path)
+    S._ingest_offsets.clear()
+    try:
+        out = S._read_notifications_tail()
+    finally:
+        S._ingest_offsets.clear()
+    lv = {o["category"]: o["severity"] for o in out}
+    assert lv["gpu_reconcile"] == "critical"
+    assert lv["manual_stop_protection"] == "critical"
+    assert lv["cluster_health_warning"] == "critical"
+    assert lv["vault_drift"] == "warning"
+    assert lv["action"] == "info"
+    assert all(o["msg"] for o in out)
 
 
 # ------------------------------------------------- confidence recovery

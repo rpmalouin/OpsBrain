@@ -22,30 +22,55 @@ def _reset():
 
 
 # ------------------------------------------------- notification ticker levels
-def test_notification_levels_follow_category(tmp_path, monkeypatch):
+def test_category_level_map():
     """A GPU/driver fault or a blocked manual stop must not render as the same yellow "warn"
     chip as a vault note — the ticker's level comes from this category map."""
+    assert S._category_level("gpu_reconcile") == "critical"
+    assert S._category_level("manual_stop_protection") == "critical"
+    assert S._category_level("cluster_health_warning") == "critical"
+    assert S._category_level("vault_drift") == "warning"
+    assert S._category_level("low_confidence") == "warning"
+    assert S._category_level("action") == "info"
+    assert S._category_level(None) == "info"
+
+
+def test_ticker_detected_conditions_use_ticker_levels():
+    """"crit" is not a level the frontend knows, so a low-confidence alert rendered as the
+    calmest chip and a restart loop rendered as info."""
+    S._notifications.clear()
+    fired = S._check_notifications(
+        {"gpu": {"drift_flags": ["vram_drift"]}, "docker": {"restarting": ["radarr"]}},
+        {"confidence": 0.2}, {"actions": []})
+    lv = {f["type"]: f["severity"] for f in fired}
+    assert lv["low_confidence"] == "warning"
+    assert lv["gpu_drift"] == "critical"
+    assert lv["restart_loop"] == "critical"
+    assert all(v in ("critical", "warning", "info") for v in lv.values())
+    S._notifications.clear()
+
+
+def test_tail_ingests_only_new_lines(tmp_path, monkeypatch):
+    """History must NOT be replayed: a dashboard restart used to dump the last 100 records
+    of the (34k-line) notifications log into the ticker as if they were live."""
     logs = tmp_path / "logs"
     logs.mkdir()
-    rows = [{"category": "gpu_reconcile", "message": "driver mismatch"},
-            {"category": "manual_stop_protection", "message": "blocked restart of x"},
-            {"category": "cluster_health_warning", "message": "2 node(s) offline"},
-            {"category": "vault_drift", "message": "10 vault finding(s)"},
-            {"category": "action", "message": "noticed something"}]
-    (logs / "notifications.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    notif = logs / "notifications.jsonl"
+    notif.write_text(json.dumps({"ts": time.time(), "category": "vault_drift",
+                                 "message": "old vault finding"}) + "\n")
     monkeypatch.setattr(S, "REPO", tmp_path)
-    S._ingest_offsets.clear()
-    try:
-        out = S._read_notifications_tail()
-    finally:
-        S._ingest_offsets.clear()
-    lv = {o["category"]: o["severity"] for o in out}
-    assert lv["gpu_reconcile"] == "critical"
-    assert lv["manual_stop_protection"] == "critical"
-    assert lv["cluster_health_warning"] == "critical"
-    assert lv["vault_drift"] == "warning"
-    assert lv["action"] == "info"
-    assert all(o["msg"] for o in out)
+    monkeypatch.setattr(S, "_ingest_offset", None)
+    assert S._read_notifications_tail() == []          # seeded at EOF, nothing replayed
+
+    with notif.open("a") as fh:                        # a partial record waits for completion
+        fh.write('{"ts": 1700000000, "category": "gpu_drift", "message": "new')
+    assert S._read_notifications_tail() == []
+    with notif.open("a") as fh:
+        fh.write(' GPU fault"}\n')
+    out = S._read_notifications_tail()
+    assert [o["msg"] for o in out] == ["new GPU fault"]
+    assert out[0]["severity"] == "critical"
+    assert out[0]["ts"].startswith("2023-11-14")        # the record's OWN time, not ingest
+    assert S._read_notifications_tail() == []           # nothing new the second time round
 
 
 # ------------------------------------------------- confidence recovery

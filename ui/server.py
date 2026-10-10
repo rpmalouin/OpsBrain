@@ -82,7 +82,7 @@ _hist = {
     "containers": {},          # {name: {"cpu": deque, "mem": deque}}
 }
 _notifications = deque(maxlen=100)
-_ingest_offsets = set()   # which notifications.jsonl line offsets we've already surfaced
+_ingest_offset = None     # notifications.jsonl BYTE offset already surfaced (None = not seeded)
 
 # --- confidence recovery + drift decay + restart impact tracking ----
 _conf_recovery = {"detected": False, "prev": None, "current": None, "delta": 0.0}
@@ -314,20 +314,47 @@ def _restart_impact_payload():
     return out
 
 
+def _category_level(cat):
+    """Map a notification category to one of the three ticker levels.
+
+    The frontend only knows `critical` / `warning` / `info`; any other value rendered as
+    the calmest chip. Without this map every category except gpu_drift/restart was the same
+    yellow "warn" chip, so a blocked manual stop, a GPU driver mismatch or a cluster node
+    down was indistinguishable from a vault note.
+    """
+    cat = str(cat or "")
+    critical_markers = ("gpu_drift", "gpu_reconcile", "gpu_unavailable", "manual_stop",
+                        "restart", "loop", "prune", "cluster_health_warning",
+                        "reasoner_stale", "vram", "temp", "power", "stuck")
+    warning_markers = ("dockhand", "vault", "cluster_escalate", "cluster_notify",
+                       "disk", "low_confidence", "packet_drop")
+    if any(m in cat for m in critical_markers):
+        return "critical"
+    if any(m in cat for m in warning_markers):
+        return "warning"
+    return "info"
+
+
 def _check_notifications(collector, reasoner, actions):
-    """Detect conditions; append to history; return newly fired (deduped within tick)."""
+    """Detect conditions; append to history; return newly fired (deduped within tick).
+
+    Levels use the SAME vocabulary as the ticker (`critical`/`warning`/`info`): this path
+    used to write "crit", which the frontend did not recognise, so a below-floor
+    confidence — the one signal that says the reasoning half is degraded — was the calmest
+    chip on the panel, and restart loops rendered as info as well.
+    """
     fired = []
     conf = reasoner_conf(reasoner)
     if conf is not None and conf < 0.6:
-        fired.append({"type": "low_confidence", "severity": "crit", "ts": _now_iso(),
+        fired.append({"type": "low_confidence", "severity": "warning", "ts": _now_iso(),
                       "msg": f"confidence {conf:.2f} < 0.6"})
     drift = collector.get("gpu", {}).get("drift_flags") or []
     if drift:
-        fired.append({"type": "gpu_drift", "severity": "crit", "ts": _now_iso(),
+        fired.append({"type": "gpu_drift", "severity": "critical", "ts": _now_iso(),
                       "msg": f"GPU drift: {', '.join(drift)}"})
     restarting = collector.get("docker", {}).get("restarting") or []
     if restarting:
-        fired.append({"type": "restart_loop", "severity": "crit", "ts": _now_iso(),
+        fired.append({"type": "restart_loop", "severity": "critical", "ts": _now_iso(),
                       "msg": f"restart loop: {', '.join(restarting)}"})
     for a in (collector.get("netdata", {}).get("alarms_active") or []):
         comp = (a.get("component") or "").lower()
@@ -345,24 +372,48 @@ def _check_notifications(collector, reasoner, actions):
     return fired
 
 
+def _record_ts_iso(rec):
+    """The notification's OWN time, not the moment the dashboard happened to read it."""
+    try:
+        return datetime.fromtimestamp(float(rec.get("ts")), timezone.utc).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OSError):
+        return _now_iso()
+
+
 # ---------------------------------------------------------------- snapshot
 def _read_notifications_tail(max_lines=30):
-    """Read the tail of logs/notifications.jsonl (append-only JSONL), normalize it.
-    A ring offset is tracked so we only ingest NEW lines each collect."""
+    """Surface only the lines APPENDED to logs/notifications.jsonl since the last call.
+
+    The file is append-only and unbounded (34k lines / 2 months), so the ring is a BYTE
+    offset and the first call after a UI start seeds it at EOF: the ticker shows what
+    happens while the dashboard runs and never replays history. The old line-index ring
+    ignored `max_lines` and returned the WHOLE file on that first call, which pushed the
+    last 100 historical records — including bare-name junk written before the ticker-text
+    fix — into the panel as if they were live, on every dashboard restart, and re-read all
+    34k lines on every cycle. A partial trailing line (writer mid-append) waits for the
+    next call instead of being dropped. `ts` is the record's own time, not the ingest time.
+    """
+    global _ingest_offset
     path = REPO / "logs" / "notifications.jsonl"
-    if not path.exists():
-        return []
     try:
-        with open(path, encoding="utf-8") as fh:
-            lines = fh.readlines()
+        size = path.stat().st_size
     except OSError:
         return []
-    seen = set(_ingest_offsets)
+    if _ingest_offset is None or _ingest_offset > size:
+        _ingest_offset = size       # seed at EOF (also re-seeds after a rotation)
+        return []
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(_ingest_offset)
+            chunk = fh.read()
+    except OSError:
+        return []
+    cut = chunk.rfind(b"\n")
+    if cut < 0:
+        return []                   # writer is mid-record; come back next cycle
+    _ingest_offset += cut + 1
     out = []
-    for off, line in enumerate(lines):
-        if off in seen:
-            continue
-        _ingest_offsets.add(off)
+    for line in chunk[:cut + 1].decode("utf-8", "replace").splitlines()[-max_lines:]:
         line = line.strip()
         if not line:
             continue
@@ -372,23 +423,8 @@ def _read_notifications_tail(max_lines=30):
             continue
         cat = str(rec.get("category") or "info")
         msg = str(rec.get("message") or rec.get("category") or "")
-        # Map the pipeline's semantic categories to a ticker level. Without this the only
-        # critical categories were gpu_drift/restart and EVERYTHING else (a blocked manual
-        # stop, a GPU driver mismatch, a cluster node down, a vault note) rendered as the same
-        # yellow "warn" chip, which is why the ticker read as a broken wall of warnings.
-        critical_markers = ("gpu_drift", "gpu_reconcile", "gpu_unavailable", "manual_stop",
-                            "restart", "loop", "prune", "cluster_health_warning",
-                            "reasoner_stale", "vram", "temp", "power", "stuck")
-        warning_markers = ("dockhand", "vault", "cluster_escalate", "cluster_notify",
-                           "disk", "low_confidence", "packet_drop")
-        if any(m in cat for m in critical_markers):
-            level = "critical"
-        elif any(m in cat for m in warning_markers):
-            level = "warning"
-        else:
-            level = "info"
-        out.append({"type": "log", "severity": level, "ts": _now_iso(), "msg": msg or cat,
-                    "category": cat})
+        out.append({"type": "log", "severity": _category_level(cat),
+                    "ts": _record_ts_iso(rec), "msg": msg or cat, "category": cat})
     return out
 
 

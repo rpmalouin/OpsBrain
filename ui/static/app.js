@@ -501,6 +501,22 @@ function renderReport(reasoner, actions, collector) {
   return panel("Daily Report Preview", b);
 }
 
+function notifLevel(x) {
+  // Accepts "crit"/"critical" and "warn"/"warning": the server has written both forms and
+  // anything unrecognised fell through to the calmest chip (a low-confidence alert showed
+  // as info). Normalising here keeps the panel correct even against an older payload.
+  const s = String(x.severity || x.level || "").toLowerCase();
+  if (s.startsWith("crit")) return "critical";
+  if (s.startsWith("warn")) return "warning";
+  return "info";
+}
+
+function notifTime(x) {
+  if (!x.ts) return "";
+  const d = new Date(x.ts);
+  return isNaN(d.getTime()) ? "" : `${d.toISOString().slice(11, 16)}Z `;
+}
+
 function renderNotifications(n) {
   const fresh = n || [];
   if (!fresh.length) { notifBox.innerHTML = ""; notifCountEl.classList.add("hidden"); return; }
@@ -508,13 +524,19 @@ function renderNotifications(n) {
                   warning:'<span class="chip bg-yellow-900 text-yellow-100">warn</span>',
                   info:'<span class="chip bg-slate-700 text-slate-200">info</span>' };
   const items = fresh.slice(-8).reverse().map(x => {
-    const lvl = (x.severity === "critical" || x.level === "critical") ? "critical"
-              : (x.severity === "warning" || x.level === "warning") ? "warning" : "info";
-    return `<div class="notif ${lvl}">${badge[lvl] || ""}<span>${escapeHtml(x.msg || x.message || x.category || "")}</span></div>`;
+    const lvl = notifLevel(x);
+    return `<div class="notif ${lvl}">${badge[lvl] || ""}<span class="text-slate-500">${escapeHtml(notifTime(x))}</span><span>${escapeHtml(x.msg || x.message || x.category || "")}</span></div>`;
   }).join("");
   notifBox.innerHTML = `<div class="text-xs text-slate-500 mb-1">Live notifications</div>` + items;
-  notifCountEl.textContent = `⚠ ${fresh.length}`;
+  // The chip counts what is WRONG, not how long the in-memory list is: it used to print the
+  // raw backlog length (⚠ 50) — a number that never went down and meant nothing, because the
+  // panel was showing replayed history rather than anything live.
+  const crit = fresh.filter(x => notifLevel(x) === "critical").length;
+  const warn = fresh.filter(x => notifLevel(x) === "warning").length;
   notifCountEl.classList.remove("hidden");
+  if (crit) { notifCountEl.className = "chip bg-red-800 text-red-100"; notifCountEl.textContent = `⚠ ${crit} critical`; }
+  else if (warn) { notifCountEl.className = "chip bg-yellow-800 text-yellow-100"; notifCountEl.textContent = `${warn} warn`; }
+  else { notifCountEl.classList.add("hidden"); }
 }
 
 // ------------------------------------------------------------- render
@@ -576,9 +598,13 @@ function browserNotify(title, body) {
   else if (Notification.permission === "default") Notification.requestPermission();
 }
 function handleNewNotifications(n) {
+  // Dedupe by content and scan the whole list every tick: the payload is the last 50 of a
+  // 100-entry in-process ring, so the old "curN.length > prevN" diff stopped firing as soon
+  // as the ring saturated and desktop alerts died silently.
   (n || []).forEach(x => {
-    const key = `${x.type || ""}:${x.msg || x.category || ""}`;
-    if (!browserNotified[key]) { browserNotified[key] = true; browserNotify("OpsBrain alert", x.msg || x.category || ""); }
+    const msg = x.msg || x.message || x.category || "";
+    const key = `${x.type || ""}:${msg}`;
+    if (msg && !browserNotified[key]) { browserNotified[key] = true; browserNotify("OpsBrain alert", msg); }
   });
 }
 
@@ -597,11 +623,9 @@ function connect() {
   ws.onopen = () => { connEl.textContent = "live"; connEl.className = "chip bg-green-700 text-white"; };
   ws.onmessage = (ev) => {
     try {
-      const prevN = (state.notifications || []).length;
       state = JSON.parse(ev.data);
       render();
-      const curN = state.notifications || [];
-      if (curN.length > prevN) handleNewNotifications(curN.slice(prevN));
+      handleNewNotifications(state.notifications || []);
     } catch (e) { console.error("parse", e); }
   };
   ws.onclose = () => { connEl.textContent = "reconnecting"; connEl.className = "chip bg-red-700 text-white"; setTimeout(connect, 1500); };

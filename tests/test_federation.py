@@ -147,3 +147,130 @@ def test_cross_correlations():
     assert len(c["drift_correlations"]) == 1
     assert c["anomaly_correlations"][0]["shared_anomaly"] == "hm_mem"
     assert c["drift_correlations"][0]["shared_flag"] == "vram_drift"
+
+
+# ------------------------------------------------- netdata-kind nodes (the Mac Studio)
+def test_collect_node_attaches_raw_so_cross_node_correlation_fires(fake_net):
+    """Regression: `_collect_node` did not set node["raw"], so FR.detect_cross_correlations
+    (which reads node["raw"]["collector"]["netdata"]["alarms_active"]) could never fire."""
+    nodes = [{"name": "a", "type": "linux", "collector_endpoint": "http://a:1"},
+             {"name": "b", "type": "linux", "collector_endpoint": "http://b:1"}]
+    doc = FC.collect_cluster(nodes, timeout=2)
+    assert doc["nodes"]["a"]["raw"]["collector"]["netdata"]["alarms_active"][0]["name"] == "hm_mem"
+    c = FR.detect_cross_correlations(doc)
+    assert len(c["anomaly_correlations"]) == 1                 # both nodes report hm_mem
+    assert c["anomaly_correlations"][0]["nodes"] == ["a", "b"]
+    assert len(c["drift_correlations"]) == 1                   # both report vram_drift
+
+
+NN_FIXTURES = Path(__file__).parent / "fixtures" / "netdata_mac"
+
+
+def _mixed_net(monkeypatch):
+    """Answer both an OpsBrain /api/status node and a Netdata node from one patched urlopen.
+
+    federation_collector and netdata_node both call urllib.request.urlopen, so a single
+    monkeypatch covers the two node kinds.
+    """
+    class FakeResp:
+        def __init__(self, data):
+            self._d = data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, *a):
+            return json.dumps(self._d).encode()
+
+    info = json.loads((NN_FIXTURES / "info.json").read_text())
+    alarms = json.loads((NN_FIXTURES / "alarms.json").read_text())
+
+    def urlopen(url, timeout=None):
+        url = str(url)
+        if "/api/status" in url:
+            return FakeResp(_status_payload())
+        if "api/v1/info" in url:
+            return FakeResp(info)
+        if "api/v1/alarms" in url:
+            return FakeResp(alarms)
+        if "chart=disk_space.%2F" in url:
+            return FakeResp({"labels": ["time", "avail", "used"], "data": [[0, 611.0, 315.3]]})
+        raise OSError(f"no fixture for {url}")
+
+    monkeypatch.setattr(FC.urllib.request, "urlopen", urlopen)
+
+
+def test_collect_cluster_mixes_opsbrain_and_netdata_kinds(monkeypatch):
+    _mixed_net(monkeypatch)
+    nodes = [
+        {"name": "dockervm", "type": "linux",
+         "collector_endpoint": "http://127.0.0.1:9120/api/status"},        # no kind -> OpsBrain path
+        {"name": "macstudio", "type": "macos", "kind": "netdata",
+         "collector_endpoint": "http://10.1.10.34:19999",
+         "volumes": ["/"],
+         "alarm_skip_mounts": ["/Volumes/makemkv", "com.apple.TimeMachine.localsnapshots"]},
+    ]
+    doc = FC.collect_cluster(nodes, timeout=2)
+    mac = doc["nodes"]["macstudio"]
+    assert mac["online"] is True and mac["type"] == "macos"
+    assert mac["confidence"] is None                       # no reasoner on the Mac
+    assert mac["anomalies"] == 0                           # the mounted-DMG CRITICAL is skipped
+    assert mac["volumes"] == {"/": 34.0}
+    assert mac["host"]["hostname"] == "Mac-Studio.local"
+    assert mac["containers"] == {"running": 0, "total": 0}
+    # the Mac keeps dockerVM's node untouched (regression: kind dispatch must not leak)
+    assert doc["nodes"]["dockervm"]["confidence"] == 0.8
+    assert doc["nodes"]["dockervm"]["containers"] == {"running": 48, "total": 50}
+    assert "host" not in doc["nodes"]["dockervm"]
+    # cluster rollup sees two nodes, the Mac contributing no anomalies or drift
+    assert doc["cluster_metrics"]["avg_confidence"] == 0.8   # only the OpsBrain node has confidence
+    assert doc["cluster_metrics"]["total_anomalies"] == 1
+
+    # the Mac scores 100 (online, null confidence, clean) and is ranked, not alarmed
+    reason = FR.cluster_reason(doc, WEIGHTS)
+    assert reason["node_stability"]["macstudio"] == 100.0
+    assert reason["node_ranking"][0] == "macstudio"
+    # the stub node carries 1 anomaly + 1 drift event -> notify_cluster only; crucially no
+    # cluster_health_warning (nothing offline) and no escalate_cluster
+    assert {r["type"] for r in reason["recommendations"]} == {"notify_cluster"}
+
+
+def test_per_node_timeout_overrides_the_poll_default(monkeypatch):
+    """A netdata-kind node reads several endpoints per cycle; it can carry its own timeout."""
+    seen = []
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, *a):
+            return json.dumps(_status_payload()).encode()
+
+    def urlopen(url, timeout=None):
+        seen.append(timeout)
+        return Resp()
+
+    monkeypatch.setattr(FC.urllib.request, "urlopen", urlopen)
+    FC.collect_cluster([{"name": "a", "collector_endpoint": "http://a:1", "timeout_s": 2}], timeout=9)
+    assert seen and set(seen) == {2.0}
+
+
+def test_netdata_kind_node_goes_offline_without_crashing_the_cluster(monkeypatch):
+    def boom(url, timeout=None):
+        if "/api/status" in str(url):
+            raise OSError("no fixture")     # keep the assertion simple: everything unreachable
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(FC.urllib.request, "urlopen", boom)
+    nodes = [{"name": "macstudio", "type": "macos", "kind": "netdata",
+              "collector_endpoint": "http://10.1.10.34:19999", "volumes": ["/"]}]
+    doc = FC.collect_cluster(nodes, timeout=1)
+    assert doc["nodes"]["macstudio"]["online"] is False
+    assert "connection refused" in doc["nodes"]["macstudio"]["err"]
+    assert doc["nodes"]["macstudio"]["containers"] == {"running": 0, "total": 0}

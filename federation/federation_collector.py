@@ -81,10 +81,16 @@ def _failed_node(node_type, err):
 def _collect_node(node, timeout):
     """Fetch one node's snapshot and reduce it to a compact telemetry block.
 
-    Tolerates two snapshot shapes:
-      - the raw OpsBrain collector.json {netdata, gpu, docker, vm, truenas, ...}
-      - an OpsBrain /api/status envelope {collector:{...}, reasoner, ...}
+    `kind` selects the node source (absent = the OpsBrain path):
+      - `netdata` -> federation/netdata_node.py reduces a remote Netdata HTTP API
+        (for a host that runs Netdata but not OpsBrain, e.g. the Mac Studio)
+      - otherwise -> this host's snapshot shape, tolerant of two payloads:
+        the raw OpsBrain collector.json {netdata, gpu, docker, vm, truenas, ...} and
+        an OpsBrain /api/status envelope {collector:{...}, reasoner, ...}
     """
+    if str(node.get("kind") or "opsbrain").lower() == "netdata":
+        from federation.netdata_node import collect_netdata_node
+        return collect_netdata_node(node, timeout)
     node_type = node.get("type")
     endpoint = node.get("collector_endpoint")
     if not endpoint:
@@ -132,6 +138,9 @@ def _collect_node(node, timeout):
                  "disk_used_percent": disk_used_percent,
                  "containers": {"running": running, "total": total},
                  "alerts_count": alerts_count}
+    # federation_reasoner correlates alarm names / GPU drift flags across nodes by reading
+    # node["raw"]; without this key cross-node correlation could never fire for ANY node.
+    node_dict["raw"] = {"collector": coll}
 
     pools_healthy = _num(_get(coll, "truenas", "pools_healthy"))
     pool_count = _num(_get(coll, "truenas", "pool_count"))
@@ -145,12 +154,17 @@ def _collect_node(node, timeout):
 
 
 def collect_cluster(node_list, timeout=6):
-    """Collect each node's snapshot and roll up cluster metrics."""
+    """Collect each node's snapshot and roll up cluster metrics.
+
+    A node may override the poll default with its own `timeout_s` (a Netdata-sourced node does
+    several HTTP reads per cycle, so it can be slower than a single /api/status fetch).
+    """
     timeout = float(timeout)  # urllib accepts float seconds
     nodes = {}
     for node in node_list:
         name = node.get("name") or node.get("collector_endpoint") or "unknown"
-        nodes[name] = _collect_node(node, timeout)
+        node_timeout = _num(node.get("timeout_s")) or timeout
+        nodes[name] = _collect_node(node, node_timeout)
 
     online = [n for n in nodes.values() if n.get("online")]
     confidences = [n["confidence"] for n in online if n.get("confidence") is not None]

@@ -11,20 +11,75 @@ rule as the vault-drift report): never write that file from here.
 
 Anomaly semantics, chosen so the merge cannot cry wolf and cannot hide a dead producer:
 
-* `ok`      — the file is fresh; its own `alert_count` (the node's real findings) counts.
+* `ok`      — the file is fresh; its own `alert_count` (the node's real findings) counts, plus the
+              collector's own state checks (see `derived_alerts`).
 * `stale`   — older than `snapshot_max_age_s`: **one** anomaly. A producer that stopped while the
               live poll stayed green is exactly the silent failure this pipeline exists to catch.
+              Its data is NOT re-judged (old facts make bad alerts).
 * `missing` — no fault: the producer is optional, and a node without one is still a valid node.
               Surfaced as `snapshot.state: missing` so the dashboard can say so out loud.
 * `unreadable` — half-written/foreign file: treated like missing for anomalies, with the error kept.
+
+The producer's contract (2026-10-10, hermes-mac ask `20261010T182237Z-f2b12bf0`) asks for staleness at
+three missed intervals: 45 minutes for a 15-minute producer, hence `DEFAULT_MAX_AGE_S = 2700`.
 """
 import json
 import time
 from pathlib import Path
 
-DEFAULT_MAX_AGE_S = 3600          # 4 missed ticks of a 15-minute producer
+DEFAULT_MAX_AGE_S = 2700          # 3 missed ticks of the 15-minute producer (its own contract)
+DEFAULT_TM_STALE_HOURS = 48       # a Time Machine backup older than this is worth saying out loud
+DEFAULT_GATEWAY_STALE_S = 300     # the Hermes gateway heartbeat is ~15 s old when healthy
 SNAPSHOT_KEYS = ("time_machine", "mounts", "services", "gateway", "hermes_cron",
                  "local_model", "disks", "volumes_watched", "volumes_skipped", "netdata")
+
+
+def _f(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
+
+
+def derived_alerts(data, tm_stale_hours=DEFAULT_TM_STALE_HOURS,
+                   gateway_stale_s=DEFAULT_GATEWAY_STALE_S):
+    """State checks the COLLECTOR makes, because the producer reports facts, not verdicts.
+
+    Deliberately narrow, and deliberately never about capacity:
+
+    * a mount that is not mounted — an unmounted share is a fault, not a number
+    * the Hermes gateway heartbeat missing or older than `gateway_stale_s` — the Mac's own agent is
+      the one service nothing else can see
+    * a Time Machine backup older than `tm_stale_hours`
+
+    `disks[].used_percent` is NEVER turned into an alert: a volume sitting at 82 % is the Mac's steady
+    state, which is why its own `alerts[]` (its curated verdicts) is the source for judgments. This is
+    the "surface, do not judge" rule, and it is what keeps a near-full volume from becoming noise.
+    """
+    out = []
+    for mount in data.get("mounts") or []:
+        if isinstance(mount, dict) and not mount.get("mounted", True):
+            out.append(f"mount not mounted: {mount.get('path')}")
+    gateway = data.get("gateway")
+    if isinstance(gateway, dict) and ("present" in gateway or "age_seconds" in gateway):
+        if not gateway.get("present"):
+            out.append("hermes gateway heartbeat missing")
+        else:
+            age = _f(gateway.get("age_seconds"))
+            limit = _f(gateway_stale_s)
+            if age is not None and limit and age > limit:
+                out.append(f"hermes gateway heartbeat stale ({int(age)}s)")
+    tm = data.get("time_machine")
+    if isinstance(tm, dict):
+        age_h = _f(tm.get("latest_backup_age_hours"))
+        limit_h = _f(tm_stale_hours)
+        if age_h is not None and limit_h and age_h > limit_h:
+            out.append(f"time machine backup {age_h:.1f}h old (limit {int(limit_h)}h)")
+    return out
 
 
 def read_snapshot(path, max_age_s=DEFAULT_MAX_AGE_S, now=None):
@@ -47,12 +102,12 @@ def read_snapshot(path, max_age_s=DEFAULT_MAX_AGE_S, now=None):
     return {"state": state, "age_s": round(age, 1), "data": data}
 
 
-def merge_snapshot(node, snap, source=None):
+def merge_snapshot(node, snap, source=None, tm_stale_hours=None, gateway_stale_s=None):
     """Attach a producer snapshot to a collected node block (mutates and returns it).
 
     The live poll keeps ownership of what it measures (online/offline, alarms, per-volume disk);
-    the snapshot only ADDS the telemetry the poll cannot reach, and its own findings become
-    anomalies. A node that has no `host` block of its own gets the producer's.
+    the snapshot only ADDS the telemetry the poll cannot reach, and its findings become anomalies.
+    A node with no `host` block of its own gets the producer's.
     """
     data = snap.get("data") or {}
     alerts = [str(a) for a in (data.get("alerts") or [])]
@@ -67,6 +122,7 @@ def merge_snapshot(node, snap, source=None):
         "producer": data.get("producer"),
         "alert_count": 0,
         "alerts": alerts,
+        "derived_alerts": [],
     }
     if snap.get("error"):
         block["error"] = snap["error"]
@@ -74,7 +130,13 @@ def merge_snapshot(node, snap, source=None):
     if snap.get("state") == "ok":
         count = data.get("alert_count")
         block["alert_count"] = int(count) if isinstance(count, (int, float)) else len(alerts)
-        extra = block["alert_count"]
+        # the collector's own state checks run ONLY on fresh data: old facts make bad alerts
+        block["derived_alerts"] = derived_alerts(
+            data,
+            tm_stale_hours=(tm_stale_hours if tm_stale_hours is not None else DEFAULT_TM_STALE_HOURS),
+            gateway_stale_s=(gateway_stale_s if gateway_stale_s is not None
+                             else DEFAULT_GATEWAY_STALE_S))
+        extra = block["alert_count"] + len(block["derived_alerts"])
     elif snap.get("state") == "stale":
         # a producer that stopped while the live poll stayed green is a real fault, and exactly
         # the kind the reasoner should see: one anomaly, not one per missed tick

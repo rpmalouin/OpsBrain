@@ -133,10 +133,22 @@ llama.cpp 18434) that no host off the machine can poll at all.
 
 | `snapshot.state` | meaning | effect on `anomalies` |
 |---|---|---|
-| `ok` | fresh file | the producer's own `alert_count` (its real findings) |
-| `stale` | older than `snapshot_max_age_s` (default 3600 s = 4 missed ticks) | **+1** — a producer that stopped while the live poll stayed green is a silent failure |
+| `ok` | fresh file | the producer's own `alert_count` **plus** the collector's own state checks |
+| `stale` | older than `snapshot_max_age_s` (default **2700 s = 45 min, three missed ticks** — the producer's own contract) | **+1** — a producer that stopped while the live poll stayed green is a silent failure; its old data is NOT re-judged |
 | `missing` | no file | +0 — the producer is optional; recorded so the dashboard can say so |
 | `unreadable` | half-written/foreign payload | +0, error kept in the block |
+
+Two kinds of finding arrive from the producer, and they are kept apart on purpose:
+
+- **Its `alerts[]`** — the Mac's own curated judgments (e.g. a Hermes cron job failing every 15
+  minutes for days). Counted as-is: the collector must never re-derive a threshold the Mac already
+  applied.
+- **`derived_alerts[]`** — the few *state* checks the collector makes itself, because the producer
+  reports facts rather than verdicts: a mount that is **not mounted**, the Hermes **gateway heartbeat**
+  missing or older than `snapshot_gateway_stale_s` (default 300 s), and a **Time Machine** backup older
+  than `snapshot_tm_stale_hours` (default 48 h). These run on FRESH data only.
+- **Capacity is never judged.** `disks[].used_percent` is surfaced, never alerted: a volume at 82 % is
+  the Mac's steady state, and re-scoring it here is how a node becomes noise.
 
 The live poll keeps ownership of what it measures (online/offline, alarms, per-volume disk); the
 snapshot only adds. `host` facts merge with the **live values winning**, so the panel can show

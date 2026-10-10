@@ -139,7 +139,9 @@ federation:
       # CONSUMER only — never write it from here. Its own `alerts` become the node's anomalies
       # (a stale file counts once, a missing one is not a fault — see federation/local_snapshot.py).
       snapshot_file: "logs/macstudio_node.json"
-      snapshot_max_age_s: 3600   # 4 missed ticks of the 15-minute producer
+      snapshot_max_age_s: 2700   # 3 missed ticks — the 45-minute staleness the producer's contract asks for
+      snapshot_tm_stale_hours: 48     # a Time Machine backup older than this is said out loud
+      snapshot_gateway_stale_s: 300   # the Mac's Hermes gateway heartbeat is ~15 s old when healthy
       volumes:                 # explicit list: the Mac exposes 3288 charts, most of them Time
         - "/"                  # Machine snapshot mounts and mounted DMG volumes, so the volumes
         - "/Volumes/Data"      # that matter are named rather than discovered. This is the Mac's

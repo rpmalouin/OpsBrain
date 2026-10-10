@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 291 tests
+python3 -m pytest        # 301 tests
 python3 -m pytest -q     # quiet
 ```
 
@@ -46,11 +46,14 @@ python3 -m pytest -q     # quiet
   `null` fields (a 404 chart is never an offline node). One test loads the SHIPPED config and asserts
   the whole Mac exclusion list (transient images, remote/SMB capacity, system views) while proving
   `/Volumes/Data2` still raises.
-- **Node snapshot files** (`tests/test_local_snapshot.py`, 14 tests) — freshness states
-  (`ok`/`stale`/`missing`/`unreadable`), the anomaly semantics (the producer's own alerts count; a
-  stale producer counts ONCE, never per missed tick; an absent file is not a fault), host-fact merge
-  with the live poll winning, and a contract test over a real producer payload. `test_federation.py`
-  covers the merge through `collect_cluster` and that the compact `raw` stays under 500 bytes.
+- **Node snapshot files** (`tests/test_local_snapshot.py`, 24 tests) — freshness states
+  (`ok`/`stale`/`missing`/`unreadable`) against the producer's **45-minute** contract (three missed
+  15-minute ticks), the anomaly semantics (the producer's own alerts count; a stale producer counts
+  ONCE and its old facts are not re-judged; an absent file is not a fault), the derived state checks
+  (unmounted share, gateway heartbeat, old Time Machine backup) and that **capacity is never judged**,
+  host-fact merge with the live poll winning, and a contract test over a real producer payload.
+  `test_federation.py` covers the merge through `collect_cluster` and that the compact `raw` stays
+  under 500 bytes.
 - **Dashboard refinements** — confidence recovery, drift decay, restart impact.
 - **Dockhand desired-state ingest** (`tests/test_dockhand_ingest.py`, 25 tests) — DB pull
   (ok / missing-DB / missing-table, host path mapping), `normalize` (compose parse,

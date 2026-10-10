@@ -42,16 +42,22 @@ milestone).
 
 ### Added
 - **Node snapshot files — the Mac's Phase 2 producer is consumed (`snapshot_file`).** A node entry may
-  carry `snapshot_file` / `snapshot_max_age_s`, pointing at a JSON file the node itself writes into
-  this host's `logs/` (OpsBrain is the consumer only, the vault-drift rule). The Mac's 15-minute cron
-  supplies what no poll can reach — Time Machine's last successful backup, per-mount health, Hermes
-  cron health, the gateway heartbeat, the local model router and the loopback-only services
-  (Portal 8087, Hindsight 9177/19177, llama.cpp 18434) — and `federation/local_snapshot.py` merges it
-  into the same node block, with the producer's own `alert_count` becoming the node's anomalies (a
-  **stale** file counts once, a **missing** one is not a fault but is stated as
-  `snapshot.state: missing`, an unreadable one keeps its error). Host facts merge with the live poll's
-  values winning. Verified live: `macstudio` reports `anomalies: 1` from its own
-  `cron: hermes-patch-watchdog … streak=533` alert, `snapshot.state: ok`, `age_s` under 5 minutes.
+  carry `snapshot_file` / `snapshot_max_age_s` / `snapshot_tm_stale_hours` / `snapshot_gateway_stale_s`,
+  pointing at a JSON file the node itself writes into this host's `logs/` (OpsBrain is the consumer
+  only, the vault-drift rule). The Mac's 15-minute cron supplies what no poll can reach — Time
+  Machine's last successful backup, per-mount health, Hermes cron health, the gateway heartbeat, the
+  local model router and the loopback-only services (Portal 8087, Hindsight 9177/19177, llama.cpp
+  18434) — and `federation/local_snapshot.py` merges it into the same node block. The producer's own
+  `alert_count` (its curated judgments, never re-derived) plus the collector's `derived_alerts` — an
+  unmounted share, a missing/stale gateway heartbeat, an old Time Machine backup — count as anomalies;
+  a **stale** document (default **45 min, three missed ticks**, the producer's contract) counts ONCE
+  and its old facts are not re-judged; a **missing** one is not a fault but is stated as
+  `snapshot.state: missing`; an unreadable one keeps its error. **Capacity is never judged** — a volume
+  at 82 % is surfaced, never alerted. Host facts merge with the live poll's values winning. Verified
+  live: `macstudio` reports `anomalies: 1` from its own
+  `cron: hermes-patch-watchdog … streak=533` alert, `snapshot.state: ok`, `age_s` under 15 minutes, and
+  the dashboard row renders the snapshot's state, age, Time Machine age, gateway age, mount count and
+  its first finding.
 - **Cluster recommendations name the nodes behind them.** A ticker entry that read
   "1 total anomaly(ies) across cluster" was unactionable; with per-node sources it now reads
   "1 total anomaly(ies) across cluster: macstudio" (same for GPU drift events).

@@ -106,13 +106,24 @@ function nodeHostLine(n) {
   if (h.ram_total_gb) parts.push(h.ram_total_gb + " GB");
   const ram = num(h.ram_used_percent);
   if (ram !== null) parts.push("RAM " + ram.toFixed(0) + "%");
-  const disk = num(n.disk_used_percent);
-  if (disk !== null) parts.push("worst disk " + disk.toFixed(0) + "%");
+  // name the worst watched volume, not just its number: "82%" alone never says WHICH disk to clean
+  const vols = (n.volumes && typeof n.volumes === "object") ? n.volumes : null;
+  if (vols) {
+    let worstPath = null, worstPct = -1;
+    for (const [path, pct] of Object.entries(vols)) {
+      const v = num(pct);
+      if (v !== null && v > worstPct) { worstPct = v; worstPath = path; }
+    }
+    if (worstPath !== null) parts.push("worst disk " + worstPath + " " + worstPct.toFixed(0) + "%");
+  } else {
+    const disk = num(n.disk_used_percent);
+    if (disk !== null) parts.push("worst disk " + disk.toFixed(0) + "%");
+  }
   return parts.length ? escapeHtml(parts.join(" · ")) : "";
 }
 
 // A node's own producer snapshot (Phase 2) carries what no poll can see; show its freshness and its
-// first finding, because a "stale"/"missing" producer is itself worth seeing on the board.
+// findings, because a "stale"/"missing" producer is itself worth seeing on the board.
 function nodeSnapshotLine(n) {
   const s = n.snapshot || {};
   if (!s.state) return "";
@@ -121,9 +132,18 @@ function nodeSnapshotLine(n) {
   if (age !== null) bits.push(Math.round(age / 60) + "m old");
   const tm = s.time_machine && num(s.time_machine.latest_backup_age_hours);
   if (tm !== null) bits.push("TM " + tm.toFixed(1) + "h");
+  const gw = s.gateway && num(s.gateway.age_seconds);
+  if (gw !== null) bits.push("gw " + Math.round(gw) + "s");
+  const mounts = Array.isArray(s.mounts) ? s.mounts : [];
+  if (mounts.length) {
+    const mounted = mounts.filter(m => m && m.mounted).length;
+    bits.push("mounts " + mounted + "/" + mounts.length);
+  }
   let line = "snapshot " + bits.join(" · ");
+  const derived = Array.isArray(s.derived_alerts) ? s.derived_alerts : [];
   const alerts = Array.isArray(s.alerts) ? s.alerts : [];
-  if (alerts.length) line += " · " + alerts[0];
+  const first = derived.concat(alerts)[0];
+  if (first) line += " · " + first;
   return escapeHtml(line);
 }
 

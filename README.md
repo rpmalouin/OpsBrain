@@ -39,7 +39,7 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
   reports/            daily markdown reports
   ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
   deploy/             systemd units + installer
-  tests/              pytest suite (291 tests)
+  tests/              pytest suite (301 tests)
   docs/               per-feature implementation guides
   Dockerfile, docker-compose.yml, README.md, IMPLEMENTATION.md, CHANGELOG.md, .gitignore
 ```
@@ -206,7 +206,7 @@ deterministic (no LLM).**
 
 ## Tests
 
-`python3 -m pytest` — **291 tests** across `tests/` (whitelist gate, deterministic rules,
+`python3 -m pytest` — **301 tests** across `tests/` (whitelist gate, deterministic rules,
 output sanitization, GPU drift + GPU visibility + GPU driver reconcile, manual-stop invariant,
 TrueNAS parse, federation math & correlations, dashboard refinements, Dockhand desired-state
 ingest, model selection / `think` gate, stale-decision guard). Run before pushing changes to

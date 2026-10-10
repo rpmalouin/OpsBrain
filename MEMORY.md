@@ -198,7 +198,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**291 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**301 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -370,15 +370,29 @@ default / `netdata`), and `collect_cluster` honours a per-node `timeout_s`.
   no poll can reach: Time Machine's last successful backup + age, per-mount health (mounted/read-only/
   absent), Hermes cron health, the gateway heartbeat, the local llama.cpp router, and the
   **loopback-only** services (Portal 8087, Hindsight 9177/19177, router 18434) that can only ever be
-  reported Mac-side. The node entry carries `snapshot_file` + `snapshot_max_age_s`, merged by
-  `federation/local_snapshot.py` (OpsBrain is CONSUMER-only — never write that file from here, same
-  rule as the vault-drift report). States: `ok` → the producer's own `alert_count` becomes the node's
-  anomalies; `stale` (default > 3600 s = 4 missed ticks) → **one** anomaly, because a producer that
-  stopped while the live poll stayed green is exactly the silent failure this pipeline exists to
-  catch; `missing` → NOT a fault (producer optional) but recorded as `snapshot.state: missing` so the
-  UI says so; `unreadable` → no anomaly, error kept. Host facts merge with the LIVE values winning
+  reported Mac-side. The node entry carries `snapshot_file` + `snapshot_max_age_s` (**2700 s = 45 min =
+  three missed ticks — the producer's own contract**, from hermes-mac ask `20261010T182237Z-f2b12bf0`),
+  merged by `federation/local_snapshot.py` (OpsBrain is CONSUMER-only — never write that file from
+  here, same rule as the vault-drift report). States: `ok` → the producer's own `alert_count` (its
+  curated judgments, never re-derived) **plus `derived_alerts`** — the collector's own state checks: a
+  mount that is not mounted, the gateway heartbeat missing or older than `snapshot_gateway_stale_s`
+  (300 s), a Time Machine backup older than `snapshot_tm_stale_hours` (48 h), and these run on FRESH
+  data only; `stale` → **one** anomaly (a producer that stopped while the live poll stayed green is the
+  silent failure this pipeline exists to catch) with its old facts NOT re-judged; `missing` → NOT a
+  fault (producer optional) but recorded as `snapshot.state: missing` so the UI says so; `unreadable` →
+  no anomaly, error kept. **Capacity is never judged** — `disks[].used_percent` is surfaced, never
+  alerted, because 82 % is the Mac's steady state. Host facts merge with the LIVE values winning
   (Netdata's cpu/cores/RAM beside the producer's model/load_avg/uptime_hours). The merge also runs for
   an offline node, so "producer alive, poll dead" is distinguishable from "machine down".
+- **The inbox cron is agent-mediated — expect a parallel session.** The `hermes-docker inbox` cron
+  delivers to bot-chat, so a queue ask can spawn a concurrent Hermes session that edits the SAME repo:
+  on 2026-10-10 the Mac's `NEEDS ACTION` ask (received 18:22, while this session was mid-build) produced
+  a parallel `federation/node_snapshot.py` draft at 18:26, one minute after this session committed
+  `local_snapshot.py`, and a careless `git add -A` swept that unreviewed draft into the commit. The draft
+  was removed (content preserved in commit `e66a35d` and in
+  `/root/.hermes/cache/scratch/node_snapshot.parallel-draft.py`) and its two good ideas — the 45-minute
+  staleness contract and the derived state alerts — were folded into the wired module. **Rule: read
+  `git status` before staging in a shared repo, and never `git add -A` blind.**
 - **The producer immediately surfaced a real Mac-side fault.** Its own alerts carry
   `cron: hermes-patch-watchdog last_status=error streak=533` (a patch that "no longer applies cleanly"),
   so `macstudio` reads `anomalies: 1` and the cluster emits an info `notify_cluster` naming it until
@@ -701,7 +715,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **291 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **301 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

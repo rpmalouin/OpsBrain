@@ -114,8 +114,9 @@ See [docs/federation.md](federation.md). Nodes carry a `kind`: `opsbrain` (defau
 dashboard `/api/status` or a raw `collector.json`) or `netdata` (a host's Netdata API, reduced by
 `federation/netdata_node.py` with per-node `volumes`, `alarm_keep`, `alarm_skip_names`,
 `alarm_skip_mounts` and `timeout_s`). A node may also carry `snapshot_file` / `snapshot_max_age_s`
-— a JSON file the node itself writes into `logs/` for what no poll can see (Time Machine, mount and
-cron health, loopback-only services), merged by `federation/local_snapshot.py`.
+(default 2700 s) / `snapshot_tm_stale_hours` (48) / `snapshot_gateway_stale_s` (300) — a JSON file the
+node itself writes into `logs/` for what no poll can see (Time Machine, mount and cron health,
+loopback-only services), merged by `federation/local_snapshot.py`.
 
 ## `manual_stop_protection` — hard invariant
 

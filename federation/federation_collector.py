@@ -172,7 +172,9 @@ def _merge_local_snapshot(node_dict, node_cfg):
         if not str(path).startswith("/"):
             path = str(REPO / path)
         snap = read_snapshot(path, max_age_s=node_cfg.get("snapshot_max_age_s") or 3600)
-        return merge_snapshot(node_dict, snap, source=str(node_cfg.get("snapshot_file")))
+        return merge_snapshot(node_dict, snap, source=str(node_cfg.get("snapshot_file")),
+                              tm_stale_hours=node_cfg.get("snapshot_tm_stale_hours"),
+                              gateway_stale_s=node_cfg.get("snapshot_gateway_stale_s"))
     except Exception as exc:  # noqa: BLE001 - a snapshot must never take a cluster poll down
         log.warning("local snapshot merge failed for %s: %s", node_cfg.get("name"), exc)
         return node_dict

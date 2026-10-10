@@ -120,6 +120,31 @@ federation:
     - name: dockervm
       type: linux
       collector_endpoint: "http://127.0.0.1:9120/api/status"
+    # Mac Studio (Mac17.14 / macOS 27) — a Netdata-SOURCED node: nothing is installed on the Mac
+    # and nothing is written to it. `kind: netdata` reduces its Netdata HTTP API
+    # (federation/netdata_node.py) into the same node block an OpsBrain node produces.
+    # The endpoint is the Mac's Netdata port on en0, NOT :9120 — nothing there serves /api/status.
+    # mDNS does not resolve from this host (Mac-Studio.local fails), so the address is pinned.
+    - name: macstudio
+      type: macos
+      kind: netdata
+      collector_endpoint: "http://10.1.10.34:19999"
+      timeout_s: 6
+      volumes:                 # explicit list: the Mac exposes 3288 charts, most of them Time
+        - "/"                  # Machine snapshot mounts and mounted DMG volumes, so the volumes
+        - "/Volumes/Data"      # that matter are named rather than discovered
+        - "/Volumes/Data2"
+        - "/Volumes/Data3"
+        - "/Volumes/Data4"
+        - "/Volumes/TimeMachine"
+      alarm_keep: ["CRITICAL", "WARNING", "ERROR"]
+      # Statuses and names are the Mac's OWN verdicts; the skip-lists drop what is real but
+      # immaterial. The only CRITICAL there is disk_space_usage on a mounted installer DMG, and
+      # the rate alarms are UNINITIALIZED on every Time Machine snapshot mount — left in, they
+      # would be a permanent cluster anomaly and a notify_cluster every federation cycle.
+      alarm_skip_names: ["disk_fill_rate", "disk_inode_rate"]
+      alarm_skip_mounts: ["/Volumes/makemkv", "/Volumes/Gemini", "/Volumes/Install",
+                          "/Volumes/MusicBrainz", "com.apple.TimeMachine.localsnapshots"]
     # truenas: disabled 2026-10-10 — nothing on that box serves /api/status (http://truenas:8099
     # was a guess: connection refused), so it only produced a permanent critical
     # "1 node(s) offline" rec every federation cycle. Re-enable once an OpsBrain dashboard

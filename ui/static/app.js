@@ -18,6 +18,9 @@ const browserNotified = {};      // dedupe HTML5 notifications
 
 // ----------------------------------------------------------------- helpers
 function num(v) { const n = Number(v); return isFinite(n) ? n : null; }
+// `num` maps a JSON null to 0 (Number(null) === 0), which is wrong for anything that is *absent*
+// rather than zero — a null confidence is not a 0.00 confidence, and a null temperature is not 0°C.
+function numOrNull(v) { return (v === null || v === undefined || v === "") ? null : num(v); }
 function fmtPct(v) { const n = num(v); return n === null ? "—" : n.toFixed(1) + "%"; }
 function fmtMb(v) {
   const n = num(v);
@@ -102,7 +105,9 @@ function nodeHostLine(n) {
   const parts = [];
   if (h.os) parts.push(h.os);
   if (h.chip_name) parts.push(h.chip_name);
-  if (h.cpu) parts.push(h.cpu);
+  // `host.cpu` is a STRING on a polled node (the CPU model) and an OBJECT on a snapshot-sourced one
+  // (the per-tier ratios, rendered on the macmon line) — pushing the object prints [object Object].
+  if (typeof h.cpu === "string") parts.push(h.cpu);
   if (h.cores !== undefined && h.cores !== null) parts.push(h.cores + "c");
   if (h.ram_total_gb) parts.push(h.ram_total_gb + " GB");
   // Two memory numbers, on purpose. "RAM x%" is Activity Monitor's Memory Used, which counts
@@ -110,23 +115,23 @@ function nodeHostLine(n) {
   // "avail y%" is the pressure figure — the one macmon's own menu bar judges — and the only one that
   // ever gets tone: below 10% worth a look, below 5% bad. Only the tone marks are raw HTML; the rest
   // goes through escapeHtml.
-  const ram = num(h.ram_used_percent);
+  const ram = numOrNull(h.ram_used_percent);
   if (ram !== null) parts.push("RAM " + ram.toFixed(0) + "%");
   // name the worst watched volume, not just its number: "82%" alone never says WHICH disk to clean
   const vols = (n.volumes && typeof n.volumes === "object") ? n.volumes : null;
   if (vols) {
     let worstPath = null, worstPct = -1;
     for (const [path, pct] of Object.entries(vols)) {
-      const v = num(pct);
+      const v = numOrNull(pct);
       if (v !== null && v > worstPct) { worstPct = v; worstPath = path; }
     }
     if (worstPath !== null) parts.push("worst disk " + worstPath + " " + worstPct.toFixed(0) + "%");
   } else {
-    const disk = num(n.disk_used_percent);
+    const disk = numOrNull(n.disk_used_percent);
     if (disk !== null) parts.push("worst disk " + disk.toFixed(0) + "%");
   }
   const base = parts.length ? escapeHtml(parts.join(" · ")) : "";
-  const avail = num(h.ram_available_percent);
+  const avail = numOrNull(h.ram_available_percent);
   if (avail === null) return base;
   const pressure = String(h.memory_pressure || "");
   const label = "avail " + avail.toFixed(0) + "%";
@@ -142,24 +147,24 @@ function nodeMacmonLine(n) {
   const h = n.host || {};
   const bits = [];
   const t = h.temp || {};
-  const cpuT = num(t.cpu_c), gpuT = num(t.gpu_c);
+  const cpuT = numOrNull(t.cpu_c), gpuT = numOrNull(t.gpu_c);
   if (cpuT !== null || gpuT !== null) {
     bits.push("cpu " + (cpuT === null ? "—" : cpuT.toFixed(0) + "°C") + " / gpu " + (gpuT === null ? "—" : gpuT.toFixed(0) + "°C"));
   }
   const p = h.power_w || {};
-  const cpuW = num(p.cpu_w), gpuW = num(p.gpu_w);
+  const cpuW = numOrNull(p.cpu_w), gpuW = numOrNull(p.gpu_w);
   if (cpuW !== null || gpuW !== null) {
     bits.push("power " + (cpuW === null ? "—" : cpuW.toFixed(1)) + " + " + (gpuW === null ? "—" : gpuW.toFixed(1)) + " W");
   }
   const cpu = h.cpu || {};
-  const tiers = (Array.isArray(cpu.tiers) ? cpu.tiers : []).filter(x => x && num(x.scaled_ratio) !== null);
+  const tiers = (Array.isArray(cpu.tiers) ? cpu.tiers : []).filter(x => x && numOrNull(x.scaled_ratio) !== null);
   if (tiers.length) {
-    bits.push(tiers.map(x => (x.label || "?") + " " + (x.cores === null || x.cores === undefined ? "" : x.cores + "c ") + (num(x.scaled_ratio) * 100).toFixed(0) + "%").join(" · "));
+    bits.push(tiers.map(x => (x.label || "?") + " " + (x.cores === null || x.cores === undefined ? "" : x.cores + "c ") + (numOrNull(x.scaled_ratio) * 100).toFixed(0) + "%").join(" · "));
   }
-  const fans = (Array.isArray(h.fans) ? h.fans : []).filter(f => f && num(f.rpm) !== null);
+  const fans = (Array.isArray(h.fans) ? h.fans : []).filter(f => f && numOrNull(f.rpm) !== null);
   if (fans.length) {
-    const stopped = fans.some(f => num(f.rpm) === 0);
-    bits.push("fan " + fans.map(f => (f.name || "fan") + " " + Math.round(num(f.rpm)) + "rpm").join(" · ") + (stopped ? " STOPPED" : ""));
+    const stopped = fans.some(f => numOrNull(f.rpm) === 0);
+    bits.push("fan " + fans.map(f => (f.name || "fan") + " " + Math.round(numOrNull(f.rpm)) + "rpm").join(" · ") + (stopped ? " STOPPED" : ""));
   }
   if (!bits.length) return "";
   return escapeHtml("macmon " + bits.join(" · "));
@@ -170,7 +175,7 @@ function nodeMacmonLine(n) {
 function nodeFaultTone(n) {
   const h = n.host || {};
   const fans = Array.isArray(h.fans) ? h.fans : [];
-  if (fans.some(f => f && num(f.rpm) === 0)) return "text-red-300";
+  if (fans.some(f => f && numOrNull(f.rpm) === 0)) return "text-red-300";
   const pressure = String(h.memory_pressure || "");
   if (pressure === "heavy") return "text-red-300";
   if (pressure === "moderate") return "text-amber-300";
@@ -183,7 +188,7 @@ function nodeVolumesLine(n) {
   const vols = (n.volumes && typeof n.volumes === "object") ? n.volumes : null;
   if (!vols) return "";
   const rows = Object.entries(vols)
-    .map(([path, pct]) => [path, num(pct)])
+    .map(([path, pct]) => [path, numOrNull(pct)])
     .filter(row => row[1] !== null)
     .sort((a, b) => b[1] - a[1]);
   if (!rows.length) return "";
@@ -197,11 +202,11 @@ function nodeSnapshotLine(n) {
   const s = n.snapshot || {};
   if (!s.state) return "";
   const bits = [s.state];
-  const age = num(s.age_s);
+  const age = numOrNull(s.age_s);
   if (age !== null) bits.push(Math.round(age / 60) + "m old");
-  const tm = s.time_machine && num(s.time_machine.latest_backup_age_hours);
+  const tm = s.time_machine && numOrNull(s.time_machine.latest_backup_age_hours);
   if (tm !== null) bits.push("TM " + tm.toFixed(1) + "h");
-  const gw = s.gateway && num(s.gateway.age_seconds);
+  const gw = s.gateway && numOrNull(s.gateway.age_seconds);
   if (gw !== null) bits.push("gw " + Math.round(gw) + "s");
   const mounts = Array.isArray(s.mounts) ? s.mounts : [];
   if (mounts.length) {
@@ -252,7 +257,7 @@ function renderNodeComparison() {
       (volLine ? `<div class="text-xs text-slate-500">${volLine}</div>` : "") +
       (snapLine ? `<div class="text-xs text-slate-500">${snapLine}</div>` : "") +
       `</td>` +
-      `<td class="py-1 text-center">${num(n.confidence) === null ? "—" : num(n.confidence).toFixed(2)}</td>` +
+      `<td class="py-1 text-center">${numOrNull(n.confidence) === null ? "—" : numOrNull(n.confidence).toFixed(2)}</td>` +
       `<td class="py-1 text-center">${num(n.drift_events) ?? 0}</td>` +
       `<td class="py-1 text-center">${num(n.anomalies) ?? 0}</td>` +
       `<td class="py-1 text-center">${num(n.restart_events) ?? 0}</td>` +

@@ -41,6 +41,7 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
   deploy/             systemd units + installer
   tests/              pytest suite (317 tests)
   docs/               per-feature implementation guides
+  media/              fork-owned README screenshots (re-shot when the UI changes)
   Dockerfile, docker-compose.yml, README.md, IMPLEMENTATION.md, CHANGELOG.md, .gitignore
 ```
 
@@ -52,11 +53,14 @@ WebSockets and refreshes every 2 seconds. Panels: **System Overview, Cluster Ove
 Node Comparison, TrueNAS, Dockhand, Container Health, GPU Drift (with a driver-reconcile
 strip), OpsBrain Decisions, Manual Stop Protection, Daily Report Preview**, plus
 confidence-recovery / GPU-drift-decay /
-restart-impact refinements. Served by the `opsbrain-ui` systemd service at
+restart-impact refinements. The **Node Comparison** table shows each node's host facts, the
+macmon SoC row (CPU/GPU temperatures, power, per-tier CPU load, fans), **every** watched
+volume with its percentage, and the freshness of the producer snapshot the node is sourced
+from. Served by the `opsbrain-ui` systemd service at
 `http://<host>:9120/` — see `ui/README.md`. `/api/gpu` also reports `available` + `error`,
 so a GPU the host can no longer read is visible instead of a silent all-clear.
 
-<img width="2020" height="1537" alt="image" src="https://github.com/user-attachments/assets/a8b06a19-7987-483c-836a-0f2a1038c65b" />
+<img width="2020" alt="The OpsBrain dashboard: Cluster Overview at 94/100 with 2/2 nodes online, Node Comparison showing the Mac Studio's macmon row (cpu 61C / gpu 70C, 5.1 + 59.7 W, P 12c 1% / S 6c 14%, two fans), its six volumes and its snapshot freshness, then TrueNAS, Dockhand, GPU Drift and the panel grid below" src="media/dashboard.png" />
 
 ## Quick start (recommended: on a Linux VM with Docker + NVIDIA GPU)
 

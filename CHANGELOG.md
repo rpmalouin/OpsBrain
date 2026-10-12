@@ -8,6 +8,28 @@ milestone).
 ## [Unreleased]
 
 ### Added
+- **The Mac Studio node is sourced from its own producer file, and renders macmon in it.** `macstudio`
+  is now a **`kind: snapshot`** node: no endpoint, nothing polled, and its 15-minute producer snapshot
+  *is* the node — `federation/local_snapshot.py` merges it with `primary=True`, deciding `online` and
+  supplying the panel's fields. The new `soc` block carries one verbatim `macmon` sample (Ron's fork
+  `rpmalouin/macmon`; the Homebrew package is upstream's older CLI), and the node derives CPU/GPU/ANE
+  watts, temperatures, fans, per-tier CPU ratios and **two** memory figures from it — `ram_usage`
+  (Activity Monitor's "Memory Used", which reads 87-92 % on a healthy model-holding Mac and is therefore
+  never thresholded) and `ram_available` (the pressure figure, judged at macmon's own lines: below 10 %
+  warn, below 5 % heavy). New derived state checks: **memory pressure**, a **fan at 0 rpm**, and a mount
+  mounted **read-only**. `soc.available` / `soc.error` keep a failed sample visible, and 0 W is never
+  written in place of one (macOS 27 can stop updating the CPU/ANE IOReport counters). Cross-node
+  correlation reads the new `raw.collector.snapshot.alert_keys` tokens, so a snapshot-sourced node can
+  still be correlated. Measured live 2026-10-12: 2/2 nodes online, `macstudio` online with its
+  producer's own anomalies, cluster stability 94.0, and **no** `cluster_health_warning`.
+- **Two-tier staleness for a snapshot-sourced node.** `stale` (> `snapshot_max_age_s`, 45 min = three
+  missed ticks) is **one anomaly with the node still ONLINE** — a reboot or an SMB remount is a
+  transient and the file's last facts are not re-judged — while the new `dead` tier
+  (> `snapshot_dead_after_s`, 2 h) reads **OFFLINE** with one anomaly. One threshold made a missed tick
+  and a stopped producer look alike: a standing red every 2 h is what got the `truenas` node disabled,
+  and a single infinite threshold would let a dead producer go unnoticed for a week.
+- **Every watched volume is listed in Node Comparison** (worst first), not just the worst one by name,
+  and the host line renders `RAM x%` beside the pressure figure `avail y%`.
 - **Below-floor reasoner capture — a `confidence: 0.0` cycle is now readable after the fact.**
   The raw model text was only ever kept by the manual `--raw` flag (the scheduler never passes it),
   so a decision that landed under `actions.qwen_confidence_floor` — which suppresses the LLM half
@@ -21,6 +43,22 @@ milestone).
   nobody. Measured 2026-10-10: the answer is sporadically degenerate (0.00 with an "all healthy, no
   findings" summary on a digest that yields 0.85/0.75/0.80 across three fresh runs on the same
   input; 7.2 % of 6,243 logged cycles sit below the floor, 1-5/day since the hourly retune).
+
+### Removed
+- **The whole Netdata path for the Mac Studio — retired, not repurposed, because it was measured to
+  contribute nothing.** Netdata on the Mac was reporting false information and was removed there on
+  2026-10-12; replaying its captured alarm fixture through the shipped filter kept **zero** alarms (its
+  only CRITICAL was `disk_space_usage` on a transient installer DMG already on the skip-list, the rest
+  UNINITIALIZED rate alarms or CLEAR), and no Mac Netdata alarm name had ever reached
+  `logs/notifications.jsonl`. Deleted: `federation/netdata_node.py`, its tests and its Netdata fixtures,
+  the node's `collector_endpoint` / `timeout_s` / `volumes` list, `alarm_keep`, `alarm_skip_names` and
+  the 21-path `alarm_skip_mounts`. This also retires the pinned DHCP address
+  (`http://10.1.10.34:19999`) — a moved lease, a changed bind or a stopped agent used to read as an
+  offline node and raise a **standing critical `cluster_health_warning` on every federation cycle**,
+  which is the state the cluster had been sitting in. The Mac's IP is now irrelevant to OpsBrain.
+- **`netdata` left the snapshot contract**: the producer's `netdata` key and its
+  `{"name": "netdata", "port": 19999}` `services[]` entry are replaced by `soc` (schema 2), so a key
+  named `netdata` can never hold macmon data.
 
 ### Fixed
 - **Cross-node correlation was dead code.** `federation_reasoner.detect_cross_correlations()` reads

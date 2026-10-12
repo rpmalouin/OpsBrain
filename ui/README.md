@@ -24,8 +24,12 @@ ui/
 2. **Cluster Overview** — cluster stability score (0–100), nodes online, avg
    confidence, total anomalies / drift / restart events, cluster recommendations.
 3. **Node Comparison** — per-node confidence / drift / anomalies / restarts /
-   stability table with online/offline health dots, plus a host-facts sub-line for nodes
-   that report a `host` block instead of containers (e.g. a Netdata-sourced node).
+   stability table with online/offline health dots, plus sub-lines for nodes that report a `host`
+   block instead of containers (e.g. a snapshot-sourced node): host facts with **both** memory figures
+   (`RAM x%` = Activity Monitor's Memory Used, `avail y%` = the pressure figure, and only the second
+   is ever coloured), the macmon row (CPU/GPU temperatures, power, per-tier CPU ratio, fans), every
+   watched volume with its percentage, and the snapshot line — state and age, the file it came from,
+   cron health, and **all** of its findings (first three, then a `+N more` roll-up).
 4. **TrueNAS** — pool status + health, system version/model/RAM/uptime, disk count,
    active alerts.
 5. **Container Health** — running/exited, per-container CPU/RAM, restart-loop badge,

@@ -51,8 +51,9 @@ truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.
   **Dockhand desired-state drift** (notify-only), **Hatchdoor vault drift**
   (notify-only), **TrueNAS SCALE panel**,
   **Federation Layer** (multi-node cluster reasoning; `dockervm` polls this host's own
-  dashboard at `http://127.0.0.1:9120/api/status`; `macstudio` is a **`kind: netdata`** node
-  reduced from the Mac Studio's own Netdata API — nothing runs on the Mac; the `truenas` node is
+  dashboard at `http://127.0.0.1:9120/api/status`; `macstudio` is a **`kind: snapshot`** node whose
+  source is the producer file the Mac itself writes (nothing runs on the Mac, and nothing is polled —
+  Netdata was retired 2026-10-12); the `truenas` node is
   disabled — see the Federation section for why the old `:8099` endpoints were wrong).
 - **Dashboard:** `opsbrain-ui` service on `:9120`, published as https://opsbrain.home
   via Caddy. Panels now include System, Cluster Overview, Node Comparison, TrueNAS,
@@ -222,7 +223,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**308 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**317 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -356,58 +357,57 @@ scan `grid.innerHTML` for container names will false-fail.
 - A one-node cluster is a normal state: summary reads "Single-node cluster (dockervm):
   stability 98.0/100, confidence 0.95." and `recommendations` is empty.
 
-### Netdata-sourced nodes — the Mac Studio (added 2026-10-10)
+### Snapshot-sourced nodes — the Mac Studio (Netdata retired 2026-10-12)
 
-The Mac Studio (Mac17.14, macOS 27.0.1, Apple M5 Max, 18 cores, 64 GiB, `Mac-Studio.local`,
-Netdata v2.11.1) is a cluster node without anything installed on it: it runs Netdata, and
-`federation/netdata_node.py` reduces that HTTP API (`/api/v1/info`, `/api/v1/alarms?all`, per-volume
-`/api/v1/data?chart=disk_space.<mount>`, `system.ram`, `system.uptime`) into the same node block an
-OpsBrain node produces. `federation.nodes[]` entries select a source with `kind` (`opsbrain`
-default / `netdata`), and `collect_cluster` honours a per-node `timeout_s`.
+The Mac Studio (Mac17,14, macOS 27.0.1, Apple M5 Max, 18 cores, 64 GiB, `macstudio.home`) is a cluster
+node with **nothing installed on it and no endpoint to poll**: its own 15-minute cron producer writes
+`logs/macstudio_node.json` over the SMB share, and for this node that file IS the node —
+`kind: snapshot`, merged by `federation/local_snapshot.py` as the PRIMARY source (`primary=True`),
+which decides `online` as well as filling the panel's display fields. The Mac's Netdata was removed on
+2026-10-12 (Ron: it was reporting false information) and `federation/netdata_node.py` went with it.
 
-- Endpoint is `http://10.1.10.34:19999` (the Mac's **en0** address, reported by Netdata as
-  `_net_default_iface_ip`; `10.1.10.20` is the same instance on another interface; the Netdata API
-  is unauthenticated on the LAN). **mDNS does not resolve from this host** — `Mac-Studio.local`
-  fails — so the address is pinned in config; if it ever moves, the node reads offline and the
-  cluster raises a standing critical `cluster_health_warning` (the `truenas` lesson).
-- **The Mac's own answer (mailbox reply `20261010T151459Z`, 2026-10-10) confirms and sharpens this:**
-  Netdata v2.11.1 is Homebrew's per-user LaunchAgent (`sh.brew.netdata`, `/opt/homebrew/…`), and the
-  all-interface bind is **upstream's default** (`netdata.conf` is the stock commented template), not a
-  decision — narrowing it is `bind to = 10.1.10.34 127.0.0.1` plus an agent restart, on Ron's word
-  only. `.34` is en0/Ethernet (`.20` is Wi-Fi en1) on a **24 h DHCP lease from 10.1.10.1**, so the
-  durable pin is a **router DHCP reservation** — the config's literal IP is only as good as that
-  lease. The firewall on the Mac is disabled, so nothing there blocks the poll.
-- **Alarm skip-list = transient images + personal archives + REMOTE capacity + TM/system views.** The
-  Mac's list (`/Volumes/makemkv`, `Gemini*`, `Install Google Drive`, `MusicBrainz Picard`,
-  `documents`, `mystuff`, `appdata`, `hermes`, `downloads`, `music`, `media`, `.timemachine/*`,
-  `com.apple.TimeMachine.localsnapshots/**`, `Recovery`, `System/Volumes/{VM,Preboot,Update,xarts,
-  iSCPreboot,Hardware,Data/home}`) is shipped in config, and
-  `tests/test_netdata_node.py::test_shipped_macstudio_skip_list_drops_remote_and_transient_mounts`
-  locks it there and proves `/Volumes/Data2` still raises. **`/Volumes/appdata` and `/Volumes/hermes`
-  are this host's own shares and `/Volumes/media` is TrueNAS** — a remote server's fullness must never
-  become a Mac anomaly. Also note the DMG alarm **stuck on stale data**: the image was not even
-  mounted when the Mac checked (Netdata keeps serving the chart), so the skip-list is the fix, not a
-  threshold change.
-- **Phase 2 is LIVE (2026-10-10, Ron's go-ahead): the Mac produces, OpsBrain consumes.** The Mac's own
-  15-minute cron (`~/.hermes/scripts/mac-node-snapshot.py`, running under the Hermes cron runtime so it
-  inherits the Full Disk Access grant) writes `logs/macstudio_node.json` over the SMB share with what
-  no poll can reach: Time Machine's last successful backup + age, per-mount health (mounted/read-only/
-  absent), Hermes cron health, the gateway heartbeat, the local llama.cpp router, and the
-  **loopback-only** services (Portal 8087, Hindsight 9177/19177, router 18434) that can only ever be
-  reported Mac-side. The node entry carries `snapshot_file` + `snapshot_max_age_s` (**2700 s = 45 min =
-  three missed ticks — the producer's own contract**, from hermes-mac ask `20261010T182237Z-f2b12bf0`),
-  merged by `federation/local_snapshot.py` (OpsBrain is CONSUMER-only — never write that file from
-  here, same rule as the vault-drift report). States: `ok` → the producer's own `alert_count` (its
-  curated judgments, never re-derived) **plus `derived_alerts`** — the collector's own state checks: a
-  mount that is not mounted, the gateway heartbeat missing or older than `snapshot_gateway_stale_s`
-  (300 s), a Time Machine backup older than `snapshot_tm_stale_hours` (48 h), and these run on FRESH
-  data only; `stale` → **one** anomaly (a producer that stopped while the live poll stayed green is the
-  silent failure this pipeline exists to catch) with its old facts NOT re-judged; `missing` → NOT a
-  fault (producer optional) but recorded as `snapshot.state: missing` so the UI says so; `unreadable` →
-  no anomaly, error kept. **Capacity is never judged** — `disks[].used_percent` is surfaced, never
-  alerted, because 82 % is the Mac's steady state. Host facts merge with the LIVE values winning
-  (Netdata's cpu/cores/RAM beside the producer's model/load_avg/uptime_hours). The merge also runs for
-  an offline node, so "producer alive, poll dead" is distinguishable from "machine down".
+- **Measured before retiring, because "migrate or retire" has to be an answer and not a shrug:**
+  replaying the captured Netdata alarm fixture through the shipped filter kept **ZERO** alarms — the
+  only CRITICAL was `disk_space_usage` on the transient `/Volumes/makemkv_v2.0.0` installer DMG
+  (already on the skip-list), the rest were UNINITIALIZED rate alarms or CLEAR — and no Mac Netdata
+  alarm name had ever reached `logs/notifications.jsonl`. The alarm path contributed nothing to this
+  node, so **nothing was migrated out of it**: `alarm_keep`, `alarm_skip_names`, the 21
+  `alarm_skip_mounts` paths, the endpoint and the adapter all went.
+- **Why no endpoint — including the `macmon serve` on :9090 the Mac offered:** our federation poll runs
+  every 2 h (`poll_interval_cycles` × `interval_seconds`) while the producer ticks every 15 min, so a
+  scrape would sample a finer source more coarsely, and it would restore the pinned-IP failure mode
+  below. The Mac's `/json` is the complete macmon read (`/metrics` omits `ram_available`), but we take
+  it through the file the node already writes. Answer given to the Mac: do not run `serve` on our
+  account; loopback only, if they want it for their own tools (never `0.0.0.0` — no auth, no TLS).
+- **The pinned-IP failure mode this deleted.** The node used to poll `http://10.1.10.34:19999` (en0, a
+  24 h DHCP lease; mDNS does not resolve from dockerVM), so a moved lease, a changed bind or a stopped
+  agent read as an **offline node** = a standing critical `cluster_health_warning` on every federation
+  cycle (the `truenas` lesson — and the state the cluster actually sat in for two days). The Mac's
+  address is now irrelevant to OpsBrain.
+- **Two-tier staleness — do not collapse this back to one threshold.** `ok` → the producer's own
+  `alert_count` **plus** `derived_alerts`; `stale` (> `snapshot_max_age_s`, 2700 s = 45 min = three
+  missed ticks, the producer's own contract) → **one** anomaly and the node stays **ONLINE**, its old
+  facts NOT re-judged; `dead` (> `snapshot_dead_after_s`, 7200 s) → **one** anomaly and the node reads
+  **OFFLINE**; `missing` → OFFLINE with one anomaly (for a primary node the file IS the node, so the
+  old "missing is not a fault" rule is deliberately inverted here); `unreadable` → OFFLINE with one
+  anomaly and the error kept. Two tiers because a reboot or an SMB remount is a transient while a
+  producer stopped for hours is a fault, and one threshold makes the two look alike — a standing red
+  every 2 h is what got the `truenas` node disabled. The cluster score is computed from ONLINE nodes
+  only, so an offline node shows as a dark node plus a critical rec, never as a lower score.
+- **The merge runs exactly ONCE per node.** For a `kind: snapshot` node `_collect_node` returns an
+  empty shell (`_empty_node`, deliberately without `err` — nothing was polled, so nothing failed) and
+  `collect_cluster`'s existing `snapshot_file` merge fills it with `primary=True`. Anomaly and alert
+  counts are ADDITIVE, so a second merge would double-count one finding; there is a test for it.
+- **`derived_alerts` — the collector's own state checks, on fresh data only:** a mount not mounted, a
+  mount mounted **read-only**, the gateway heartbeat missing or older than `snapshot_gateway_stale_s`
+  (300 s), a Time Machine backup older than `snapshot_tm_stale_hours` (48 h), **memory pressure**
+  (`ram_available` under 10 % of RAM, heavy under 5 %) and a **fan at 0 rpm**. Do NOT add a fallback to
+  `last_known_backup_age_hours`: the producer's own `alerts[]` already carries the TM verdict and the
+  counts are additive, so a fallback would report one condition as two anomalies.
+- **Capacity is never judged.** `disks[].used_percent` is surfaced for all six watched volumes (worst
+  named, plus a per-volume line), never alerted: 82 % is the Mac's steady state, and the producer's
+  `alerts[]` is authoritative and already threshold-applied. `volumes` / `disk_used_percent` now come
+  from `disks[]` (total/used/free/percent) instead of a config list — one source of truth, the Mac's.
 - **The inbox cron is agent-mediated — expect a parallel session.** The `hermes-docker inbox` cron
   delivers to bot-chat, so a queue ask can spawn a concurrent Hermes session that edits the SAME repo:
   on 2026-10-10 the Mac's `NEEDS ACTION` ask (received 18:22, while this session was mid-build) produced
@@ -425,33 +425,39 @@ default / `netdata`), and `collect_cluster` honours a per-node `timeout_s`.
   reasoner correlates on, and attaching the whole collector doc there grew `cluster_snapshot.json` from
   ~0.5 KB to ~255 KB per cycle. Cluster recommendations also now **name the nodes behind a count**
   ("1 total anomaly(ies) across cluster: macstudio" — a bare count is unactionable in the ticker).
-- **Its own alarms are the source of truth, minus what is real-but-immaterial.** The Mac reports
-  ~850 alarms (1 CRITICAL, 0 WARNING, the rest CLEAR/UNDEFINED); unfiltered, that one CRITICAL is a
-  permanent `anomalies: 1`, a `notify_cluster` every federation cycle and a Mac stuck below 100
-  stability. Hence `alarm_keep: [CRITICAL, WARNING, ERROR]` plus the `alarm_skip_names` /
-  `alarm_skip_mounts` lists above. With them the Mac reports `anomalies: 0` on a clean day.
-- **Two measurement traps are baked into the adapter, do not "simplify" them:** `disk_space.*`
-  dimensions are **GiB, not percent** (root reports `used=315.3` at 34 % full — the percent is
-  `used/(used+avail)`), and macOS RAM "used" is `active + wired + compressor` (the naive
-  `total - free` reads ~98 % on a healthy box because macOS counts cache as occupied).
-- `volumes:` is an explicit list on purpose: the Mac exposes **3288 charts**, dominated by Time
-  Machine snapshot and DMG mounts, so a discovered "worst volume" is meaningless. Measured
-  2026-10-10: `/` 34 %, `Data` 2 %, **`Data2` 82 %**, `Data3` 1 %, `Data4` 0 %, **`TimeMachine`
-  82 %** (that pair shares a physical disk). Netdata raises no alarm for those 82 % volumes, so the
-  Mac reads clean while they are near-full by design — OpsBrain reports the Mac's verdict, it does
-  not invent a stricter one.
-- Node block details: `confidence: null` (no reasoner on the Mac — an online node with null
+- **macmon (Ron's fork `rpmalouin/macmon`: the menu bar app + a C ABI over upstream `vladkens/macmon`)
+  arrives verbatim in the `soc` block of the same file** — `metrics` is macmon's own `Metrics`
+  serialization, `soc_info` its `SocInfo`, plus `sampled_at` / `source` / `available` / `error`. The
+  producer REPORTS; every percentage, pressure reading and verdict is derived here. The Homebrew
+  `macmon` is upstream's older CLI (no `ram_available`, no app) — read the fork, not its docs.
+- **RAM has two figures and only one may be thresholded.** `ram_usage` is Activity Monitor's "Memory
+  Used" and counts reclaimable inactive pages, so a machine holding a resident ~35 GB model reads
+  87-92 % while nothing is wrong: it is rendered, never alarmed on. `ram_available` is the pressure
+  figure (macmon's own `StatusLabel.swift` lines — heavy < 5 %, moderate < 10 %; this Mac reads 15-16 %
+  with the model loaded) and the only one judged. `ram_available` is 0 when the kernel does not report
+  it, and 0 means UNKNOWN, never "out of memory".
+- **Never write 0 W in place of a failed macmon read.** `soc.available` / `soc.error` make a failure
+  visible; on macOS 27 upstream documents that the CPU/ANE IOReport counters can stop updating without
+  a private entitlement, and the fork's CLPC path is what covers it. If the watts turn out to be
+  unavailable, the node renders temperatures, memory and usage and drops the power row. Per-tier CPU
+  aggregates (P 12 c / S 6 c with frequency and scaled ratio) render; the 18 per-core rows do not —
+  they would swamp a two-node table, and they belong in the fixture and the reasoner digest.
+- **Node block details:** `confidence: null` (no reasoner on the Mac — an online node with null
   confidence earns FULL credit in the stability formula), `containers: 0/0` (no Docker there),
-  `drift_events`/`restart_events` 0, plus display-only `host` (os/cpu/cores/RAM/arch/uptime) and
-  `volumes`. Only `/info` or `/alarms` failing marks the node offline; a missing chart is a null
-  field, never an outage.
-- **`_collect_node` now attaches `raw`** — `federation_reasoner._alarm_names()`/`_drift_flags_from_node()`
-  read `node["raw"]`, which the collector never set, so cross-node anomaly/drift correlation was
-  dead code for every node (bug found and fixed in the same change).
-- Verified live 2026-10-10: `python3 federation/federation_collector.py` → 2/2 online,
-  `macstudio` `anomalies: 0`, `disk_used_percent: 82.3`; reasoner → stability 96.5/100,
-  `macstudio` 100, ranking `[macstudio, dockervm]`; Node Comparison shows the Mac's row with its
-  host sub-line (`macOS 27.0.1 · Apple M5 Max · 18c · 64 GB · RAM 57% · worst disk 82%`).
+  `drift_events` / `restart_events` 0, plus display-only `host`
+  (model/os/chip/cores/RAM/power/temps/fans/cpu tiers) and `volumes`.
+- **`raw` is attached for a snapshot-sourced node too** — `raw.collector.snapshot.alert_keys` carries
+  stable tokens (`time_machine`, `cron`, `mount_read_only`, `memory_pressure`, `fan_stopped`, …),
+  because `federation_reasoner._alarm_names()` reads `node["raw"]` and a snapshot node has no Netdata
+  alarm names to correlate on. Without that key the whole cluster's cross-node correlation reads
+  nothing, silently — the identical bug the first `raw` fix addressed for the polled path.
+- Verified live 2026-10-12 (`python3 federation/federation_collector.py && python3
+  federation/federation_reasoner.py`): 2/2 nodes online; `macstudio` `online: true` with
+  `anomalies: 4` (the producer's own, including its two retired-probe alerts until the Mac ships the
+  schema-2 producer), `volumes` all six paths derived from `disks[]`, `disk_used_percent: 86.0`, `raw`
+  present with `alert_keys`; reasoner → stability 94.0, `node_stability {dockervm 98.0, macstudio
+  96.0}`, ONE info `notify_cluster` naming the node and **no `cluster_health_warning`** — the standing
+  critical that had been firing since the Mac's Netdata was removed.
 
 ## Notification ticker (message, dedupe, level)
 
@@ -768,7 +774,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **308 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **317 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

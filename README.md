@@ -39,7 +39,7 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
   reports/            daily markdown reports
   ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
   deploy/             systemd units + installer
-  tests/              pytest suite (308 tests)
+  tests/              pytest suite (317 tests)
   docs/               per-feature implementation guides
   Dockerfile, docker-compose.yml, README.md, IMPLEMENTATION.md, CHANGELOG.md, .gitignore
 ```
@@ -151,25 +151,33 @@ recommendations, and any Qwen-generated action. It must also not destroy one via
 
 OpsBrain can reason about multiple nodes as one cluster. Each entry in `federation.nodes`
 names a `kind`: `opsbrain` (default) points at a node's OpsBrain dashboard
-(`http://<node>:9120/api/status`) or a raw `collector.json`, and `netdata` points at a host's
-**Netdata API** — for a machine that runs Netdata but not OpsBrain (the Mac Studio), which joins
-the cluster with nothing installed on it. Every 2 cycles the federation collector merges them and
-the reasoner computes:
+(`http://<node>:9120/api/status`) or a raw `collector.json`, and `snapshot` points at a JSON file
+the **node itself** writes into this host's `logs/` — for a machine that runs neither OpsBrain nor a
+pollable agent (the Mac Studio), which joins the cluster with nothing installed on it and nothing
+polled. OpsBrain is the consumer of that file, never its writer. Every 2 cycles the federation
+collector merges them and the reasoner computes:
 
 - **Cluster stability score** (0–100): `(conf*0.4 + drift*0.3 + anomalies*0.2 + restarts*0.1) * 100`
   (drift/anomalies/restarts reverse-normalized to 0..1)
 - **Node ranking** by stability
-- **Cross-node anomaly / drift correlations** (shared Netdata alarm names, shared GPU flags)
+- **Cross-node anomaly / drift correlations** (shared alarm tokens, shared GPU flags)
 - **Recommended cluster actions** — **NOTIFY-ONLY** (notify_cluster / escalate_cluster /
   cluster_health_warning). The federation layer never performs cross-node remediation;
   per-node remediation still obeys confidence gating, manual-stop protection, and caps.
 
-The dashboard surfaces a **Cluster Overview** (stability, avg confidence, totals) and a
-**Node Comparison** table (with a host-facts sub-line for nodes that report a `host` block instead
-of containers); the daily report gains a **Cluster Summary** section.
+A snapshot-sourced node has **two staleness tiers** rather than one: three missed 15-minute ticks
+(45 min) is one anomaly and the node stays online, and 2 h of silence is a fault and the node reads
+offline. Its findings are the producer's own `alerts[]` plus the collector's derived state checks
+(mount not mounted / read-only, gateway heartbeat, Time Machine age, memory pressure, a stopped fan);
+capacity is surfaced, never judged.
 
-Federation degrades gracefully: if a node endpoint is unreachable it is marked offline,
-the cluster score drops, and a health warning is emitted rather than any automation.
+The dashboard surfaces a **Cluster Overview** (stability, avg confidence, totals) and a
+**Node Comparison** table (with host-facts, macmon, per-volume and snapshot sub-lines for nodes that
+report a `host` block instead of containers); the daily report gains a **Cluster Summary** section.
+
+Federation degrades gracefully: if a node is unreachable — or its producer file goes stale, then dead
+— it is marked offline, the cluster score drops, and a health warning is emitted rather than any
+automation.
 
 ## Model routing (Ollama — see docs/reasoning-llm.md)
 
@@ -206,7 +214,7 @@ deterministic (no LLM).**
 
 ## Tests
 
-`python3 -m pytest` — **308 tests** across `tests/` (whitelist gate, deterministic rules,
+`python3 -m pytest` — **317 tests** across `tests/` (whitelist gate, deterministic rules,
 output sanitization, GPU drift + GPU visibility + GPU driver reconcile, manual-stop invariant,
 TrueNAS parse, federation math & correlations, dashboard refinements, Dockhand desired-state
 ingest, model selection / `think` gate, stale-decision guard). Run before pushing changes to

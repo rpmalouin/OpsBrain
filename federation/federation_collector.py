@@ -78,19 +78,31 @@ def _failed_node(node_type, err):
             "alerts_count": 0, "err": err}
 
 
+def _empty_node(node_type):
+    """A node with no source of its own: an empty shell for the snapshot merge to fill.
+
+    Deliberately without an `err`: for a `kind: snapshot` node there is nothing missing to report, and
+    an `err` here would read as a failed poll on a node that never polls.
+    """
+    return {"online": False, "type": node_type, "confidence": None,
+            "drift_events": 0, "anomalies": 0, "restart_events": 0,
+            "disk_used_percent": None, "containers": {"running": 0, "total": 0},
+            "alerts_count": 0}
+
+
 def _collect_node(node, timeout):
     """Fetch one node's snapshot and reduce it to a compact telemetry block.
 
     `kind` selects the node source (absent = the OpsBrain path):
-      - `netdata` -> federation/netdata_node.py reduces a remote Netdata HTTP API
-        (for a host that runs Netdata but not OpsBrain, e.g. the Mac Studio)
+      - `snapshot` -> the node has no endpoint at all: its own producer snapshot file IS the node
+        (federation/local_snapshot.py with `primary=True`). Returns an empty shell, which
+        `_merge_local_snapshot` fills and whose `online` it decides.
       - otherwise -> this host's snapshot shape, tolerant of two payloads:
         the raw OpsBrain collector.json {netdata, gpu, docker, vm, truenas, ...} and
         an OpsBrain /api/status envelope {collector:{...}, reasoner, ...}
     """
-    if str(node.get("kind") or "opsbrain").lower() == "netdata":
-        from federation.netdata_node import collect_netdata_node
-        return collect_netdata_node(node, timeout)
+    if str(node.get("kind") or "opsbrain").lower() == "snapshot":
+        return _empty_node(node.get("type"))
     node_type = node.get("type")
     endpoint = node.get("collector_endpoint")
     if not endpoint:
@@ -161,20 +173,32 @@ def _collect_node(node, timeout):
 
 
 def _merge_local_snapshot(node_dict, node_cfg):
-    """Merge a node's producer snapshot file (Phase 2) into its collected block.
+    """Merge a node's producer snapshot file into its collected block.
 
-    Never raises: an absent/foreign/old file leaves a `snapshot` block that says so. The producer
-    owns the file; this host only reads it (same rule as the vault-drift report).
+    `kind: snapshot` makes the file the node's PRIMARY source (it decides `online`, and supplies the
+    panel's own display fields); for every other node the snapshot only adds what a live poll cannot see.
+
+    Never raises: an absent/foreign/old file leaves a `snapshot` block that says so. The producer owns
+    the file; this host only reads it (same rule as the vault-drift report).
     """
-    from federation.local_snapshot import read_snapshot, merge_snapshot
+    from federation import local_snapshot as LS
     try:
+        primary = str(node_cfg.get("kind") or "opsbrain").lower() == "snapshot"
         path = node_cfg.get("snapshot_file")
         if not str(path).startswith("/"):
             path = str(REPO / path)
-        snap = read_snapshot(path, max_age_s=node_cfg.get("snapshot_max_age_s") or 3600)
-        return merge_snapshot(node_dict, snap, source=str(node_cfg.get("snapshot_file")),
-                              tm_stale_hours=node_cfg.get("snapshot_tm_stale_hours"),
-                              gateway_stale_s=node_cfg.get("snapshot_gateway_stale_s"))
+        max_age = node_cfg.get("snapshot_max_age_s")
+        if max_age is None:
+            max_age = LS.DEFAULT_MAX_AGE_S if primary else 3600
+        dead_after = node_cfg.get("snapshot_dead_after_s")
+        if dead_after is None:
+            dead_after = LS.DEFAULT_DEAD_AFTER_S
+        snap = LS.read_snapshot(path, max_age_s=max_age,
+                                dead_after_s=dead_after if primary else None)
+        return LS.merge_snapshot(node_dict, snap, source=str(node_cfg.get("snapshot_file")),
+                                 primary=primary,
+                                 tm_stale_hours=node_cfg.get("snapshot_tm_stale_hours"),
+                                 gateway_stale_s=node_cfg.get("snapshot_gateway_stale_s"))
     except Exception as exc:  # noqa: BLE001 - a snapshot must never take a cluster poll down
         log.warning("local snapshot merge failed for %s: %s", node_cfg.get("name"), exc)
         return node_dict
@@ -183,11 +207,11 @@ def _merge_local_snapshot(node_dict, node_cfg):
 def collect_cluster(node_list, timeout=6):
     """Collect each node's snapshot and roll up cluster metrics.
 
-    A node may override the poll default with its own `timeout_s` (a Netdata-sourced node does
-    several HTTP reads per cycle, so it can be slower than a single /api/status fetch), and may
-    carry a `snapshot_file` — a producer snapshot written by the node itself for whatever the live
-    poll cannot see (see federation/local_snapshot.py). The merge runs for offline nodes too, so a
-    dead poll beside a live producer is distinguishable from a dead node.
+    A node may override the poll default with its own `timeout_s`, and may carry a `snapshot_file` — a
+    producer snapshot written by the node itself for whatever the live poll cannot see (see
+    federation/local_snapshot.py). The merge runs for offline nodes too, so a dead poll beside a live
+    producer is distinguishable from a dead node — and for a `kind: snapshot` node, which has no poll at
+    all, the merge is the only thing that decides whether it is up.
     """
     timeout = float(timeout)  # urllib accepts float seconds
     nodes = {}

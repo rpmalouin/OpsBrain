@@ -139,8 +139,9 @@ def _drift_flags_from_node(node):
 def detect_cross_correlations(snapshot):
     """Detect correlated signals across nodes.
 
-    - anomaly_correlations: nodes BOTH reporting active Netdata alarms sharing the
-      same alarm 'name' (best signal for a cross-node class of failure).
+    - anomaly_correlations: nodes reporting a shared alarm name (`netdata.alarms_active` for a polled
+      node, `snapshot.alert_keys` for a producer-sourced one) — the best signal for a cross-node class
+      of failure.
     - drift_correlations: nodes sharing at least one identical GPU drift flag.
     Returns {anomaly_correlations: [...], drift_correlations: [...]}.
     """
@@ -166,12 +167,22 @@ def detect_cross_correlations(snapshot):
 
 
 def _alarm_names(node):
+    """Alarm tokens a node reports, for cross-node correlation.
+
+    Two live sources: a node with a poll carries `netdata.alarms_active`, and a node whose source is its
+    own producer snapshot carries `snapshot.alert_keys` (stable tokens — its alerts are prose sentences,
+    and comparing sentences across nodes matches nothing). Without the second path the cluster's anomaly
+    correlation reads nothing for a snapshot-sourced node, silently.
+    """
     raw = node.get("raw")
     if not raw:
         return []
     coll = raw.get("collector") or (raw.get("sources") or {}).get("collector.json") or raw
-    alarms = coll.get("netdata", {}).get("alarms_active") or []
-    return [str(a.get("name") or "") for a in alarms if isinstance(a, dict)]
+    alarms = (coll.get("netdata") or {}).get("alarms_active") or []
+    names = [str(a.get("name") or "") for a in alarms if isinstance(a, dict)]
+    keys = (coll.get("snapshot") or {}).get("alert_keys") or []
+    names += [str(key) for key in keys if key]
+    return [name for name in names if name]
 
 
 def _recommendations(snapshot, score, weights):

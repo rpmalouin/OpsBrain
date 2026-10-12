@@ -197,7 +197,7 @@ def test_cluster_snapshot_carries_a_node_snapshot_file(tmp_path, monkeypatch):
             return json.dumps(_status_payload()).encode()
 
     monkeypatch.setattr(FC.urllib.request, "urlopen", lambda url, timeout=None: Resp())
-    doc = FC.collect_cluster([{"name": "macstudio", "type": "macos", "kind": "netdata",
+    doc = FC.collect_cluster([{"name": "macstudio", "type": "macos",
                                "collector_endpoint": "http://127.0.0.1:9120/api/status",
                                "snapshot_file": str(path), "snapshot_max_age_s": 3600}], timeout=2)
     node = doc["nodes"]["macstudio"]
@@ -206,7 +206,7 @@ def test_cluster_snapshot_carries_a_node_snapshot_file(tmp_path, monkeypatch):
     assert node["snapshot"]["time_machine"]["latest_backup_age_hours"] == 0.72
     assert node["host"]["model"] == "Mac17,14"          # from the producer...
     assert node["host"]["load_avg"]                     # ...and it adds what the poll lacks
-    assert node["anomalies"] == 1                       # the producer's own alert
+    assert node["anomalies"] == 2                       # the poll's own alarm + the producer's alert
 
 
 def test_cluster_snapshot_missing_file_is_not_an_anomaly(tmp_path, monkeypatch):
@@ -227,19 +227,21 @@ def test_cluster_snapshot_missing_file_is_not_an_anomaly(tmp_path, monkeypatch):
     assert doc["nodes"]["n"]["anomalies"] == 1          # only the stub's own alarm
 
 
-NN_FIXTURES = Path(__file__).parent / "fixtures" / "netdata_mac"
+def test_collect_cluster_mixes_a_polled_node_and_a_snapshot_sourced_one(tmp_path, monkeypatch):
+    """The Mac has no endpoint at all: its producer file decides online/offline, and the polled node is
+    left untouched by the merge (regression: kind dispatch and the merge must not leak across nodes)."""
+    producer = {"schema": 2, "node": "macstudio", "generated_at_utc": "2026-10-12T23:00:00Z",
+                "interval_minutes": 15, "alert_count": 1, "alerts": ["cron: hermes-patch-watchdog"],
+                "host": {"model": "Mac17,14", "load_avg": [1.0, 1.0, 1.0]},
+                "disks": [{"path": "/", "used_percent": 34.2},
+                          {"path": "/Volumes/Data2", "used_percent": 82.9}],
+                "mounts": [{"path": "/Volumes/Data", "mounted": True, "read_only": False}],
+                "gateway": {"present": True, "age_seconds": 12.0},
+                "time_machine": {"latest_backup_age_hours": 0.7}}
+    path = tmp_path / "macstudio_node.json"
+    path.write_text(json.dumps(producer))
 
-
-def _mixed_net(monkeypatch):
-    """Answer both an OpsBrain /api/status node and a Netdata node from one patched urlopen.
-
-    federation_collector and netdata_node both call urllib.request.urlopen, so a single
-    monkeypatch covers the two node kinds.
-    """
-    class FakeResp:
-        def __init__(self, data):
-            self._d = data
-
+    class Resp:
         def __enter__(self):
             return self
 
@@ -247,58 +249,38 @@ def _mixed_net(monkeypatch):
             return False
 
         def read(self, *a):
-            return json.dumps(self._d).encode()
+            return json.dumps(_status_payload()).encode()
 
-    info = json.loads((NN_FIXTURES / "info.json").read_text())
-    alarms = json.loads((NN_FIXTURES / "alarms.json").read_text())
-
-    def urlopen(url, timeout=None):
-        url = str(url)
-        if "/api/status" in url:
-            return FakeResp(_status_payload())
-        if "api/v1/info" in url:
-            return FakeResp(info)
-        if "api/v1/alarms" in url:
-            return FakeResp(alarms)
-        if "chart=disk_space.%2F" in url:
-            return FakeResp({"labels": ["time", "avail", "used"], "data": [[0, 611.0, 315.3]]})
-        raise OSError(f"no fixture for {url}")
-
-    monkeypatch.setattr(FC.urllib.request, "urlopen", urlopen)
-
-
-def test_collect_cluster_mixes_opsbrain_and_netdata_kinds(monkeypatch):
-    _mixed_net(monkeypatch)
+    monkeypatch.setattr(FC.urllib.request, "urlopen", lambda url, timeout=None: Resp())
     nodes = [
         {"name": "dockervm", "type": "linux",
-         "collector_endpoint": "http://127.0.0.1:9120/api/status"},        # no kind -> OpsBrain path
-        {"name": "macstudio", "type": "macos", "kind": "netdata",
-         "collector_endpoint": "http://10.1.10.34:19999",
-         "volumes": ["/"],
-         "alarm_skip_mounts": ["/Volumes/makemkv", "com.apple.TimeMachine.localsnapshots"]},
+         "collector_endpoint": "http://127.0.0.1:9120/api/status"},          # no kind -> OpsBrain path
+        {"name": "macstudio", "type": "macos", "kind": "snapshot",
+         "snapshot_file": str(path), "snapshot_max_age_s": 2700, "snapshot_dead_after_s": 7200},
     ]
     doc = FC.collect_cluster(nodes, timeout=2)
     mac = doc["nodes"]["macstudio"]
     assert mac["online"] is True and mac["type"] == "macos"
-    assert mac["confidence"] is None                       # no reasoner on the Mac
-    assert mac["anomalies"] == 0                           # the mounted-DMG CRITICAL is skipped
-    assert mac["volumes"] == {"/": 34.0}
-    assert mac["host"]["hostname"] == "Mac-Studio.local"
+    assert mac["confidence"] is None                    # no reasoner on the Mac
+    assert mac["anomalies"] == 1                        # the producer's own alert, and nothing else
+    assert mac["volumes"] == {"/": 34.2, "/Volumes/Data2": 82.9}
+    assert mac["disk_used_percent"] == 82.9             # 82 % is reported, never alarmed on
+    assert mac["host"]["model"] == "Mac17,14"
     assert mac["containers"] == {"running": 0, "total": 0}
-    # the Mac keeps dockerVM's node untouched (regression: kind dispatch must not leak)
+    assert mac["raw"]["collector"]["snapshot"]["alert_keys"] == ["cron"]
+    assert "err" not in mac                             # a node that never polls cannot fail a poll
+    # the Mac's file leaves the polled node untouched
     assert doc["nodes"]["dockervm"]["confidence"] == 0.8
     assert doc["nodes"]["dockervm"]["containers"] == {"running": 48, "total": 50}
     assert "host" not in doc["nodes"]["dockervm"]
-    # cluster rollup sees two nodes, the Mac contributing no anomalies or drift
-    assert doc["cluster_metrics"]["avg_confidence"] == 0.8   # only the OpsBrain node has confidence
-    assert doc["cluster_metrics"]["total_anomalies"] == 1
+    # cluster rollup sees two nodes; only the polled one has a confidence to average
+    assert doc["cluster_metrics"]["avg_confidence"] == 0.8
+    assert doc["cluster_metrics"]["total_anomalies"] == 2
 
-    # the Mac scores 100 (online, null confidence, clean) and is ranked, not alarmed
     reason = FR.cluster_reason(doc, WEIGHTS)
-    assert reason["node_stability"]["macstudio"] == 100.0
+    assert reason["node_stability"]["macstudio"] == 99.0   # online + null confidence = full credit
     assert reason["node_ranking"][0] == "macstudio"
-    # the stub node carries 1 anomaly + 1 drift event -> notify_cluster only; crucially no
-    # cluster_health_warning (nothing offline) and no escalate_cluster
+    # no cluster_health_warning (nothing offline) and no escalate_cluster, even with 2 anomalies
     assert {r["type"] for r in reason["recommendations"]} == {"notify_cluster"}
 
 
@@ -341,16 +323,59 @@ def test_cluster_recommendations_name_the_nodes_behind_them():
     assert any(t.startswith("1 GPU drift event(s) across cluster: dockervm") for t in texts), texts
 
 
-def test_netdata_kind_node_goes_offline_without_crashing_the_cluster(monkeypatch):
-    def boom(url, timeout=None):
-        if "/api/status" in str(url):
-            raise OSError("no fixture")     # keep the assertion simple: everything unreachable
-        raise OSError("connection refused")
+def test_snapshot_node_goes_offline_when_its_producer_stops(tmp_path):
+    """Replaces the old Netdata-offline case: there is no endpoint to fail, so a producer that stopped
+    is what takes the node down — as OFFLINE with one anomaly, not as an `err`."""
+    import os
+    import time
 
-    monkeypatch.setattr(FC.urllib.request, "urlopen", boom)
-    nodes = [{"name": "macstudio", "type": "macos", "kind": "netdata",
-              "collector_endpoint": "http://10.1.10.34:19999", "volumes": ["/"]}]
-    doc = FC.collect_cluster(nodes, timeout=1)
-    assert doc["nodes"]["macstudio"]["online"] is False
-    assert "connection refused" in doc["nodes"]["macstudio"]["err"]
-    assert doc["nodes"]["macstudio"]["containers"] == {"running": 0, "total": 0}
+    path = tmp_path / "macstudio_node.json"
+    path.write_text(json.dumps({"schema": 2, "node": "macstudio", "alert_count": 0, "alerts": []}))
+    old = time.time() - 4 * 3600
+    os.utime(path, (old, old))
+    doc = FC.collect_cluster([{"name": "macstudio", "type": "macos", "kind": "snapshot",
+                               "snapshot_file": str(path), "snapshot_max_age_s": 2700,
+                               "snapshot_dead_after_s": 7200}], timeout=1)
+    mac = doc["nodes"]["macstudio"]
+    assert mac["online"] is False
+    assert mac["snapshot"]["state"] == "dead" and mac["anomalies"] == 1
+    assert "err" not in mac                                 # nothing was polled, so nothing failed
+    assert mac["containers"] == {"running": 0, "total": 0}
+    # an all-offline cluster scores 0, not a calm 60, and names the node it cannot see
+    reason = FR.cluster_reason(doc, WEIGHTS)
+    assert reason["cluster_stability_score"] == 0
+    assert reason["node_stability"]["macstudio"] == 0.0
+    recs = {r["type"]: r for r in reason["recommendations"]}
+    assert recs["cluster_health_warning"]["severity"] == "critical"
+    assert "macstudio" in recs["cluster_health_warning"]["reason"]
+
+
+def test_snapshot_node_stays_online_through_a_missed_tick(tmp_path):
+    """The other half of the two-tier rule: 46 minutes of silence is one anomaly, not an outage."""
+    import os
+    import time
+
+    path = tmp_path / "macstudio_node.json"
+    path.write_text(json.dumps({"schema": 2, "node": "macstudio", "alert_count": 0, "alerts": [],
+                                "disks": [{"path": "/", "used_percent": 34.2}]}))
+    old = time.time() - 46 * 60
+    os.utime(path, (old, old))
+    doc = FC.collect_cluster([{"name": "macstudio", "type": "macos", "kind": "snapshot",
+                               "snapshot_file": str(path), "snapshot_max_age_s": 2700}], timeout=1)
+    mac = doc["nodes"]["macstudio"]
+    assert mac["online"] is True and mac["snapshot"]["state"] == "stale"
+    assert mac["anomalies"] == 1
+    assert mac["volumes"] == {"/": 34.2}                    # still the best information we have
+    reason = FR.cluster_reason(doc, WEIGHTS)
+    assert "cluster_health_warning" not in {r["type"] for r in reason["recommendations"]}
+
+
+def test_a_snapshot_node_merges_exactly_once(tmp_path):
+    """Anomalies and alert counts are additive, so a second merge would double-count one finding."""
+    path = tmp_path / "macstudio_node.json"
+    path.write_text(json.dumps({"schema": 2, "node": "macstudio", "alert_count": 2,
+                                "alerts": ["cron: a", "time_machine: b"]}))
+    doc = FC.collect_cluster([{"name": "macstudio", "type": "macos", "kind": "snapshot",
+                               "snapshot_file": str(path), "snapshot_max_age_s": 2700}], timeout=1)
+    mac = doc["nodes"]["macstudio"]
+    assert mac["anomalies"] == 2 and mac["alerts_count"] == 2

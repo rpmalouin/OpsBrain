@@ -94,16 +94,22 @@ function renderClusterOverview() {
 }
 
 // ------------------------------------------------- Node Comparison
-// Nodes are not all container hosts: a node with a `host` block (a Netdata-sourced node, e.g.
-// the Mac) reports OS/CPU/RAM instead of containers. Render that as a sub-line, not a new column,
-// so the table shape stays stable for every node kind.
+// Nodes are not all container hosts: a node with a `host` block (a producer-sourced node such as the
+// Mac) reports OS/chip/RAM instead of containers. Render that as sub-lines, not as new columns, so the
+// table shape stays stable for every node kind.
 function nodeHostLine(n) {
   const h = n.host || {};
   const parts = [];
   if (h.os) parts.push(h.os);
+  if (h.chip_name) parts.push(h.chip_name);
   if (h.cpu) parts.push(h.cpu);
   if (h.cores !== undefined && h.cores !== null) parts.push(h.cores + "c");
   if (h.ram_total_gb) parts.push(h.ram_total_gb + " GB");
+  // Two memory numbers, on purpose. "RAM x%" is Activity Monitor's Memory Used, which counts
+  // reclaimable inactive pages, so 87% on a machine holding a resident model is its NORMAL state.
+  // "avail y%" is the pressure figure — the one macmon's own menu bar judges — and the only one that
+  // ever gets tone: below 10% worth a look, below 5% bad. Only the tone marks are raw HTML; the rest
+  // goes through escapeHtml.
   const ram = num(h.ram_used_percent);
   if (ram !== null) parts.push("RAM " + ram.toFixed(0) + "%");
   // name the worst watched volume, not just its number: "82%" alone never says WHICH disk to clean
@@ -119,11 +125,74 @@ function nodeHostLine(n) {
     const disk = num(n.disk_used_percent);
     if (disk !== null) parts.push("worst disk " + disk.toFixed(0) + "%");
   }
-  return parts.length ? escapeHtml(parts.join(" · ")) : "";
+  const base = parts.length ? escapeHtml(parts.join(" · ")) : "";
+  const avail = num(h.ram_available_percent);
+  if (avail === null) return base;
+  const pressure = String(h.memory_pressure || "");
+  const label = "avail " + avail.toFixed(0) + "%";
+  const tone = pressure === "heavy" ? "text-red-300" : pressure === "moderate" ? "text-amber-300" : "";
+  if (!tone) return (base ? base + " · " : "") + escapeHtml(label);
+  return (base ? base + " · " : "") + `<span class="${tone}">${escapeHtml(label)}</span>`;
 }
 
-// A node's own producer snapshot (Phase 2) carries what no poll can see; show its freshness and its
-// findings, because a "stale"/"missing" producer is itself worth seeing on the board.
+// The node's own SoC telemetry (macmon), when its producer supplies it: temperatures, power, the
+// per-tier CPU aggregate and the fans. Per-core rows stay out of this table on purpose — eighteen of
+// them would swamp a two-node comparison; the fixture and the reasoner digest keep that detail.
+function nodeMacmonLine(n) {
+  const h = n.host || {};
+  const bits = [];
+  const t = h.temp || {};
+  const cpuT = num(t.cpu_c), gpuT = num(t.gpu_c);
+  if (cpuT !== null || gpuT !== null) {
+    bits.push("cpu " + (cpuT === null ? "—" : cpuT.toFixed(0) + "°C") + " / gpu " + (gpuT === null ? "—" : gpuT.toFixed(0) + "°C"));
+  }
+  const p = h.power_w || {};
+  const cpuW = num(p.cpu_w), gpuW = num(p.gpu_w);
+  if (cpuW !== null || gpuW !== null) {
+    bits.push("power " + (cpuW === null ? "—" : cpuW.toFixed(1)) + " + " + (gpuW === null ? "—" : gpuW.toFixed(1)) + " W");
+  }
+  const cpu = h.cpu || {};
+  const tiers = (Array.isArray(cpu.tiers) ? cpu.tiers : []).filter(x => x && num(x.scaled_ratio) !== null);
+  if (tiers.length) {
+    bits.push(tiers.map(x => (x.label || "?") + " " + (x.cores === null || x.cores === undefined ? "" : x.cores + "c ") + (num(x.scaled_ratio) * 100).toFixed(0) + "%").join(" · "));
+  }
+  const fans = (Array.isArray(h.fans) ? h.fans : []).filter(f => f && num(f.rpm) !== null);
+  if (fans.length) {
+    const stopped = fans.some(f => num(f.rpm) === 0);
+    bits.push("fan " + fans.map(f => (f.name || "fan") + " " + Math.round(num(f.rpm)) + "rpm").join(" · ") + (stopped ? " STOPPED" : ""));
+  }
+  if (!bits.length) return "";
+  return escapeHtml("macmon " + bits.join(" · "));
+}
+
+// A hard fault on a non-container node is worth a colour: a stopped fan is unambiguous, and memory
+// pressure is the one threshold macmon's own menu bar applies.
+function nodeFaultTone(n) {
+  const h = n.host || {};
+  const fans = Array.isArray(h.fans) ? h.fans : [];
+  if (fans.some(f => f && num(f.rpm) === 0)) return "text-red-300";
+  const pressure = String(h.memory_pressure || "");
+  if (pressure === "heavy") return "text-red-300";
+  if (pressure === "moderate") return "text-amber-300";
+  return "text-slate-500";
+}
+
+// Every watched volume by name: the host line names only the worst, and "which disk" is the question a
+// near-full volume actually raises.
+function nodeVolumesLine(n) {
+  const vols = (n.volumes && typeof n.volumes === "object") ? n.volumes : null;
+  if (!vols) return "";
+  const rows = Object.entries(vols)
+    .map(([path, pct]) => [path, num(pct)])
+    .filter(row => row[1] !== null)
+    .sort((a, b) => b[1] - a[1]);
+  if (!rows.length) return "";
+  return escapeHtml("volumes " + rows.map(row => row[0] + " " + row[1].toFixed(0) + "%").join(" · "));
+}
+
+// A node's own producer snapshot carries what no poll can see; show its freshness, the file it came
+// from, and EVERY finding — because a "stale"/"missing" producer is itself worth seeing on the board,
+// and one alert plus a hidden remainder is how a second problem goes unnoticed.
 function nodeSnapshotLine(n) {
   const s = n.snapshot || {};
   if (!s.state) return "";
@@ -139,12 +208,24 @@ function nodeSnapshotLine(n) {
     const mounted = mounts.filter(m => m && m.mounted).length;
     bits.push("mounts " + mounted + "/" + mounts.length);
   }
-  let line = "snapshot " + bits.join(" · ");
-  const derived = Array.isArray(s.derived_alerts) ? s.derived_alerts : [];
-  const alerts = Array.isArray(s.alerts) ? s.alerts : [];
-  const first = derived.concat(alerts)[0];
-  if (first) line += " · " + first;
-  return escapeHtml(line);
+  const cron = s.hermes_cron || {};
+  if (cron.jobs_total !== undefined && cron.jobs_total !== null) {
+    const failing = Array.isArray(cron.jobs_failing) ? cron.jobs_failing.length : 0;
+    bits.push("cron " + failing + "/" + cron.jobs_total + " failing");
+  }
+  if (s.soc_available === false) bits.push("macmon unavailable");
+  let html = escapeHtml("snapshot " + bits.join(" · "));
+  if (s.source) html += escapeHtml(" · source " + s.source);
+  const alarms = []
+    .concat(Array.isArray(s.derived_alerts) ? s.derived_alerts : [])
+    .concat(Array.isArray(s.alerts) ? s.alerts : []);
+  if (alarms.length) {
+    html += `<ul class="mt-0.5 space-y-0.5">`;
+    for (const a of alarms.slice(0, 3)) html += `<li>• ${escapeHtml(String(a))}</li>`;
+    if (alarms.length > 3) html += `<li class="text-slate-500">+${alarms.length - 3} more</li>`;
+    html += `</ul>`;
+  }
+  return html;
 }
 
 function renderNodeComparison() {
@@ -161,10 +242,14 @@ function renderNodeComparison() {
     const dot = n.online ? "#4ade80" : "#f87171";
     const sColor = (s === null) ? "#64748b" : (s >= 80 ? "#4ade80" : (s >= 60 ? "#facc15" : "#f87171"));
     const hostLine = nodeHostLine(n);
+    const macLine = nodeMacmonLine(n);
+    const volLine = nodeVolumesLine(n);
     const snapLine = nodeSnapshotLine(n);
     rows += `<tr class="border-t border-slate-800">` +
       `<td class="py-1"><span class="drift-dot" style="background:${dot}"></span> ${escapeHtml(name)} <span class="text-xs text-slate-500">(${escapeHtml(n.type || "?")})</span>` +
       (hostLine ? `<div class="text-xs text-slate-500">${hostLine}</div>` : "") +
+      (macLine ? `<div class="text-xs ${nodeFaultTone(n)}">${macLine}</div>` : "") +
+      (volLine ? `<div class="text-xs text-slate-500">${volLine}</div>` : "") +
       (snapLine ? `<div class="text-xs text-slate-500">${snapLine}</div>` : "") +
       `</td>` +
       `<td class="py-1 text-center">${num(n.confidence) === null ? "—" : num(n.confidence).toFixed(2)}</td>` +

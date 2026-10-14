@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 317 tests
+python3 -m pytest        # 324 tests
 python3 -m pytest -q     # quiet
 ```
 
@@ -33,9 +33,16 @@ python3 -m pytest -q     # quiet
   `actions.reasoner_decision_state`, and the below-floor raw capture
   (`capture_low_confidence` writes/appends/truncates, `main()` captures at 0.0 and stays silent
   at 0.85 — both end-to-end through a stubbed ollama and a temp output path).
-- **`actions.gpu_drift_actions`** — stuck_process kill (conf>0.8) vs notify-only
-  (conf<=0.8), notify-only for the other four flags, Qwen∪deterministic flag union.
-- **`Engine.dispatch`** — ollama-restart guard, manual-stop gate, cluster verbs.
+- **`actions.gpu_drift_actions`** — stuck_process kill (conf>0.8, collector-corroborated) vs
+  notify-only (conf<=0.8), a silent drop for an LLM-ONLY `stuck_process`, notify-only for the
+  other four flags, Qwen∪deterministic flag union, and a blocked kill notified as
+  "NOT applied" rather than as a kill.
+- **Resident GPU model servers** — `gpu_drift.resident_containers`: `collector.resident_container_pids`
+  (container `State.Pid`), `evaluate_gpu_drift(..., resident_pids=)` never tracking or flagging one,
+  `_killable_stuck_pid(procs, last_pid, resident_pids)` refusing it, and an unrelated busy pid still
+  being flagged while a resident holds the card.
+- **`Engine.dispatch`** — ollama-restart guard, manual-stop gate, `gpu_kill` blocked without
+  `stuck_process` evidence, cluster verbs.
 - **ManualStop registry** — classify_manual_stop (exit codes incl. sigkill protect),
   transition detection, prune-block.
 - **TrueNAS collector** — parse, unreachable/disabled degradation, creds.

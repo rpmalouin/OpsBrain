@@ -131,14 +131,25 @@ gpu_drift:
   vram_max_percent: 90         # VRAM usage % of total that flags vram_overload
   stuck_pid_cycles: 2          # same GPU PID this many cycles + util>thr -> stuck_process (~2 h)
   util_threshold: 10           # GPU util % treated as "idle" for power/temp drift
+  resident_containers: [docling-serve]   # permanent GPU model servers: never stuck candidates
   power_idle_max_watts: 40
   temp_idle_max_c: 55
 ```
 
 ollama's `llama-server` is a permanent GPU resident and is excluded from stuck-PID
-tracking by design. If the host cannot read the GPU at all (`nvidia-smi` failing), the
-collector records `gpu.available: false` + `gpu.error` and a `gpu_unavailable`
-notification fires once per UTC day.
+tracking by design. `resident_containers` extends the same treatment to containers whose GPU
+process is a **model server** — a process that holds VRAM forever and idles at 0 % util
+between jobs, which is why the cycle counter alone means nothing for it. It is matched by
+the container's own PID (`State.Pid`), not by a process name: nvidia-smi reports the compute
+app as the interpreter path (`/opt/app-root/bin/python3` for docling-serve), so no name
+marker can identify it. Entries must name a real container; a member is skipped by
+`evaluate_gpu_drift` when picking the tracked PID, appears in the collector's
+`gpu.resident_pids`, and is never a `_killable_stuck_pid` target. Note that
+`stuck_process` itself is only ever raised by the collector (same pid **and** util >
+`util_threshold`): the reasoner's LLM half cannot introduce it, and `gpu_kill` is blocked
+outright when that deterministic flag is absent (`blocked_no_stuck_evidence`). If the host
+cannot read the GPU at all (`nvidia-smi` failing), the collector records
+`gpu.available: false` + `gpu.error` and a `gpu_unavailable` notification fires once per UTC day.
 
 ## `report`, `paths`, `logging`
 

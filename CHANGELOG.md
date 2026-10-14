@@ -61,6 +61,27 @@ milestone).
   named `netdata` can never hold macmon data.
 
 ### Fixed
+- **A resident model server was hunted as a "stuck" GPU process, and the alert announced a kill that
+  never happened.** `docling-serve` loads its layout/table models on `cuda:0` at boot and then sits at
+  0 % util holding ~1.2 GB; the collector's `cycles_with_same_pid` therefore climbed to 62 while the
+  deterministic `stuck_process` rule (same pid **and** util > `util_threshold`) correctly stayed silent.
+  The reasoner's LLM half read the counter alone, emitted `gpu_drift: ["stuck_process"]` plus a
+  `gpu_kill: 699476` action off it, and `gpu_drift_actions` unioned that flag in — dispatching a kill that
+  `allow_gpu_kill: false` blocked, while the notification said *"GPU stuck_process: killed pid 699476"*.
+  Three fixes: `stuck_process` now requires the collector's own flag (`stuck_process_corroborated`) before
+  it can notify or kill — an LLM-only verdict is dropped silently, as an ollama-owned one already was;
+  `Engine.dispatch` blocks `gpu_kill` outright when that evidence is absent (covering Qwen's own action
+  list, a second dispatch path); and the notification reports the engine's actual state (`killed pid X`
+  only for an executed kill, otherwise `kill pid X NOT applied (gpu kill disabled)`). Measured on the live
+  daemon: the flagged PID was a healthy docling-serve that converted three real documents during the
+  investigation (25 670 / 54 305 / 3 573 markdown chars, GPU util peaking at 65 %, VRAM 1208 → 1996 MiB)
+  and had not restarted since it started (RestartCount 0).
+- **Permanent GPU residents are configurable, not a hardcoded ollama name-match.**
+  `gpu_drift.resident_containers` (default `[docling-serve]`) lists containers whose GPU process is a
+  model server: the collector resolves each container's `State.Pid` and refuses to track it toward
+  `stuck_process`, and `_killable_stuck_pid` refuses to target it. A name marker cannot work here —
+  nvidia-smi reports docling-serve's compute app as `/opt/app-root/bin/python3` — so the exclusion matches
+  the container's own PID, which *is* the compute-app PID.
 - **Cross-node correlation was dead code.** `federation_reasoner.detect_cross_correlations()` reads
   `node["raw"]["collector"]["netdata"]["alarms_active"]` / `["gpu"]["drift_flags"]`, but
   `federation_collector._collect_node()` never put a `raw` key in the node block — so

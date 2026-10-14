@@ -39,7 +39,7 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
   reports/            daily markdown reports
   ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
   deploy/             systemd units + installer
-  tests/              pytest suite (317 tests)
+  tests/              pytest suite (324 tests)
   docs/               per-feature implementation guides
   media/              fork-owned README screenshots (re-shot when the UI changes)
   Dockerfile, docker-compose.yml, README.md, IMPLEMENTATION.md, CHANGELOG.md, .gitignore
@@ -120,7 +120,7 @@ protection, TrueNAS, federation, security, tests, troubleshooting). Release hist
 | container memory creep > 20% over baseline    | `docker restart`            | cap/allow-list  |
 | container in restart loop                   | `docker restart` + notify | cap/allow-list  |
 | GPU memory > 90% with resident process       | `gpu_kill`                  | `allow_gpu_kill`|
-| **GPU drift**: stuck_process + conf>0.8    | `gpu_kill` + notify         | conf>0.8 + pid  |
+| **GPU drift**: stuck_process + conf>0.8    | `gpu_kill` + notify         | conf>0.8 + pid + collector evidence |
 | **GPU drift**: vram/power/temp/overload    | notify only                | —              |
 | **GPU invisible** (nvidia-smi unusable)     | notify only (once/day)      | —              |
 | disk usage > 85%                            | `docker system prune -af` + notify | `allow_prune`  |
@@ -218,7 +218,7 @@ deterministic (no LLM).**
 
 ## Tests
 
-`python3 -m pytest` — **317 tests** across `tests/` (whitelist gate, deterministic rules,
+`python3 -m pytest` — **324 tests** across `tests/` (whitelist gate, deterministic rules,
 output sanitization, GPU drift + GPU visibility + GPU driver reconcile, manual-stop invariant,
 TrueNAS parse, federation math & correlations, dashboard refinements, Dockhand desired-state
 ingest, model selection / `think` gate, stale-decision guard). Run before pushing changes to

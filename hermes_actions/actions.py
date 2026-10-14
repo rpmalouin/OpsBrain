@@ -130,7 +130,8 @@ def allow_service(unit):
 class Engine:
     """Per-run executor with safety gates."""
 
-    def __init__(self, dry_run, manual_stops=None, protected_stopped=None, storming=None):
+    def __init__(self, dry_run, manual_stops=None, protected_stopped=None, storming=None,
+                 gpu_kill_corroborated=None):
         self.dry_run = dry_run
         self.cap = int(Cfg.get("actions.restart_limit_per_run", 3))
         self.used = 0
@@ -146,6 +147,12 @@ class Engine:
         # containers currently in a Dockhand restart storm (case-insensitive) —
         # restarting one of these would feed the very loop being detected
         self.storming = {str(s).lower() for s in (storming or [])}
+        # Does the COLLECTOR's deterministic detector corroborate `stuck_process`
+        # this cycle? `gpu_kill` is dangerous and the reasoner's LLM half has
+        # proposed it off an idle, VRAM-holding model server; None means "not
+        # supplied" (unit tests constructing an Engine directly stay permissive —
+        # the allow_gpu_kill gate still applies).
+        self.gpu_kill_corroborated = gpu_kill_corroborated
 
     def _rec(self, verb, target, reason):
         return {"verb": verb, "target": target, "reason": reason}
@@ -232,6 +239,17 @@ class Engine:
             self.executed.append(rec)
             return rec
         if verb == "gpu_kill":
+            # Second layer (the first is in gpu_drift_actions): a kill must rest on
+            # the collector's deterministic `stuck_process` flag. Qwen proposes
+            # `gpu_kill` directly from its own action list, and an LLM-only verdict
+            # is not grounds to SIGKILL a healthy GPU process.
+            if self.gpu_kill_corroborated is False:
+                rec["state"] = "blocked"
+                rec["reason"] = "blocked_no_stuck_evidence"
+                rec["detail"] = ("collector did not flag stuck_process this cycle "
+                                 "(LLM-only proposal)")
+                self.blocked.append(rec)
+                return rec
             if not Cfg.get("actions.allow_gpu_kill", False):
                 rec["state"] = "blocked"
                 rec["detail"] = "gpu kill disabled"
@@ -442,26 +460,60 @@ def record_gpu_event(flags, gpu, pid="", coll_ts=None):
 OLLAMA_MARKERS = ("ollama", "llama-server", "llama_server")
 
 
-def _ollama_owned(procs, pid):
-    """True if `pid` belongs to ollama's runner (a permanent GPU resident)."""
+def _resident_pids(coll):
+    """Configured permanent GPU residents recorded by the collector
+    (`gpu_drift.resident_containers`) — model servers that hold VRAM forever and
+    idle at 0% util between jobs. Never stuck candidates."""
+    try:
+        return {str(p) for p in (coll.get("gpu", {}).get("resident_pids") or [])}
+    except Exception:
+        return set()
+
+
+def _process_name_of(procs, pid):
     try:
         pid = str(pid)
     except Exception:
-        return False
+        return ""
     for p in procs or []:
         if str(p.get("pid", "")) == pid:
-            name = str(p.get("name", "")).lower()
-            return any(m in name for m in OLLAMA_MARKERS)
-    return False
+            return str(p.get("name") or "")
+    return ""
 
 
-def _killable_stuck_pid(procs, last_pid):
+def _ollama_owned(procs, pid):
+    """True if `pid` belongs to ollama's runner (a permanent GPU resident)."""
+    name = _process_name_of(procs, pid).lower()
+    return bool(name) and any(m in name for m in OLLAMA_MARKERS)
+
+
+def _resident_owned(procs, pid, resident_pids):
+    """True if `pid` belongs to a configured permanent GPU resident."""
+    try:
+        return str(pid) in {str(p) for p in (resident_pids or ())}
+    except Exception:
+        return False
+
+
+def stuck_process_corroborated(coll):
+    """True when the COLLECTOR's deterministic detector flagged `stuck_process`.
+
+    `stuck_process` needs same-written-pid for `gpu_drift.stuck_pid_cycles` AND
+    util > `gpu_drift.util_threshold`; the reasoner's LLM half has been observed to
+    assert the flag off the alone (a 62-cycle-old idle GPU process holding VRAM was
+    quoted as "stuck"), which would otherwise reach a kill proposal. The
+    detector is the single source of truth for this flag — do not duplicate its
+    thresholds here."""
+    return "stuck_process" in (coll.get("gpu", {}).get("drift_flags") or [])
+
+
+def _killable_stuck_pid(procs, last_pid, resident_pids=()):
     """Return the pid to safely kill for a stuck GPU process, or None.
 
     Safety: only returns a pid that (a) is the STUCK pid tracked by the baseline
     (last_pid) — not blindly procs[0] — and (b) is still present in compute
-    processes, and (c) is NOT an ollama/llama-server process (never kill the local
-    inference runner)."""
+    processes, and (c) is NOT an ollama/llama-server process and NOT a configured
+    permanent GPU resident (never kill a model server)."""
     try:
         last_pid = str(last_pid)
     except Exception:
@@ -470,6 +522,8 @@ def _killable_stuck_pid(procs, last_pid):
         if str(p.get("pid", "")) == last_pid:
             name = str(p.get("name", "")).lower()
             if any(m in name for m in OLLAMA_MARKERS):
+                return None
+            if _resident_owned(procs, last_pid, resident_pids):
                 return None
             return last_pid
     return None
@@ -524,6 +578,7 @@ def gpu_drift_actions(coll, qwen, conf, engine, st):
     gpu = (coll.get("gpu", {}).get("gpus") or [{}])[0]
     procs = coll.get("gpu", {}).get("compute_processes", []) or []
     baseline = coll.get("gpu", {}).get("baseline", {}) or {}
+    resident_pids = _resident_pids(coll)
     pid = str(procs[0].get("pid") or "0") if procs else "0"
     events, remediations = [], []
     stuck_pids = list(st.get("gpu_stuck_pids") or [])
@@ -531,25 +586,46 @@ def gpu_drift_actions(coll, qwen, conf, engine, st):
     stuck = "stuck_process" in flags
     tracked = pid
     if stuck:
-        # Kill ONLY the baseline-tracked stuck pid, and only if it's not ollama's
-        # runner and still present (see _killable_stuck_pid).
-        kill_pid = _killable_stuck_pid(procs, baseline.get("last_pid"))
-        tracked = kill_pid or pid
-        if _ollama_owned(procs, tracked):
-            # Ollama's llama-server is a PERMANENT GPU resident (the local
-            # inference backend) — never a stuck process. Defensive drop: a stale
-            # collector or a baseline predating the collector-side exclusion can
-            # still surface the flag; suppress it here so we never notify/spam or
-            # accumulate its pid as "stuck".
+        # The flag may arrive from the reasoner's LLM half alone. `stuck_process`
+        # is a DETERMINISTIC verdict (same pid for stuck_pid_cycles AND util >
+        # util_threshold) — Qwen asserting it off an idle, VRAM-holding process is
+        # model noise, so drop it here (as with an ollama-owned flag): no notify,
+        # no event, no state accumulation.
+        if not stuck_process_corroborated(coll):
+            log.info("stuck_process proposed by reasoner without deterministic evidence "
+                     "(collector drift_flags=%s) -> dropped",
+                     (coll.get("gpu", {}).get("drift_flags") or []))
             flags.discard("stuck_process")
             stuck = False
-        elif conf > 0.8 and kill_pid:
-            rec = engine.dispatch("gpu_kill", kill_pid, "stuck GPU process (drift)")
-            remediations.append(rec)
-            notify(f"GPU stuck_process: killed pid {kill_pid} (conf {conf:.2f})", "gpu_drift")
         else:
-            notify(f"GPU stuck_process detected (pid {tracked or '?'}, conf {conf:.2f}) "
-                   "-> notify only", "gpu_drift")
+            # Kill ONLY the baseline-tracked stuck pid, and only if it's not
+            # ollama's runner nor a configured resident (see _killable_stuck_pid).
+            kill_pid = _killable_stuck_pid(procs, baseline.get("last_pid"), resident_pids)
+            tracked = kill_pid or pid
+            if _ollama_owned(procs, tracked) or _resident_owned(procs, tracked, resident_pids):
+                # Ollama's llama-server and configured residents (e.g.
+                # docling-serve) are PERMANENT GPU residents — the local inference
+                # backend and the document model server. Never a stuck process.
+                # Defensive drop: a stale collector or a baseline predating the
+                # collector-side exclusion can still surface the flag; suppress it
+                # so we never notify/spam or accumulate its pid as "stuck".
+                flags.discard("stuck_process")
+                stuck = False
+            elif conf > 0.8 and kill_pid:
+                rec = engine.dispatch("gpu_kill", kill_pid, "stuck GPU process (drift)")
+                remediations.append(rec)
+                # Report what the ENGINE did, not what we asked for: gpu_kill is
+                # gated (allow_gpu_kill) and a refused kill must not be announced
+                # as one that happened.
+                if rec.get("state") == "executed":
+                    notify(f"GPU stuck_process: killed pid {kill_pid} (conf {conf:.2f})", "gpu_drift")
+                else:
+                    why = rec.get("detail") or rec.get("reason") or rec.get("state")
+                    notify(f"GPU stuck_process: kill pid {kill_pid} NOT applied "
+                           f"({why}; conf {conf:.2f})", "gpu_drift")
+            else:
+                notify(f"GPU stuck_process detected (pid {tracked or '?'}, conf {conf:.2f}) "
+                       f"-> notify only", "gpu_drift")
 
     for f in sorted(flags & NOTIFY_ONLY):
         notify(f"GPU drift flag: {f}", "gpu_drift")
@@ -771,7 +847,8 @@ def main():
                 ((coll.get("dockhand", {}) or {}).get("correlate", {}) or {}).get("restart_storms", [])]
 
     engine = Engine(dry, manual_stops=reg, protected_stopped=protected_stopped,
-                    storming=storming)
+                    storming=storming,
+                    gpu_kill_corroborated=stuck_process_corroborated(coll))
 
     if conf >= floor:
         proposed = list(qwen.get("actions", [])) or []

@@ -467,14 +467,17 @@ def collect_gpu(cfg):
     baseline_path = _gpu_baseline_path()
     b = read_json(baseline_path, {}) or {}
 
-    # 2) compare current stats to baseline and compute drift flags
-    flags, baseline = evaluate_gpu_drift(gpus, processes, b, cfg)
+    # 2) compare current stats to baseline and compute drift flags. Configured
+    # permanent GPU residents (model servers) are excluded from stuck tracking.
+    resident_pids = resident_container_pids(cfg)
+    flags, baseline = evaluate_gpu_drift(gpus, processes, b, cfg, resident_pids)
 
     # 3) persist updated baseline
     write_json(baseline_path, baseline)
 
     return {"gpus": gpus, "compute_processes": processes,
             "baseline": baseline, "drift_flags": flags,
+            "resident_pids": sorted(resident_pids),
             "available": bool(gpus), "error": gpu_error}
 
 
@@ -526,11 +529,41 @@ def _is_ollama_process(procs, pid):
     return False
 
 
-def evaluate_gpu_drift(gpus, processes, prev_baseline, cfg):
+def resident_container_pids(cfg):
+    """Host PIDs of the container GPU residents listed in
+    `gpu_drift.resident_containers` (model servers whose GPU process is expected
+    to persist forever and to sit at 0% util between jobs).
+
+    A NAME-MARKER exclusion is not usable for these: nvidia-smi reports the
+    compute app as whatever binary holds the CUDA context, so docling-serve shows
+    up as `/opt/app-root/bin/python3` with no identifying string. The container's
+    own PID (State.Pid, i.e. its PID 1) IS the compute-app pid, so the match is
+    exact. Returns a set of strings; empty when the key is unset/absent."""
+    names = Cfg.get("gpu_drift.resident_containers", None)
+    if not names:
+        return set()
+    try:
+        r = subprocess.run(["docker", "inspect", "--format", "{{.Name}}|{{.State.Pid}}"]
+                           + [str(n) for n in names],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return set()
+    pids = set()
+    for line in (r.stdout or "").strip().splitlines():
+        parts = [x.strip() for x in line.split("|")]
+        if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) > 0:
+            pids.add(parts[1])
+    return pids
+
+
+def evaluate_gpu_drift(gpus, processes, prev_baseline, cfg, resident_pids=None):
     """Deterministic GPU-drift evaluation. Pure function (testable).
 
     Returns (flags:list[str], new_baseline:dict) using the documented baseline shape.
-    Operates on the project's primary GPU (index 0)."""
+    Operates on the project's primary GPU (index 0). `resident_pids` is the set of
+    PIDs (strings) belonging to configured permanent GPU residents — model servers
+    such as docling-serve — which are never stuck candidates."""
+    resident_pids = {str(p) for p in (resident_pids or ())}
     dr = Cfg.get("gpu_drift", {}) if cfg is None else (cfg.get("gpu_drift", {}) or {})
     vram_creep = int(dr.get("vram_creep_mb", 250))
     vram_max_pct = float(dr.get("vram_max_percent", 90))
@@ -548,15 +581,19 @@ def evaluate_gpu_drift(gpus, processes, prev_baseline, cfg):
     temp = g.get("temp_c", 0)
     power = g.get("power_w", 0)
 
-    # Tracked pid: the first NON-ollama compute process. Ollama's llama-server is
-    # a permanent GPU resident (the local inference backend this pipeline calls
-    # every cycle) — by design the same pid persists forever, so it must never be
-    # counted as a stuck process. "0" when only ollama holds the GPU.
+    # Tracked pid: the first NON-ollama, non-resident compute process. Ollama's
+    # llama-server and any `gpu_drift.resident_containers` member (e.g.
+    # docling-serve) are PERMANENT GPU residents — by design the same pid persists
+    # forever and sits at 0% util between jobs, so they must never be counted as a
+    # stuck process. "0" when only residents hold the GPU.
     pid = "0"
     for p in processes or []:
-        if not _is_ollama_process(processes, p.get("pid")):
-            pid = str(p.get("pid") or "0")
-            break
+        if _is_ollama_process(processes, p.get("pid")):
+            continue
+        if str(p.get("pid") or "") in resident_pids:
+            continue
+        pid = str(p.get("pid") or "0")
+        break
     # Reset baseline when GPU identity changed (name or total VRAM) — avoids a
     # spurious vram_drift after a driver/GPU swap.
     identity_change = (

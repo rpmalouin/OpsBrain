@@ -481,6 +481,42 @@ class TestGpuDriftCollector:
         flags, _ = C.evaluate_gpu_drift(g, _procs(), {}, {"gpu_drift": _drift_cfg()})
         assert "temp_drift" in flags
 
+    def test_resident_container_pid_never_stuck(self, base_config):
+        # docling-serve: a model server holding VRAM, idle at 0% util, same pid for
+        # 62 cycles. nvidia-smi names it after the interpreter, so the exclusion is
+        # by container pid -> never flagged, never counted.
+        procs = [{"pid": "699476", "name": "/opt/app-root/bin/python3", "mem_mb": "1182"}]
+        prev = {"last_vram": 1208, "last_pid": "699476", "last_power": 10.75,
+                "last_temp": 40, "cycles_with_same_pid": 62}
+        g = _gpu(mem_used=1208, util=0, temp=40, power=11)
+        flags, newb = C.evaluate_gpu_drift(g, procs, prev, {"gpu_drift": _drift_cfg()},
+                                           resident_pids={"699476"})
+        assert "stuck_process" not in flags
+        assert newb["last_pid"] == "0"
+        assert newb["cycles_with_same_pid"] == 0
+
+    def test_resident_container_still_flagged_when_busy(self, base_config):
+        # ...and the exclusion is per-PID, not a blanket "ignore everything": an
+        # unrelated busy pid is still tracked while a resident holds the card.
+        procs = [{"pid": "699476", "name": "/opt/app-root/bin/python3", "mem_mb": "1182"},
+                 {"pid": "777", "name": "ffmpeg", "mem_mb": "300"}]
+        prev = {"last_vram": 1208, "last_pid": "777", "last_power": 20,
+                "last_temp": 40, "cycles_with_same_pid": 4}
+        g = _gpu(mem_used=1300, util=90, temp=60, power=200)
+        flags, newb = C.evaluate_gpu_drift(g, procs, prev, {"gpu_drift": _drift_cfg()},
+                                           resident_pids={"699476"})
+        assert "stuck_process" in flags
+        assert newb["last_pid"] == "777"
+
+    def test_resident_container_pids_from_docker(self, base_config, monkeypatch):
+        base_config["gpu_drift"]["resident_containers"] = ["docling-serve", "gone"]
+        out = "/docling-serve|699476\n/gone|0\n"
+        monkeypatch.setattr(C.subprocess, "run",
+                            lambda *a, **k: type("R", (), {"stdout": out})())
+        assert C.resident_container_pids(None) == {"699476"}
+        base_config["gpu_drift"]["resident_containers"] = []
+        assert C.resident_container_pids(None) == set()
+
 
 # --------------------------------------------------------------------------- GPU drift (actions)
 def _drift_coll(flags=None, gpu=None, procs=None):
@@ -581,6 +617,84 @@ class TestGpuDriftActions:
         coll = _drift_coll(flags=["vram_drift"])
         events, rem = A.gpu_drift_actions(coll, {"gpu_drift": []}, 0.9, e, {})
         assert events and "vram_drift" in events[0]["flags"]
+
+    # ---- the LLM-only `stuck_process` incident (2026-10-14): docling-serve ----
+    def _resident_coll(self, flags=None):
+        """Live shape that produced the false alarm: a resident model server holding
+        1.2 GB, 0% util, same pid for 62 cycles, NO deterministic flag."""
+        coll = _drift_coll(flags=flags or [],
+                           gpu=_gpu(mem_used=1208, util=0, temp=40, power=11),
+                           procs=[{"pid": "699476", "name": "/opt/app-root/bin/python3",
+                                   "mem_mb": "1182"}])
+        coll["gpu"]["baseline"] = {"last_pid": "699476", "cycles_with_same_pid": 62}
+        coll["gpu"]["resident_pids"] = ["699476"]
+        return coll
+
+    def test_qwen_only_stuck_process_is_dropped(self, base_config):
+        # Qwen asserts stuck_process off the cycle count alone while the collector
+        # (the rule's authority) flags nothing: no notify, no event, no state.
+        e = A.Engine(False)
+        st = {"gpu_stuck_pids": ["111"]}
+        sent = []
+        import hermes_actions.actions as _A
+        orig = _A.notify
+        _A.notify = lambda m, c=None: sent.append((m, c))
+        try:
+            events, rem = A.gpu_drift_actions(self._resident_coll(), {"gpu_drift": ["stuck_process"]},
+                                              0.85, e, st)
+        finally:
+            _A.notify = orig
+        assert events == [] and rem == []
+        assert sent == []
+        assert st["gpu_stuck_pids"] == ["111"]   # pid not accumulated
+        assert not any(r.get("verb") == "gpu_kill" for r in e.executed + e.blocked)
+
+    def test_engine_blocks_llm_only_gpu_kill(self, base_config):
+        # Qwen's OWN action list proposes `gpu_kill` directly (a second, separate
+        # dispatch path) -> the Engine's evidence gate must block it.
+        e = A.Engine(False, gpu_kill_corroborated=False)
+        rec = e.dispatch("gpu_kill", "699476",
+                         "Process has been running for 62 cycles with 0% GPU utilization, "
+                         "indicating potential stuck state")
+        assert rec["state"] == "blocked"
+        assert rec["reason"] == "blocked_no_stuck_evidence"
+        assert not e.executed
+        # ...and with corroborating evidence the same call is allowed through the gate
+        e2 = A.Engine(False, gpu_kill_corroborated=True)
+        assert e2.dispatch("gpu_kill", "699476", "stuck")["state"] == "executed"
+
+    def test_resident_pid_not_killed(self, base_config):
+        # Even WITH the deterministic flag (e.g. a long batch keeps util up for two
+        # cycles), a configured resident is never the kill target.
+        from hermes_actions.actions import _killable_stuck_pid
+        procs = [{"pid": "699476", "name": "/opt/app-root/bin/python3", "mem_mb": "1182"}]
+        assert _killable_stuck_pid(procs, "699476", {"699476"}) is None
+        e = A.Engine(False)
+        coll = self._resident_coll(flags=["stuck_process"])
+        events, rem = A.gpu_drift_actions(coll, {"gpu_drift": ["stuck_process"]}, 0.95, e, {})
+        assert events == [] and rem == []
+        assert not any(r.get("verb") == "gpu_kill" for r in e.executed + e.blocked)
+
+    def test_blocked_kill_is_not_announced_as_a_kill(self, base_config):
+        # allow_gpu_kill false + genuine evidence: the notification must report the
+        # engine's refusal, not claim a kill that never happened.
+        base_config["actions"]["allow_gpu_kill"] = False
+        e = A.Engine(False)
+        coll = _drift_coll(flags=["stuck_process"],
+                           gpu=_gpu(mem_used=9000, util=95),
+                           procs=[{"pid": "777", "name": "ffmpeg", "mem_mb": "300"}])
+        coll["gpu"]["baseline"] = {"last_pid": "777", "cycles_with_same_pid": 4}
+        sent = []
+        orig = A.notify
+        A.notify = lambda m, c=None: sent.append((m, c))
+        try:
+            events, rem = A.gpu_drift_actions(coll, {"gpu_drift": []}, 0.95, e, {})
+        finally:
+            A.notify = orig
+        assert any(r.get("state") == "blocked" for r in rem)
+        msgs = [m for m, _ in sent]
+        assert msgs and "NOT applied" in msgs[0] and "killed pid" not in msgs[0]
+        assert "gpu kill disabled" in msgs[0]
 
 
 class TestOllamaGuard:

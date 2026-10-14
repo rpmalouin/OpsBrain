@@ -178,6 +178,13 @@ gpu_drift:
   vram_max_percent: 90         # VRAM usage % of total that flags vram_overload
   stuck_pid_cycles: 2          # same GPU PID cycled this many times + util>util_thr -> stuck_process (~2 h at 3600s cadence)
   util_threshold: 10            # GPU util % treated as "idle" for power/temp drift; stuck needs util>this
+  # Permanent GPU residents: containers whose GPU process is a MODEL SERVER that holds
+  # VRAM forever and idles at 0% util between jobs (docling-serve loads its layout/table
+  # models on cuda:0 at boot). Never stuck candidates — same treatment as ollama's
+  # llama-server. Matched by the container's own PID (State.Pid), because nvidia-smi
+  # reports the compute app as the interpreter path (`/opt/app-root/bin/python3`), so no
+  # name marker can identify it. Entries must name a real container.
+  resident_containers: [docling-serve]
   power_idle_max_watts: 40      # power draw above this while util<thr -> power_drift
   temp_idle_max_c: 55           # temp above this while util<thr -> temp_drift
 

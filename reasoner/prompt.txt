@@ -25,7 +25,12 @@ last_vram, last_pid, last_power, last_temp, cycles_with_same_pid), plus determin
 - VRAM Overload: if VRAM usage exceeds gpu_drift.vram_max_percent of total VRAM,
   append "vram_overload".
 - Stuck Process: if the same GPU PID has appeared for gpu_drift.stuck_pid_cycles and
-  GPU-Util > gpu_drift.util_threshold, append "stuck_process".
+  GPU-Util > gpu_drift.util_threshold, append "stuck_process". A GPU process that
+  HOLDS VRAM while sitting at (or below) the util threshold is IDLE, not stuck — a
+  model server waiting for work (docling-serve, ollama's llama-server) looks exactly
+  like that, and a high cycle count for such a process is normal. NEVER propose
+  "stuck_process" or gpu_kill: for a process that is not also above the util
+  threshold; the deterministic detector is the authority for this flag.
 - Power Drift: if GPU power draw exceeds gpu_drift.power_idle_max_watts while
   GPU-Util < gpu_drift.util_threshold, append "power_drift".
 - Temperature Drift: if GPU temperature exceeds gpu_drift.temp_idle_max_c while

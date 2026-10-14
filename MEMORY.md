@@ -223,7 +223,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**317 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**324 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -756,15 +756,41 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
   `last_vram, last_pid, last_power, last_temp, cycles_with_same_pid`.
 - **Ollama exclusion (do not regress):** ollama's `llama-server` is a *permanent* GPU
   resident (the local inference backend this pipeline calls every cycle) — by design the
-  same PID persists forever. The collector's tracked pid is the first **non-ollama**
-  compute process (`last_pid` = `"0"` when only ollama holds the GPU), so it can never be
-  counted toward `stuck_process`; `gpu_drift_actions` re-checks via `_ollama_owned` and
-  silently drops the flag (no notify/event/state) if a stale collector surfaces it.
+  same PID persists forever. The collector's tracked pid is the first **non-ollama**,
+  **non-resident** compute process (`last_pid` = `"0"` when only residents hold the GPU),
+  so it can never be counted toward `stuck_process`; `gpu_drift_actions` re-checks via
+  `_ollama_owned` / `_resident_owned` and silently drops the flag (no notify/event/state)
+  if a stale collector surfaces it.
+- **Resident model servers beyond ollama — `gpu_drift.resident_containers` (do not regress).**
+  docling-serve is the second permanent GPU resident on this host (it loads its layout/table
+  models on `cuda:0` at boot and idles at 0 % util holding ~1.2 GB). The exclusion is by
+  **container PID** (`resident_container_pids()` → `docker inspect {{.State.Pid}}`), because
+  nvidia-smi names its compute app `/opt/app-root/bin/python3` — no name marker can identify
+  it, and the container's PID 1 *is* the compute-app PID. `evaluate_gpu_drift(..., resident_pids=)`
+  skips it when picking the tracked pid; the collector records `gpu.resident_pids` and
+  `_killable_stuck_pid(procs, last_pid, resident_pids)` refuses to target one.
+- **`stuck_process` is the DETERMINISTIC detector's verdict, never the LLM's (2026-10-14 incident,
+  do not regress).** The flag requires same pid ≥ `stuck_pid_cycles` **AND** util >
+  `util_threshold`; Qwen was observed asserting it from the cycle count alone (62 cycles at 0 %
+  util on an idle docling-serve), which produced a `gpu_kill` proposal and a notification claiming
+  a kill that `allow_gpu_kill: false` had actually blocked. Two layers now:
+  `gpu_drift_actions` calls `stuck_process_corroborated(coll)` (i.e. `stuck_process` in the
+  collector's `gpu.drift_flags`) and drops an uncorroborated flag silently; `Engine.dispatch`
+  blocks `gpu_kill` with `reason: blocked_no_stuck_evidence` when the engine was constructed
+  with `gpu_kill_corroborated=False` — which `main()` always passes — covering the SECOND
+  dispatch path (Qwen's own `actions[]` list is dispatched verbatim). Do not duplicate the
+  thresholds in the actions layer: the detector is the single source of truth.
+- **A kill must report what the ENGINE did.** The kill notification is built from the
+  dispatch record's `state`: `killed pid X` only for `executed`, otherwise
+  `kill pid X NOT applied (<detail>)`. Announcing an intent as an outcome is what made this
+  incident read as a self-inflicted service kill.
 - `reasoner` prompt includes the same five rules + `"gpu_drift": []` in the output schema;
   `sanitize()` keeps only known flags (constant `GPU_DRIFT_FLAGS`).
 - `actions.gpu_drift_actions(coll, qwen, conf, engine, st)` unions Qwen's `gpu_drift` with
-  the deterministic collector flags:
-  - **stuck_process AND conf > 0.8 AND resolvable pid → `gpu_kill` pid + notify**
+  the deterministic collector flags, but `stuck_process` additionally requires the COLLECTOR's
+  flag (`stuck_process_corroborated`) — an LLM-only verdict is dropped silently:
+  - **stuck_process (corroborated) AND conf > 0.8 AND resolvable pid → `gpu_kill` pid + notify**
+    (the notify quotes the dispatch state: `killed pid X` only when the kill executed)
   - vram_drift | power_drift | temp_drift | vram_overload → **notify only**
   - **ollama restart is hard-blocked** in `Engine.dispatch` (policy guard) even if allow-listed.
   Drift events append to `logs/gpu_drift_events.jsonl`; daily maxima/remediations roll into
@@ -774,7 +800,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **317 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **324 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

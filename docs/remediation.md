@@ -28,6 +28,15 @@
   logs.
 - The **ollama restart hard-block** — the engine never restarts or kills Ollama, even if
   allow-listed (it is the reasoning backend).
+- **`gpu_kill` needs deterministic evidence** — the collector's own `stuck_process` flag
+  (same PID for `stuck_pid_cycles` **and** util above `util_threshold`). A kill proposed by
+  the LLM alone is blocked with `blocked_no_stuck_evidence`, and the drift path drops the
+  flag without notifying; configured permanent GPU residents (`gpu_drift.resident_containers`,
+  e.g. docling-serve) and ollama's `llama-server` are never kill targets.
+- **A container-CPU fault claim needs the sustained rule** — `stats.cpu_percent` is a single
+  instantaneous sample, so an LLM notice naming a container with high CPU is dropped unless
+  the deterministic sustained-CPU rule (`cpu_restart_threshold_percent` for
+  `cpu_restart_minutes`) fired for that container in the same cycle.
 - **Federation remains notify-only** (docs/federation.md).
 - **Dockhand drift remains notify-only** (docs/dockhand.md) — it surfaces desired-state
   drift / storms / orphans as notifications and context, and never proposes a restart, so

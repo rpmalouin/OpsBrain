@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 324 tests
+python3 -m pytest        # 330 tests
 python3 -m pytest -q     # quiet
 ```
 
@@ -43,6 +43,10 @@ python3 -m pytest -q     # quiet
   being flagged while a resident holds the card.
 - **`Engine.dispatch`** — ollama-restart guard, manual-stop gate, `gpu_kill` blocked without
   `stuck_process` evidence, cluster verbs.
+- **Container-CPU notice gate** — `is_container_cpu_notice` / `container_named_in` on the
+  real 2026-10-14 wording, `filter_llm_notices` dropping an LLM notice with no
+  `evidence: "sustained_cpu"` tag and keeping it when the rule fired, unrelated notices and
+  other verbs passing through, and the tag coming only from the deterministic rule.
 - **ManualStop registry** — classify_manual_stop (exit codes incl. sigkill protect),
   transition detection, prune-block.
 - **TrueNAS collector** — parse, unreachable/disabled degradation, creds.

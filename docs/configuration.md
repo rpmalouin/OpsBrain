@@ -33,7 +33,10 @@ before the 2026-09 homelab retune that frees the GPU for interactive chat betwee
 cycles). Several knobs are scaled to that cadence and must move together:
 
 - `actions.cpu_restart_minutes: 120` — a single 3600 s sample must not trip the sustained
-  CPU rule.
+  CPU rule. That rule is also the only authority for a *container-CPU* claim: the sample is
+  one instantaneous reading with no duration, so an LLM-authored notify naming a container
+  with high CPU is dropped unless this rule fired for it in the same cycle
+  (`actions.filter_llm_notices`).
 - `gpu_drift.stuck_pid_cycles: 2` — ~2 h of the same GPU PID before `stuck_process`.
 - `sources.journalctl_since: "60 min ago"` — must cover the gap between cycles.
 - `federation.poll_interval_cycles: 2` — federation runs every 2 h.

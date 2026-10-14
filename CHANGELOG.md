@@ -61,6 +61,17 @@ milestone).
   named `netdata` can never hold macmon data.
 
 ### Fixed
+- **A single instantaneous CPU sample was reported as a fault.** `stats.cpu_percent` is one
+  `docker stats` reading per cycle, with no duration attached, and Qwen turned a 634.28 % sample of
+  the ollama container — a 20–45 s inference burst driven by Hindsight's memory extraction — into
+  "consuming excessive CPU resources ... may require optimization or scaling". The deterministic
+  sustained-CPU rule (`cpu_restart_threshold_percent` held for `cpu_restart_minutes`; 2 consecutive
+  hourly samples as configured) is the only thing that can support that claim, so it now tags its own
+  action `evidence: "sustained_cpu"` and `actions.filter_llm_notices()` drops a Qwen `notify` that
+  names a container plus a CPU token plus a fault token unless that container carries the tag in the
+  same cycle (logged, no notification). Unrelated notices, and every other verb, pass through
+  untouched. The reasoner prompt states the rule as well; the code gate is the backstop. Replayed on
+  the live 13:22 cycle inputs: the notice is dropped, the ticker keeps only the legitimate entries.
 - **A resident model server was hunted as a "stuck" GPU process, and the alert announced a kill that
   never happened.** `docling-serve` loads its layout/table models on `cuda:0` at boot and then sits at
   0 % util holding ~1.2 GB; the collector's `cycles_with_same_pid` therefore climbed to 62 while the

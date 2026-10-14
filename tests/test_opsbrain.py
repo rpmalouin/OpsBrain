@@ -841,3 +841,64 @@ class TestDockhandDriftActions:
         e = A.Engine(True)
         e.dispatch("notify_dockhand_drift", "web", "storm")
         assert e.executed and e.blocked == []
+
+# ------------------------------------------------ LLM container-CPU notices need evidence
+class TestContainerCpuNoticeGate:
+    """The 2026-10-14 ollama notice: one instantaneous `docker stats` sample of a 20-45 s
+    inference burst was reported as "consuming excessive CPU resources (634.28%) and may
+    require optimization or scaling". The sustained-CPU rule never fired, so the claim
+    has no deterministic basis and must not reach the ticker."""
+
+    INCIDENT = ("Ollama container is consuming excessive CPU resources (634.28%) and may "
+                "require optimization or scaling.")
+
+    def _coll(self, cpu="634.28%"):
+        return rules_coll([make_container("ollama", stats={"cpu_percent": cpu}),
+                           make_container("immich_server", stats={"cpu_percent": "30.35%"})])
+
+    def _rule(self, target="ollama"):
+        return {"type": "docker_restart", "target": target,
+                "reason": "CPU 634% sustained >80% for 120min", "evidence": "sustained_cpu"}
+
+    def test_incident_wording_is_recognised(self, base_config):
+        coll = self._coll()
+        assert A.is_container_cpu_notice(self.INCIDENT, coll["docker"]["containers"])
+        assert A.container_named_in(self.INCIDENT, coll["docker"]["containers"]) == "ollama"
+
+    def test_unrelated_notices_are_untouched(self, base_config):
+        coll = self._coll()
+        conts = coll["docker"]["containers"]
+        # no container named, no CPU token, or no fault claim -> not this class
+        assert not A.is_container_cpu_notice("Vault drift (12): 12 finding(s)", conts)
+        assert not A.is_container_cpu_notice("immich_server finished its import", conts)
+        assert not A.is_container_cpu_notice("ollama is used by the reasoner", conts)
+
+    def test_llm_notice_dropped_without_sustained_evidence(self, base_config):
+        action = {"type": "notify", "target": self.INCIDENT,
+                  "reason": "High CPU utilization could impact system stability"}
+        kept, dropped = A.filter_llm_notices([action], self._coll(), set())
+        assert dropped == [action] and kept == []
+
+    def test_llm_notice_kept_when_the_rule_corroborates(self, base_config):
+        action = {"type": "notify", "target": self.INCIDENT, "reason": ""}
+        sustained = A.sustained_cpu_evidence([self._rule()])
+        assert sustained == {"ollama"}
+        kept, dropped = A.filter_llm_notices([action], self._coll(), sustained)
+        assert kept == [action] and dropped == []
+
+    def test_other_actions_pass_through(self, base_config):
+        acts = [{"type": "docker_restart", "target": "ollama", "reason": "x"},
+                {"type": "notify", "target": "Disk usage 91% > 85%", "reason": "y"},
+                {"type": "gpu_kill", "target": "1234", "reason": "z"}]
+        kept, dropped = A.filter_llm_notices(acts, self._coll(), set())
+        assert kept == acts and dropped == []
+
+    def test_sustained_rule_tags_its_own_evidence(self, base_config):
+        # only the deterministic rule may produce the evidence tag
+        coll = rules_coll([make_container("web", stats={"cpu_percent": "95%"})])
+        st = {"cpu_high:web": 5 * 60 - 1}
+        rules, _ = A.deterministic_rules(coll, st, {})
+        assert A.sustained_cpu_evidence(rules) == {"web"}
+        # a memory-creep restart is NOT sustained-CPU evidence
+        rules2 = [{"type": "docker_restart", "target": "web", "reason": "memory creep 30%"}]
+        assert A.sustained_cpu_evidence(rules2) == set()

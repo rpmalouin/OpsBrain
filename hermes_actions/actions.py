@@ -22,6 +22,7 @@ Usage:
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -370,7 +371,11 @@ def deterministic_rules(coll, st, baseline):
             st[key] = st.get(key, 0) + int(Cfg.get("interval_seconds", 120))
             if st[key] >= cpu_mins * 60:
                 rules.append({"type": "docker_restart", "target": name,
-                              "reason": f"CPU {cpu:.0f}% sustained >{cpu_th:.0f}% for {cpu_mins:.0f}min"})
+                              "reason": f"CPU {cpu:.0f}% sustained >{cpu_th:.0f}% for {cpu_mins:.0f}min",
+                              # Tags the rule's own verdict so downstream filters can
+                              # treat it as the ONLY deterministic sustained-CPU evidence
+                              # (see filter_llm_notices).
+                              "evidence": "sustained_cpu"})
                 st.pop(key, None)
         else:
             st.pop(key, None)
@@ -429,6 +434,75 @@ def deterministic_rules(coll, st, baseline):
         warnings.append(f"disk usage {disk:.0f}% over {disk_th:.0f}% threshold")
 
     return rules, warnings
+
+
+# --------------------------------------------------------------- container-CPU notices
+# A container's CPU reading is a SINGLE instantaneous `docker stats` sample per cycle —
+# it says nothing about duration. Qwen read one 634% sample of the ollama container
+# (a 20-45 s inference burst) as "consuming excessive CPU resources ... may require
+# optimization or scaling", which is a fault claim the data cannot support. Only the
+# deterministic sustained-CPU rule (cpu_restart_threshold_percent held for
+# cpu_restart_minutes, which is exactly what tags evidence="sustained_cpu") can assert
+# that, so an LLM notice about container CPU is dropped unless that rule fired for the
+# same container in the same cycle.
+
+CPU_TOKENS = ("cpu", "processor")
+CPU_FAULT_TOKENS = ("excessive", "excessive usage", "high", "consuming", "consumption",
+                    "utilization", "utilisation", "usage", "overload", "load",
+                    "optimization", "optimisation", "scaling", "pegged", "spike",
+                    "saturated", "saturation", "hogging", "throttl")
+
+
+def container_named_in(message, containers):
+    """Longest container name mentioned in `message`, or None.
+
+    Word-boundary match on the container names present in the snapshot, so a notice
+    naming an app the collector does not run cannot be gated (it also cannot be
+    verified — Qwen is told to use the state)."""
+    msg = str(message or "").lower()
+    best = None
+    for co in containers or []:
+        name = str((co or {}).get("name") or "").lower()
+        if len(name) < 3:
+            continue
+        if re.search(r"(?<![a-z0-9_.-])" + re.escape(name) + r"(?![a-z0-9_.-])", msg):
+            if best is None or len(name) > len(best):
+                best = name
+    return best
+
+
+def is_container_cpu_notice(message, containers):
+    """True if `message` claims a container CPU problem (name + CPU token + fault token)."""
+    msg = str(message or "").lower()
+    if not any(t in msg for t in CPU_TOKENS):
+        return False
+    if not any(t in msg for t in CPU_FAULT_TOKENS):
+        return False
+    return container_named_in(msg, containers) is not None
+
+
+def sustained_cpu_evidence(rule_actions):
+    """Containers the deterministic sustained-CPU rule flagged THIS cycle."""
+    return {str(a.get("target")) for a in (rule_actions or [])
+            if a.get("evidence") == "sustained_cpu"}
+
+
+def filter_llm_notices(actions, coll, sustained):
+    """Drop LLM-authored container-CPU notices with no deterministic evidence.
+
+    Returns (kept, dropped). Everything else passes through untouched: this gate is
+    about one claim class, not about Qwen's freedom to report."""
+    containers = coll.get("docker", {}).get("containers", []) or []
+    kept, dropped = [], []
+    for a in actions or []:
+        if str(a.get("type") or "") == "notify":
+            msg = a.get("target")
+            name = container_named_in(msg, containers)
+            if name and is_container_cpu_notice(msg, containers) and name not in sustained:
+                dropped.append(a)
+                continue
+        kept.append(a)
+    return kept, dropped
 
 
 def _gpu_drift_events_path():
@@ -851,8 +925,17 @@ def main():
                     gpu_kill_corroborated=stuck_process_corroborated(coll))
 
     if conf >= floor:
-        proposed = list(qwen.get("actions", [])) or []
-        proposed += rule_actions
+        # Qwen's actions, minus any container-CPU fault claim the deterministic
+        # sustained-CPU rule does not corroborate this cycle (a single `docker stats`
+        # sample cannot support "excessive CPU ... requires optimization or scaling").
+        sustained = sustained_cpu_evidence(rule_actions)
+        qwen_actions = qwen.get("actions")
+        if not isinstance(qwen_actions, list):
+            qwen_actions = []
+        kept, dropped = filter_llm_notices(qwen_actions, coll, sustained)
+        for d in dropped:
+            log.info("dropped LLM notice without deterministic evidence: %s", d.get("target"))
+        proposed = kept + rule_actions
     else:
         # confidence below floor: skip Qwen's decisions, still honour the
         # deterministic safety rules (restart loops, disk prune, GPU) and log.

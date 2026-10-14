@@ -223,7 +223,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**324 tests**, `tests/`). They cover
+   RUN THE TESTS: `python3 -m pytest` (**330 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -510,6 +510,22 @@ which decides `online` as well as filling the panel's display fields. The Mac's 
   "Live". `refresh_snapshot` now ingests the ring on every refresh and treats new alerts as a
   reason to push to clients (`changed = True`); verified live 2026-10-10: a forced cycle's records
   were rendered within ~4 s of being written.
+
+## Container-CPU notices need sustained evidence (do not regress)
+
+`stats.cpu_percent` is ONE `docker stats` sample taken at one instant per cycle — it
+carries no duration, and a container legitimately spikes while doing real work (a photo
+import, a model load, a backup). Qwen turned a single 634 % sample of the ollama
+container — a 20-45 s inference burst — into "consuming excessive CPU resources ...
+may require optimization or scaling". The deterministic sustained-CPU rule
+(`cpu_restart_threshold_percent` held for `cpu_restart_minutes`) is the ONLY authority
+for that claim, and it tags its own action `evidence: "sustained_cpu"`.
+`actions.filter_llm_notices()` drops a Qwen `notify` that names a container WITH a CPU
+token AND a fault token (the phrasing actually observed) unless that container carries
+the tag in the same cycle; everything else passes through untouched, and the drop is
+logged (`dropped LLM notice without deterministic evidence`). The prompt states the same
+rule — the gate is the backstop, not the first line. A phrasing the token match misses
+gets through, so treat the prompt as load-bearing here.
 
 ## Manual Stop Protection (HARD INVARIANT)
 
@@ -800,7 +816,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **324 tests** across `tests/` covering:
+`python3 -m pytest` (or `-q`). **330 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

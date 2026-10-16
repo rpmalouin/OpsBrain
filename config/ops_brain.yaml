@@ -9,17 +9,22 @@ interval_seconds: 3600           # scheduler poll cadence (1 hour — homelab-tu
 # --- Inference (Ollama local) ---
 ollama:
   url: http://localhost:11434/api/generate
-  model: qwen3:14b-64k            # requested model (Qwen3 14B, 64k ctx, thinking)
-  fallback_model: deepseek-r1:7b  # thinking-capable 7B, used if primary is absent
-  alt_models:                     # last resort; non-thinking is fine (think omitted)
-    - qwen2.5-7b-128k:latest
+  model: qwen2.5-7b-65k           # the host's only LLM since 2026-10-16 (7.6B Q4_K_M, built-in
+                                  # num_ctx 65536, non-thinking). Swapped from qwen3:14b-64k when
+                                  # Ron reduced the ollama model set to one LLM + the embedder.
+  # fallback_model / alt_models deliberately removed 2026-10-16: with a single installed LLM a
+  # fallback can only name a model that no longer exists. The probe below stays and the stage
+  # still fails loudly (rc=3) rather than reasoning with something nobody chose.
   # ONLY models named above are ever used. The reasoner probes /api/tags (is the model
   # installed) and /api/show (does it declare the "thinking" capability) and then sends
   # `think` per model — required for thinking models here, HTTP 400 for the others.
   # If none of these are installed the stage fails loudly (rc=3) instead of silently
   # reasoning with an unconfigured model.
   timeout: 120
-  think: true                  # Qwen3 thinking mode; MUST be explicit (default path returns {} in this ollama)
+  think: true                  # ALLOW flag only: the reasoner probes /api/show and sends `think`
+                               # per model (qwen2.5-7b-65k declares completion+tools, no thinking,
+                               # so no `think` field is sent). Explicit because the default path
+                               # returns {} in this ollama for thinking models.
   options:                     # passed verbatim to Ollama /api/generate options
     temperature: 0.2
     # num_ctx MUST stay <= 32768: at 40960 the model + KV cache needs ~16 GB, this 16 GB card

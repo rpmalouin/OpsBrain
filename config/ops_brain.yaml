@@ -9,9 +9,10 @@ interval_seconds: 3600           # scheduler poll cadence (1 hour — homelab-tu
 # --- Inference (Ollama local) ---
 ollama:
   url: http://localhost:11434/api/generate
-  model: qwen2.5-7b-65k           # the host's only LLM since 2026-10-16 (7.6B Q4_K_M, built-in
-                                  # num_ctx 65536, non-thinking). Swapped from qwen3:14b-64k when
-                                  # Ron reduced the ollama model set to one LLM + the embedder.
+  model: qwen2.5-7b-128k:latest    # the host's only LLM since 2026-10-20 (7.6B Q4_K_M, tag
+                                  # num_ctx 131072, non-thinking; 8.8 GB at 100% GPU). 65k ->
+                                  # 128k so the request window matches what Hermes-Mac needs;
+                                  # every consumer names this same tag (no model swaps).
   # fallback_model / alt_models deliberately removed 2026-10-16: with a single installed LLM a
   # fallback can only name a model that no longer exists. The probe below stays and the stage
   # still fails loudly (rc=3) rather than reasoning with something nobody chose.
@@ -22,7 +23,7 @@ ollama:
   # reasoning with an unconfigured model.
   timeout: 120
   think: true                  # ALLOW flag only: the reasoner probes /api/show and sends `think`
-                               # per model (qwen2.5-7b-65k declares completion+tools, no thinking,
+                               # per model (qwen2.5-7b-128k declares completion+tools, no thinking,
                                # so no `think` field is sent). Explicit because the default path
                                # returns {} in this ollama for thinking models.
   options:                     # passed verbatim to Ollama /api/generate options
@@ -93,10 +94,6 @@ actions:
     - dockpeek
     - netdata
     - caddy
-    - caddy-editor
-    - calibre
-    - calibre-web
-    - dockscope
     - filerise
     # GUI/VNC browsers are NOT auto-restarted: they are interactive and a
     # restart destroys the in-use session; docker restart policy covers crashes.

@@ -166,7 +166,7 @@ def resolve_model():
     except Exception as e:
         log.warning("model resolution failed: %s", e)
         return None
-    primary = Cfg.get("ollama.model", "qwen3:14b")
+    primary = Cfg.get("ollama.model", "qwen2.5-7b-128k:latest")
     fallback = Cfg.get("ollama.fallback_model")
     alts = Cfg.get("ollama.alt_models", []) or []
     picked = pick_model(avail, primary, fallback, alts)

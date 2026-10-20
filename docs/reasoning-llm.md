@@ -6,15 +6,17 @@ confidence). Cluster (federation) reasoning is deterministic — no LLM.
 ## Install & pull the model
 
 1. Install Ollama: `curl -fsSL https://ollama.com/install.sh | sh`
-2. Pull the reasoning model and create the 64k tag:
+2. Pull the reasoning model and create the 128k tag:
    ```bash
-   ollama pull qwen3:14b
-   # FROM qwen3:14b + PARAMETER num_ctx 65536
-   ollama create qwen3:14b-64k -f /appdata/ollama/qwen3-14b-64k.Modelfile
+   ollama pull org/qwen2.5-1m:7b          # 1M-native base; needed for a 131072 window
+   # FROM org/qwen2.5-1m:7b + PARAMETER num_ctx 131072 + temperature 0.2 + top_p 0.95
+   ollama create qwen2.5-7b-128k -f /appdata/ollama/qwen2.5-7b-128k.Modelfile
    ```
 3. Confirm it serves: `curl -s http://localhost:11434/api/tags` lists the model, and
-   `curl -s http://localhost:11434/api/show -d '{"model":"qwen3:14b-64k"}'` reports
-   `"capabilities": [... "thinking" ...]`.
+   `curl -s http://localhost:11434/api/show -d '{"model":"qwen2.5-7b-128k:latest"}'` reports
+   `"capabilities": ["completion", "tools"]` — **no `thinking`**, which is why the reasoner sends
+   no `think` field for this tag. (`ollama.model` in `config/ops_brain.yaml` is the only switch;
+   the current tag is `qwen2.5-7b-128k:latest`.)
 
 ## Model selection — only what the config names
 

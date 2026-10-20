@@ -34,21 +34,21 @@ truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.
   a single 3600s sample would otherwise trip instantly), `gpu_drift.stuck_pid_cycles: 2`
   (~2 h stuck detection), `sources.journalctl_since: "60 min ago"` (must cover the
   inter-cycle gap). Federation every 2 cycles = 2 h. Keep-alive is 5 m, so
-  qwen2.5-7b-65k (5 m keep-alive) unloads between cycles — each hourly reasoner call
+  qwen2.5-7b-128k:latest (5 m keep-alive) unloads between cycles — each hourly reasoner call
   pays a model reload, and VRAM is free for the embedder in between.
 - **Daily report** fires at the first cycle at/after `report.time: 23:55`; the due
   window extends past midnight to D+1 23:55 (`should_report` in scheduler.py,
   cadence-independent) → `reports/YYYY-MM-DD.md`. `--date` is passed explicitly;
   an on-disk guard skips regeneration after daemon restarts.
-- **Model:** `qwen2.5-7b-65k` and nothing else (`ollama.model`), since 2026-10-16 the host
+- **Model:** `qwen2.5-7b-128k:latest` and nothing else (`ollama.model`), since 2026-10-20; the host
   serves a single LLM plus the `nomic-embed-text` embedder. `fallback_model` / `alt_models` were
   **removed** rather than left naming deleted tags — with one installed model a fallback can only
   point at something that no longer exists, and the probe still fails loudly (rc=3). Non-thinking:
   the `/api/show` capability probe reports completion+tools only, so no `think` field is sent.
-  Swapped from `qwen3:14b-64k` (thinking) — the hourly decision went from ~48 s to ~3 s and the
-  20k-token reasoning blocks that used to hold the GPU are gone. `num_ctx` stays ≤ 32768
-  (see "`num_ctx` ceiling" below); only config-named models are ever used — see
-  "Model selection & the `think` gate" below.
+  Swapped from `qwen3:14b-64k` (thinking) → `qwen2.5-7b-65k` → `qwen2.5-7b-128k:latest`; the hourly
+  decision went from ~48 s to ~3 s at the first swap and the 20k-token reasoning blocks that used to
+  hold the GPU are gone. `num_ctx` stays ≤ 32768 (see "`num_ctx` ceiling" below); only
+  config-named models are ever used — see "Model selection & the `think` gate" below.
 - **Capabilities live in this build:** GPU drift detection, confidence recovery,
   restart-impact + drift-decay metrics, **Manual Stop Protection (HARD INVARIANT)**,
   **Dockhand desired-state drift** (notify-only), **Hatchdoor vault drift**
@@ -133,9 +133,14 @@ Three rules now hold (all in `reasoner.py`):
 model's mode is visible at a glance. Recreate the primary tag after a re-pull with
 `/appdata/ollama/qwen3-14b-64k.Modelfile` (`FROM qwen3:14b` + `num_ctx 65536`):
 `docker cp qwen3-14b-64k.Modelfile ollama:/tmp/ && docker exec ollama ollama create qwen3:14b-64k -f /tmp/qwen3-14b-64k.Modelfile`.
-**Current model (2026-10-16):** `/appdata/ollama/qwen2.5-7b-65k.Modelfile`
-(`FROM qwen2.5:7b` + `num_ctx 65536`) — the base tag is no longer installed, so re-pull `qwen2.5:7b`
-before rebuilding; inspect the live build with `docker exec ollama ollama show qwen2.5-7b-65k`.
+**Current model (2026-10-20):** `/appdata/ollama/qwen2.5-7b-128k.Modelfile` — live build is
+`num_ctx 131072, temperature 0.2, top_p 0.95` over a GGUF blob whose parent is `org/qwen2.5-1m:7b`
+(1M-trained, so 131072 is not clamped); its Modelfile carries `TEMPLATE {{ .Prompt }}` (no ChatML
+block — verified 2026-10-20 that system-prompt adherence, JSON output and tool calls all still work,
+but it is not the Qwen chat template the 65k tag had). The base tag `qwen2.5:7b` is no longer
+installed; inspect the live build with `docker exec ollama ollama show qwen2.5-7b-128k:latest`.
+Measured 2026-10-20: 8.8 GB resident, `100% GPU`, CONTEXT 131072 — and a request may only use half
+of that (65,538-token input).
 
 ## `num_ctx` ceiling & the 2-day reasoner outage (Sep 2026 incident)
 

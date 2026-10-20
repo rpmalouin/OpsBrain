@@ -65,8 +65,10 @@ so a GPU the host can no longer read is visible instead of a silent all-clear.
 ## Quick start (recommended: on a Linux VM with Docker + NVIDIA GPU)
 
 Requires: Python 3.10+, `PyYAML`, the `docker` CLI, a readable `nvidia-smi`, and Ollama
-with the reasoning model pulled (`ollama pull qwen3:14b`, then create the 64k tag —
-`ollama create qwen3:14b-64k -f /appdata/ollama/qwen3-14b-64k.Modelfile`).
+with the reasoning model present (`ollama pull org/qwen2.5-1m:7b`, then create the 128k tag —
+`ollama create qwen2.5-7b-128k -f /appdata/ollama/qwen2.5-7b-128k.Modelfile`). On the homelab VM
+that tag already exists and `ollama.model` points at it; a host that serves a different tag only
+needs `config/ops_brain.yaml` changed — no other consumer-facing switch exists.
 
 ```bash
 git clone <repo> /appdata/OpsBrain && cd /appdata/OpsBrain

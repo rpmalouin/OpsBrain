@@ -6,13 +6,10 @@
 # This file is read by the dashboard frontend into the groups object.
 
 media:
-  - jellyfin
-  - emby
   - plex
   - tautulli
   - tdarr
   - youtube-dl
-  - calibre
   - grimmory
 
 ai:
@@ -27,11 +24,9 @@ infra:
   - dozzle
   - dockpeek
   - dockhand
-  - dockscope
   - homepage
   - homelab-hub
   - firefox
-  - librewolf
   - gluetun
 
 databases:

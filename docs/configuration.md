@@ -81,10 +81,13 @@ sources:
     base_url: http://localhost:8001
     enabled: true
   truenas:                        # optional — see docs/truenas.md
-    base_url: http://truenas/api/v2.0
+    transport: jsonrpc            # jsonrpc = wss://<host>/api/current (supported)
+    ws_url: wss://truenas/api/current
     creds_file: ~/.smbcred
     enabled: true
     timeout_s: 8
+    # transport: rest + base_url: http://truenas/api/v2.0 = deprecated by
+    # TrueNAS 25.10 (removed 26.04) and counted by its RESTAPIUsage alert.
   dockhand:                       # optional desired-state source — see docs/dockhand.md
     enabled: true
     db_path: /appdata/dockhand/sqlite/db/dockhand.db

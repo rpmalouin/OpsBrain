@@ -15,7 +15,8 @@ from collector import collector as C  # noqa: E402
 def _cfg_sample():
     Cfg.load()
     Cfg.data.setdefault("sources", {})["truenas"] = {
-        "enabled": True, "base_url": "http://truenas/api/v2.0", "creds_file": "~/.smbcred"}
+        "enabled": True, "transport": "rest", "base_url": "http://truenas/api/v2.0",
+        "creds_file": "~/.smbcred"}
     return Cfg
 
 
@@ -55,6 +56,51 @@ def test_collect_truenas_parses_pools(tmp_path, monkeypatch):
     assert out["version"] == "25.10.3.1"
     assert out["alerts_count"] == 1
     assert out["disk_count"] == 2
+
+
+def test_collect_truenas_jsonrpc_transport(monkeypatch):
+    """Default transport is jsonrpc: one websocket session, no REST auth."""
+    Cfg.load()
+    Cfg.data.setdefault("sources", {})["truenas"] = {
+        "enabled": True, "ws_url": "wss://nas/api/current", "creds_file": "~/.smbcred"}
+    monkeypatch.setattr(C, "_truenas_creds", lambda cfg: ("truenas_user", "change_me"))
+    seen = {}
+
+    def fake_rpc(ws_url, user, passwd, methods, timeout=8):
+        seen["url"], seen["methods"] = ws_url, list(methods)
+        return {
+            "pool.query": {"ok": True, "json": [{"name": "tank", "status": "ONLINE",
+                                                 "healthy": True, "size": 10, "allocated": 4,
+                                                 "free": 6, "topology": {"data": []}}]},
+            "system.info": {"ok": True, "json": {"version": "25.10.3.1", "hostname": "nas",
+                                                 "cores": 32, "uptime_seconds": 10}},
+            "alert.list": {"ok": True, "json": [{"level": "INFO", "klass": "X",
+                                                 "formatted": "hi"}]},
+            "disk.query": {"ok": True, "json": [{"name": "sda"}]},
+        }
+
+    def boom(*a, **k):
+        raise AssertionError("REST transport must not be used by default")
+
+    monkeypatch.setattr(C, "truenas_rpc_calls", fake_rpc)
+    monkeypatch.setattr(C, "truenas_get", boom)
+    out = C.collect_truenas(Cfg)
+    assert seen["url"] == "wss://nas/api/current"
+    assert seen["methods"] == ["pool.query", "system.info", "alert.list", "disk.query"]
+    assert out["up"] is True and out["pool_count"] == 1 and out["pools_healthy"] == 1
+    assert out["version"] == "25.10.3.1" and out["alerts_count"] == 1 and out["disk_count"] == 1
+
+
+def test_collect_truenas_jsonrpc_auth_failure(monkeypatch):
+    Cfg.load()
+    Cfg.data.setdefault("sources", {})["truenas"] = {"enabled": True, "transport": "jsonrpc"}
+    monkeypatch.setattr(C, "_truenas_creds", lambda cfg: ("u", "p"))
+    monkeypatch.setattr(C, "truenas_rpc_calls",
+                        lambda *a, **k: {m: {"ok": False, "err": "auth: FAILED"}
+                                         for m in ("pool.query", "system.info",
+                                                   "alert.list", "disk.query")})
+    out = C.collect_truenas(Cfg)
+    assert out["up"] is False and out["pool_count"] == 0 and out["alerts_count"] == 0
 
 
 def test_collect_truenas_unreachable(tmp_path, monkeypatch):

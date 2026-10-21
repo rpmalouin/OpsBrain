@@ -49,10 +49,16 @@ sources:
     base_url: http://localhost:8001
     enabled: true
   truenas:
-    base_url: http://truenas/api/v2.0
-    creds_file: ~/.smbcred     # username= / password= lines
+    # JSON-RPC 2.0 over WebSocket — the supported API. Do NOT go back to REST:
+    # TrueNAS 25.10 deprecates /api/v2.0 (removed in 26.04) and raises the
+    # RESTAPIUsage warning for every Basic-auth request (4 per poll here).
+    transport: jsonrpc
+    ws_url: wss://truenas/api/current      # self-signed cert; verification is off client-side
+    creds_file: ~/.smbcred     # username= / password= lines (auth.login_ex PASSWORD_PLAIN)
     enabled: true
     timeout_s: 8
+    # legacy, only if transport is switched back to "rest":
+    # base_url: http://truenas/api/v2.0
   dockhand:
     enabled: true
     db_path: /appdata/dockhand/sqlite/db/dockhand.db   # dockerVM's Dockhand SQLite (WAL, read-only)

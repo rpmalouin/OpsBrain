@@ -306,14 +306,25 @@ scan `grid.innerHTML` for container names will false-fail.
 
 ## TrueNAS panel (real dashboard)
 
-- Collector `collect_truenas()` polls the TrueNAS SCALE REST API
-  (`http://truenas/api/v2.0`) via Basic auth from `~/.smbcred` (username=/password=
-  lines). `_truenas_creds` expands the home dir directly with `Path(raw).expanduser()`
+- Collector `collect_truenas()` polls the TrueNAS **JSON-RPC 2.0 over WebSocket**
+  API (`wss://truenas/api/current`) — one connection per cycle, `auth.login_ex`
+  with `mechanism: PASSWORD_PLAIN` from `~/.smbcred` (username=/password= lines).
+  `_truenas_creds` expands the home dir directly with `Path(raw).expanduser()`
   (Cfg.resolve would wrongly prefix REPO onto `~`).
-- Polls `/pool`, `/system/info`, `/alert/list`, `/disk`. `system/info` exposes
+- NEVER go back to REST (`/api/v2.0`, `transport: rest`): TrueNAS 25.10 deprecates
+  it, removes it in 26.04, and **every Basic-auth request increments the
+  `RESTAPIUsage` alert** — the hourly poll alone logged 4 auths/cycle (96/day) and
+  raised "deprecated REST API was used to authenticate N times". The REST path is
+  kept only as an explicit opt-in for hosts without `websockets`; the default
+  `transport: jsonrpc` must stay. Cert is self-signed, so the client disables
+  verification (LAN-only endpoint).
+- Calls `pool.query`, `system.info`, `alert.list`, `disk.query` — same payload
+  shapes as the old REST `/pool`, `/system/info`, `/alert/list`, `/disk`, so the
+  mapping code and dashboard are transport-agnostic. `system/info` exposes
   `cores`/`physical_cores` directly (NOT `system_product` — that is a string like
   "MS-7D53", not a dict).
-- `up` is derived from pool data (array reachable + authed). Degrades gracefully.
+- `up` is derived from pool data (array reachable + authed). Degrades gracefully:
+  a failed websocket/auth returns `up:false` per-method, never raises.
 - Merged into collector.json as `truenas`; dashboard server passes it through the
   snapshot (whole collector is merged), and `app.js` `renderTruenas()` shows pool
   status/health/capacity, system version/model/RAM/uptime, disk count, active alerts.

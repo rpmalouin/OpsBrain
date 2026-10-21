@@ -81,7 +81,7 @@ def _truenas_creds(cfg):
     return user, passwd
 
 
-def truenas_get(url, user, passwd, timeout=8, max_bytes=2_000_000):
+def truenas_get(url, user, passwd, timeout: float = 8, max_bytes=2_000_000):
     """Authed GET to the TrueNAS REST API. Returns {ok, json} on success."""
     import base64
     import urllib.request
@@ -103,9 +103,69 @@ def truenas_get(url, user, passwd, timeout=8, max_bytes=2_000_000):
         return {"ok": False, "err": str(e)}
 
 
+def truenas_rpc_calls(ws_url, user, passwd, methods, timeout: float = 8):
+    """Run JSON-RPC 2.0 calls over ONE WebSocket connection to TrueNAS.
+
+    This is the supported API (wss://<host>/api/current). The REST API
+    (/api/v2.0) is deprecated in 25.10 and removed in 26.04, and every REST
+    request with Basic auth increments TrueNAS's RESTAPIUsage alert - one
+    hourly poll used to cost 4 of those per cycle.
+
+    Returns {method: {"ok": True, "json": <result>} | {"ok": False, "err": ...}}.
+    Degrades to ok:False per method; never raises.
+    """
+    try:
+        import asyncio
+        import ssl
+
+        import websockets
+    except Exception as e:  # pragma: no cover - dependency missing
+        return {m: {"ok": False, "err": f"websockets unavailable: {e}"} for m in methods}
+
+    async def run():
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False          # TrueNAS uses a self-signed cert
+        ctx.verify_mode = ssl.CERT_NONE
+        out = {}
+        async with websockets.connect(ws_url, ssl=ctx, open_timeout=timeout,
+                                      close_timeout=5, max_size=8 * 1024 * 1024) as ws:
+            rid = 0
+
+            async def call(method, params):
+                nonlocal rid
+                rid += 1
+                await ws.send(json.dumps({"jsonrpc": "2.0", "id": rid,
+                                          "method": method, "params": params}))
+                while True:  # skip event notifications that carry no id match
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
+                    if msg.get("id") != rid:
+                        continue
+                    if "error" in msg:
+                        return {"ok": False, "err": str(msg["error"].get("message"))[:200]}
+                    return {"ok": True, "json": msg.get("result")}
+
+            auth = await call("auth.login_ex", [{"mechanism": "PASSWORD_PLAIN",
+                                                 "username": user, "password": passwd}])
+            if not (auth.get("ok") and (auth.get("json") or {}).get("response_type") == "SUCCESS"):
+                why = auth.get("err") or (auth.get("json") or {}).get("response_type") or "auth failed"
+                return {m: {"ok": False, "err": f"auth: {why}"} for m in methods}
+            for m in methods:
+                out[m] = await call(m, [])
+            return out
+
+    try:
+        return asyncio.run(run())
+    except Exception as e:
+        return {m: {"ok": False, "err": str(e)[:200]} for m in methods}
+
+
 def collect_truenas(cfg):
     """Collect TrueNAS SCALE status: pools, system info, active alerts, disk summary.
-    Degrades gracefully (returns up:false) if the array is unreachable or auth fails."""
+    Degrades gracefully (returns up:false) if the array is unreachable or auth fails.
+
+    Transport: `sources.truenas.transport` — "jsonrpc" (default, wss://.../api/current)
+    or "rest" (legacy /api/v2.0, deprecated by TrueNAS, removed in 26.04).
+    """
     t = cfg.get("sources.truenas", {})
     if not t.get("enabled", True):
         return {"enabled": False}
@@ -114,10 +174,23 @@ def collect_truenas(cfg):
     user, passwd = _truenas_creds(cfg)
     out = {"enabled": True, "up": False, "hostname": "truenas"}
 
-    pool = truenas_get(f"{base}/pool", user, passwd, timeout)
-    sysi = truenas_get(f"{base}/system/info", user, passwd, timeout)
-    alerts = truenas_get(f"{base}/alert/list", user, passwd, timeout)
-    disks = truenas_get(f"{base}/disk", user, passwd, timeout)
+    transport = str(t.get("transport", "jsonrpc")).lower()
+    if transport == "rest":
+        pool = truenas_get(f"{base}/pool", user, passwd, timeout)
+        sysi = truenas_get(f"{base}/system/info", user, passwd, timeout)
+        alerts = truenas_get(f"{base}/alert/list", user, passwd, timeout)
+        disks = truenas_get(f"{base}/disk", user, passwd, timeout)
+    else:
+        ws_url = str(t.get("ws_url", "wss://truenas/api/current"))
+        rpc = truenas_rpc_calls(ws_url, user, passwd,
+                                ["pool.query", "system.info", "alert.list", "disk.query"],
+                                timeout)
+        pool = rpc["pool.query"]
+        sysi = rpc["system.info"]
+        alerts = rpc["alert.list"]
+        disks = rpc["disk.query"]
+        if not pool.get("ok"):
+            log.warning("truenas jsonrpc %s: %s", ws_url, pool.get("err"))
 
     # pools
     pools = []

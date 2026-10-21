@@ -1,1 +1,2 @@
 PyYAML>=6.0
+websockets>=12        # TrueNAS JSON-RPC 2.0 over WebSocket (collector/truenas transport)

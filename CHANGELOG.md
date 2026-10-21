@@ -328,6 +328,16 @@ milestone).
   sitting next to ollama is still tracked and killed as before. +3 tests (101 total).
 
 ### Changed
+- **TrueNAS source moved off the deprecated REST API onto JSON-RPC 2.0 over WebSocket**
+  (`wss://<host>/api/current`, `auth.login_ex PASSWORD_PLAIN`, one session per cycle for
+  `pool.query` / `system.info` / `alert.list` / `disk.query`). TrueNAS 25.10 deprecates
+  `/api/v2.0` (removal 26.04) and counts **every** Basic-auth REST request against its
+  `RESTAPIUsage` alert, which had been raising "deprecated REST API was used to
+  authenticate 860 times in the last 24 hours" from this host for the hourly poll. Same
+  payload shapes, so the mapping code and the TrueNAS panel are unchanged. `transport:
+  jsonrpc` is the default; `transport: rest` survives only as an opt-in for hosts without
+  `websockets` (now in `requirements.txt`). Verified live: a full collection opens exactly
+  one TCP connection to `:443` and **zero** to `:80`. +2 tests (332 total).
 - **Scheduler cadence 120s → 3600s (1 h)** — homelab retune (2026-09-04) to free
   ollama/GPU for interactive chat (Open WebUI shares the same daemon). Rescaled with
   it: `cpu_restart_minutes: 5 → 120` (a lone hourly sample = 3600s would otherwise

@@ -39,7 +39,7 @@ a unified cluster** (federation) and streams everything to a real-time dashboard
   reports/            daily markdown reports
   ui/                 real-time dashboard (FastAPI + WebSocket, :9120)
   deploy/             systemd units + installer
-  tests/              pytest suite (345 tests)
+  tests/              pytest suite (347 tests)
   docs/               per-feature implementation guides
   media/              fork-owned README screenshots (re-shot when the UI changes)
   Dockerfile, docker-compose.yml, README.md, IMPLEMENTATION.md, CHANGELOG.md, .gitignore
@@ -56,11 +56,12 @@ confidence-recovery / GPU-drift-decay /
 restart-impact refinements. The **Node Comparison** table shows each node's host facts, the
 macmon SoC row (CPU/GPU temperatures, power, per-tier CPU load, fans), **every** watched
 volume with its percentage, and the freshness of the producer snapshot the node is sourced
-from. Served by the `opsbrain-ui` systemd service at
+from. **GPU Drift shows one block per card** — index, name, VRAM, power, temperature, that
+card's own baseline and stuck-PID counter — and the timeline draws a VRAM trend for each. Served by the `opsbrain-ui` systemd service at
 `http://<host>:9120/` — see `ui/README.md`. `/api/gpu` also reports `available` + `error`,
 so a GPU the host can no longer read is visible instead of a silent all-clear.
 
-<img width="2020" alt="The OpsBrain dashboard: Cluster Overview at 94/100 with 2/2 nodes online, Node Comparison showing the Mac Studio's macmon row (cpu 61C / gpu 70C, 5.1 + 59.7 W, P 12c 1% / S 6c 14%, two fans), its six volumes and its snapshot freshness, then TrueNAS, Dockhand, GPU Drift and the panel grid below" src="media/dashboard.png" />
+<img width="2020" alt="The OpsBrain dashboard: Cluster Overview at 97/100 with 2/2 nodes online and confidence 0.95, Node Comparison showing the Mac Studio's macmon row (cpu 29C / gpu 28C, 0.2 + 0.0 W, P 12c 2% / S 6c 0%, two fans), its six volumes and its snapshot freshness, TrueNAS and Dockhand, then the GPU Drift panel with a block per card (RTX 5070 Ti primary, RTX 3060) and a VRAM trend per card, then Container Health, OpsBrain Decisions and the rest of the grid" src="media/dashboard.png" />
 
 ## Quick start (recommended: on a Linux VM with Docker + NVIDIA GPU)
 
@@ -220,7 +221,7 @@ deterministic (no LLM).**
 
 ## Tests
 
-`/usr/bin/python3 -m pytest` — **345 tests** across `tests/` (whitelist gate, deterministic rules,
+`/usr/bin/python3 -m pytest` — **347 tests** across `tests/` (whitelist gate, deterministic rules,
 output sanitization, GPU drift + GPU visibility + GPU driver reconcile, manual-stop invariant,
 TrueNAS parse, federation math & correlations, dashboard refinements, Dockhand desired-state
 ingest, model selection / `think` gate, stale-decision guard). Run before pushing changes to

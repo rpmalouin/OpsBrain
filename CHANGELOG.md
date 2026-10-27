@@ -8,6 +8,14 @@ milestone).
 ## [Unreleased]
 
 ### Added
+- **The dashboard renders every GPU card, and tracks each one's trend.** `ui/static/app.js` read
+  `gpu.gpus[0]` in four places, so with two cards the panel showed card 0 only — a second-GPU flag
+  (`vram_overload:gpu1`) had no numbers behind it, and System Overview collapsed both cards into one
+  "GPU util". The GPU Drift panel now renders a block per card (index + name, VRAM, power, temp, that
+  card's `per_gpu` baseline, its stuck-PID/cycle count), System Overview lists util per card
+  (`G0 0.0% · G1 0.0%`), and the timeline draws a VRAM trend per card. `ui/server.py` keeps
+  per-index rings (`_hist["gpu_cards"]`, published as `history.gpu_cards` / `history_cards`) while
+  card 0's values stay under the original keys, and a card that disappears drops its ring. +2 tests.
 - **Every GPU is evaluated, not just index 0.** `evaluate_gpu_drift` now loops over the gpu list
   (`_evaluate_one_gpu` holds the unchanged rules) and keys its state by `str(gpu["index"])`, so a
   second card can no longer sit at 100 %, over `vram_max_percent` or wedged with no flag, no event
@@ -367,6 +375,9 @@ milestone).
   sitting next to ollama is still tracked and killed as before. +3 tests (101 total).
 
 ### Changed
+- **`gpu_drift.power_idle_max_watts` 40 → 60 W.** Measured: this card idles at ~9 W empty but draws
+  40-44 W whenever a model sits loaded and the sample catches it idle (43.68 W at 0 % util), so the
+  40 W rule alerted on normal residency; real load is 200-276 W, far above 60.
 - **`actions.allow_prune: false`** as a standing brake until the prune evidence gate has run in
   production for a while. `docker system prune -af` is fleet-wide, and the disk threshold (85 %;
   this host sits at 25 %) is the only thing that should ever reach it.

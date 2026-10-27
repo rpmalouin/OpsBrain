@@ -18,6 +18,7 @@ def _reset():
     S._restart_impact = {}
     for q in ("gpu_vram", "gpu_temp", "gpu_power", "gpu_baseline_vram", "confidence"):
         S._hist[q].clear()
+    S._hist["gpu_cards"].clear()
     S._hist["containers"].clear()
 
 
@@ -149,6 +150,43 @@ def test_update_history_uses_real_gpu_when_present():
     assert list(S._hist["gpu_vram"]) == [14046]
     assert list(S._hist["gpu_baseline_vram"]) == [14000]
     assert list(S._hist["confidence"]) == [0.85]
+
+
+def test_update_history_tracks_every_card():
+    """dockerVM has two cards and only index 0 had a ring, so card 1 had no trend to draw.
+    Card 0's values must ALSO stay under the legacy keys (existing readers)."""
+    _reset()
+    S._update_history({"gpu": {"gpus": [{"index": 0, "mem_used_mb": 842, "temp_c": 29, "power_w": 9.3,
+                                        "mem_total_mb": 16303},
+                                       {"index": 1, "mem_used_mb": 4, "temp_c": 42, "power_w": 15.4,
+                                        "mem_total_mb": 12288}],
+                               "baseline": {"last_vram": 842,
+                                            "per_gpu": {"0": {"last_vram": 842},
+                                                        "1": {"last_vram": 4}}}},
+                       "docker": {"containers": []}}, {"confidence": 0.95})
+    assert set(S._hist["gpu_cards"]) == {"0", "1"}
+    assert list(S._hist["gpu_cards"]["1"]["vram"]) == [4]
+    assert list(S._hist["gpu_cards"]["1"]["power"]) == [15.4]
+    assert S._hist["gpu_cards"]["1"]["baseline"] == 4
+    # legacy rings still describe card 0
+    assert list(S._hist["gpu_vram"]) == [842]
+    payload = S._history_payload()
+    assert payload["gpu_cards"]["1"]["vram"] == [4]
+    assert payload["gpu_vram"] == [842]
+
+
+def test_card_ring_dropped_when_the_card_disappears():
+    """A lost passthrough must not leave a stale trend in the panel."""
+    _reset()
+    two = {"gpu": {"gpus": [{"index": 0, "mem_used_mb": 842, "temp_c": 29, "power_w": 9.3},
+                            {"index": 1, "mem_used_mb": 4, "temp_c": 42, "power_w": 15.4}],
+                   "baseline": {}}, "docker": {"containers": []}}
+    S._update_history(two, {"confidence": 0.9})
+    assert set(S._hist["gpu_cards"]) == {"0", "1"}
+    one = {"gpu": {"gpus": [{"index": 0, "mem_used_mb": 900, "temp_c": 30, "power_w": 10.0}],
+                   "baseline": {}}, "docker": {"containers": []}}
+    S._update_history(one, {"confidence": 0.9})
+    assert set(S._hist["gpu_cards"]) == {"0"}
 
 
 # ------------------------------------------------- drift decay

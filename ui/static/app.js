@@ -52,11 +52,16 @@ function drawSpark(id, values, opts) {
 function renderSystem(col) {
   const d = col?.docker || {};
   const vm = col?.vm || {};
-  const g = (col?.gpu?.gpus || [])[0] || {};
+  const cards = col?.gpu?.gpus || [];
+  const g = cards[0] || {};
   const disks = vm.disk_root || {};
   const age = tsAge(col?.timestamp);
   let r = "";
-  r += `<div class="flex justify-between"><span class="text-slate-400">GPU util</span><span>${fmtPct(g.util_gpu_percent)}</span></div>`;
+  // every card gets a line: on a two-card host a single "GPU util" hid card 1 entirely
+  const util = cards.length > 1
+    ? cards.map(c => `G${c.index ?? 0} ${fmtPct(c.util_gpu_percent)}`).join(" \u00b7 ")
+    : fmtPct(g.util_gpu_percent);
+  r += `<div class="flex justify-between"><span class="text-slate-400">GPU util</span><span>${util}</span></div>`;
   r += `<div class="flex justify-between"><span class="text-slate-400">Disk /</span><span>${escapeHtml(disks["Use%"] ?? "—")} of ${escapeHtml(disks.Size ?? "?")}</span></div>`;
   r += `<div class="flex justify-between"><span class="text-slate-400">Containers</span><span>${d.running ?? "—"} running / ${d.containers_count ?? "—"}</span></div>`;
   r += `<div class="flex justify-between"><span class="text-slate-400">Last cycle</span><span>${age === null ? "—" : age + "s ago"}</span></div>`;
@@ -375,16 +380,33 @@ function ageDays(seconds) {
 }
 
 function renderGpuPanel(col) {
-  const g = (col?.gpu?.gpus || [])[0] || {};
+  const cards = col?.gpu?.gpus || [];
+  const g = cards[0] || {};
   const base = col?.gpu?.baseline || {};
-  const vramPct = g.mem_total_mb ? ((g.mem_used_mb / g.mem_total_mb) * 100).toFixed(1) : "—";
-  let b = `<div class="space-y-1 text-sm">`;
-  b += `<div class="flex justify-between"><span class="text-slate-400">VRAM</span><span>${fmtMb(g.mem_used_mb)} / ${fmtMb(g.mem_total_mb)} (${vramPct}%)</span></div>`;
-  b += `<div class="flex justify-between"><span class="text-slate-400">Power</span><span>${g.power_w ?? "—"} W</span></div>`;
-  b += `<div class="flex justify-between"><span class="text-slate-400">Temp</span><span>${g.temp_c ?? "—"} °C</span></div>`;
-  b += `<div class="flex justify-between"><span class="text-slate-400">Baseline VRAM</span><span>${fmtMb(base.last_vram)}</span></div>`;
-  b += `<div class="flex justify-between"><span class="text-slate-400">Stuck PID</span><span>${escapeHtml(base.last_pid ?? "—")} (${base.cycles_with_same_pid ?? 0} cyc)</span></div>`;
-  b += `</div>`;
+  const perGpu = base.per_gpu || {};
+  let b = "";
+  // Every card gets its own block: the collector evaluates all of them, so a panel that
+  // showed only index 0 could not display a second-GPU flag's numbers (`vram_overload:gpu1`).
+  const shown = cards.length ? cards : [{}];
+  shown.forEach((card, i) => {
+    const key = String(card.index ?? i);
+    const cb = perGpu[key] || {};
+    const primary = (card.index ?? i) === 0;
+    const vramPct = card.mem_total_mb
+      ? ((card.mem_used_mb / card.mem_total_mb) * 100).toFixed(1) : "—";
+    if (shown.length > 1) {
+      b += `<div class="mt-2 mb-1 text-xs font-semibold text-slate-300">`
+        + `GPU ${escapeHtml(key)}${primary ? " (primary)" : ""}`
+        + ` \u00b7 ${escapeHtml(card.name || "unknown")}</div>`;
+    }
+    b += `<div class="space-y-1 text-sm">`;
+    b += `<div class="flex justify-between"><span class="text-slate-400">VRAM</span><span>${fmtMb(card.mem_used_mb)} / ${fmtMb(card.mem_total_mb)} (${vramPct}%)</span></div>`;
+    b += `<div class="flex justify-between"><span class="text-slate-400">Power</span><span>${card.power_w ?? "—"} W</span></div>`;
+    b += `<div class="flex justify-between"><span class="text-slate-400">Temp</span><span>${card.temp_c ?? "—"} °C</span></div>`;
+    b += `<div class="flex justify-between"><span class="text-slate-400">Baseline VRAM</span><span>${fmtMb(primary ? base.last_vram : cb.last_vram)}</span></div>`;
+    b += `<div class="flex justify-between"><span class="text-slate-400">Stuck PID</span><span>${escapeHtml((primary ? base.last_pid : cb.last_pid) ?? "—")} (${(primary ? base.cycles_with_same_pid : cb.cycles_with_same_pid) ?? 0} cyc)</span></div>`;
+    b += `</div>`;
+  });
   const flags = col?.gpu?.drift_flags || [];
   b += `<div class="mt-2 text-xs text-slate-400">Drift: ${flags.length ? flags.map(f => chip(f, driftTone(f))).join(" ") : chip("no drift", "ok")}</div>`;
   // Driver/library mismatch: the apt hook repairs it after an nvidia upgrade UNLESS a GPU
@@ -422,6 +444,18 @@ function renderDriftTimeline(col) {
     ["Temperature", "sp-temp", h.gpu_temp || [], v => v > 70 ? "#f87171" : (v > 55 ? "#facc15" : "#4ade80")],
     ["Power draw", "sp-power", h.gpu_power || [], v => v > 40 ? "#f87171" : "#4ade80"],
   ];
+  // one VRAM trend per additional card, from the server's per-index rings
+  const cards = col?.gpu?.gpus || [];
+  const histCards = h?.gpu_cards || state.history?.gpu_cards || {};
+  cards.forEach((card, i) => {
+    const key = String(card.index ?? i);
+    if ((card.index ?? i) === 0 || !histCards[key]) return;
+    series.push([`VRAM - GPU ${escapeHtml(key)}`, `sp-vram-${key}`, histCards[key].vram || [],
+      v => {
+        const pct = card.mem_total_mb ? (v / card.mem_total_mb * 100) : 0;
+        return pct > 90 ? "#f87171" : (pct > 70 ? "#facc15" : "#4ade80");
+      }]);
+  });
   for (const [label, id, vals, colorFn] of series) {
     b += `<div class="mt-1 text-xs text-slate-400">${label}</div>${sparkHost(id)}`;
   }
@@ -659,6 +693,17 @@ function render() {
   drawSpark("sp-vram", h.gpu_vram, { width: 170, height: 26, fill: true, color: v => { const pct = gpu.mem_total_mb ? (v / gpu.mem_total_mb * 100) : 0; return pct > 90 ? "#f87171" : (pct > 70 ? "#facc15" : "#4ade80"); } });
   drawSpark("sp-temp", h.gpu_temp, { width: 170, height: 26, fill: true, color: v => v > 70 ? "#f87171" : (v > 55 ? "#facc15" : "#4ade80") });
   drawSpark("sp-power", h.gpu_power, { width: 170, height: 26, fill: true, color: v => v > 40 ? "#f87171" : "#4ade80" });
+  const histCards = h?.gpu_cards || state.history?.gpu_cards || {};
+  (collector?.gpu?.gpus || []).forEach((card, i) => {
+    const key = String(card.index ?? i);
+    if ((card.index ?? i) === 0 || !histCards[key]) return;
+    const total = card.mem_total_mb || 0;
+    drawSpark(`sp-vram-${key}`, histCards[key].vram || [],
+      { width: 170, height: 26, fill: true, color: v => {
+        const pct = total ? (v / total * 100) : 0;
+        return pct > 90 ? "#f87171" : (pct > 70 ? "#facc15" : "#4ade80");
+      } });
+  });
   drawSpark("sp-conf", h.confidence, { width: 220, height: 26, fill: true, color: confColor });
 
   // --- refinements: recovery pulse, drift decay graph, restart impact bars ---

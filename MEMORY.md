@@ -268,7 +268,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `/usr/bin/python3 -m pytest` (**345 tests**, `tests/`). They cover
+   RUN THE TESTS: `/usr/bin/python3 -m pytest` (**347 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -287,7 +287,12 @@ manual_stops, cluster_snapshot, cluster_reasoner}`.
 - `ui/config.yaml`: port 9120 / refresh 2s / watch list. `ui/static/app.js` renders the
   panels (System, Cluster Overview, Node Comparison, TrueNAS, Container Health, GPU Drift,
   OpsBrain Decisions, Manual Stop Protection, Daily Report Preview, plus recovery/decay/
-  impact refinements from `ui_refinements.js`).
+  impact refinements from `ui_refinements.js`). **Every GPU card is rendered and tracked**
+  (`_hist["gpu_cards"]`, keyed by str(index), exposed as `history.gpu_cards`): the collector
+  evaluates all cards but the dashboard drew only index 0, so a second-GPU flag had no numbers
+  behind it. Card 0's rings stay under the original `gpu_vram`/`gpu_temp`/`gpu_power` keys —
+  `/api/gpu` and the timeline read those, do not repoint them. A card that disappears drops its
+  ring; `HISTORY_LEN` is 10 cycles, so a fresh per-card trend fills in over ~10 h.
 - Service file: `deploy/opsbrain-ui.service` (also installed to `/etc/systemd/system/`);
   `Restart=always` verified. No auth layer — front only via reverse proxy if LAN-exposed.
 
@@ -914,7 +919,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`/usr/bin/python3 -m pytest` (or `-q`). **345 tests** across `tests/` covering:
+`/usr/bin/python3 -m pytest` (or `-q`). **347 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

@@ -74,10 +74,15 @@ _observer = None
 
 # 10-cycle trend history (frontend sparklines / trend panels)
 _hist = {
+    # card 0's rings, kept under the original names: /api/gpu and the timeline panel
+    # read these, and a payload without them is a broken dashboard
     "gpu_vram": deque(maxlen=HISTORY_LEN),
     "gpu_temp": deque(maxlen=HISTORY_LEN),
     "gpu_power": deque(maxlen=HISTORY_LEN),
     "gpu_baseline_vram": deque(maxlen=HISTORY_LEN),
+    # every card's rings, keyed by str(index) — the host has two cards and only card 0
+    # had a history, so the second one had no trend to draw
+    "gpu_cards": {},
     "confidence": deque(maxlen=HISTORY_LEN),
     "containers": {},          # {name: {"cpu": deque, "mem": deque}}
 }
@@ -129,6 +134,20 @@ def _update_history(collector, reasoner):
     _hist["gpu_temp"].append(int(g.get("temp_c") or 0))
     _hist["gpu_power"].append(float(g.get("power_w") or 0))
     _hist["gpu_baseline_vram"].append(int(base.get("last_vram") or g.get("mem_used_mb") or 0))
+    per_gpu = (collector.get("gpu", {}) or {}).get("baseline", {}).get("per_gpu") or {}
+    for idx, card in enumerate(gpus):
+        key = str(card.get("index", idx))
+        rings = _hist["gpu_cards"].setdefault(
+            key, {"vram": deque(maxlen=HISTORY_LEN), "temp": deque(maxlen=HISTORY_LEN),
+                  "power": deque(maxlen=HISTORY_LEN)})
+        rings["vram"].append(int(card.get("mem_used_mb") or 0))
+        rings["temp"].append(int(card.get("temp_c") or 0))
+        rings["power"].append(float(card.get("power_w") or 0))
+        rings["baseline"] = (per_gpu.get(key) or {}).get("last_vram")
+    # a card that disappears (passthrough lost) must not leave a stale trend behind
+    for key in list(_hist["gpu_cards"]):
+        if key not in {str(c.get("index", i)) for i, c in enumerate(gpus)}:
+            del _hist["gpu_cards"][key]
     conf = reasoner_conf(reasoner)
     _hist["confidence"].append(conf)
     # per-container cpu/mem
@@ -160,6 +179,10 @@ def _history_payload():
         "gpu_temp": list(_hist["gpu_temp"]),
         "gpu_power": list(_hist["gpu_power"]),
         "gpu_baseline_vram": list(_hist["gpu_baseline_vram"]),
+        # per-card rings: card 0's are also under the legacy keys above
+        "gpu_cards": {k: {"vram": list(v["vram"]), "temp": list(v["temp"]),
+                          "power": list(v["power"]), "baseline": v.get("baseline")}
+                      for k, v in (_hist.get("gpu_cards") or {}).items()},
         "confidence": list(_hist["confidence"]),
         "containers": {n: {"cpu": list(r["cpu"]), "mem": list(r["mem"])}
                        for n, r in _hist["containers"].items()},
@@ -661,6 +684,9 @@ async def api_gpu():
                     "gpu_temp": list(_hist["gpu_temp"]),
                     "gpu_power": list(_hist["gpu_power"]),
                     "gpu_baseline_vram": list(_hist["gpu_baseline_vram"])},
+        "history_cards": {k: {"vram": list(v["vram"]), "temp": list(v["temp"]),
+                              "power": list(v["power"]), "baseline": v.get("baseline")}
+                          for k, v in (_hist.get("gpu_cards") or {}).items()},
     })
 
 

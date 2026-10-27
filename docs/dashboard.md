@@ -25,8 +25,13 @@ list of log files streamed on change).
    active alerts.
 5. **Container Health** — running/exited, per-container CPU/RAM, restart-loop badge,
    restart count.
-6. **GPU Drift** — VRAM used/total + %, power draw, temperature, drift flags, plus a driver-reconcile strip: red when the loaded nvidia module does not match the one on disk (naming the deferred apt-hook reload and the exact fix command), info when a deferral was since resolved
-   (color-coded), stuck-PID + cycle count.
+6. **GPU Drift** — one block per card (name + index, VRAM used/total + %, power draw, temperature,
+   that card's own `per_gpu` baseline and stuck-PID/cycle count), the drift flags, plus a
+   driver-reconcile strip: red when the loaded nvidia module does not match the one on disk (naming
+   the deferred apt-hook reload and the exact fix command), info when a deferral was since resolved.
+   The timeline panel draws a VRAM trend per card from the server's per-index rings
+   (`_hist["gpu_cards"]`, exposed as `history.gpu_cards`); card 0's rings are also still published
+   under the original `history.gpu_vram`/`gpu_temp`/`gpu_power` keys.
 7. **OpsBrain Decisions** — Qwen warnings/actions, confidence, **dry-run / live** badge.
 8. **Manual Stop Protection** — protected (manually stopped) containers; red
    "MANUALLY STOPPED" tag on rows.

@@ -199,7 +199,11 @@ gpu_drift:
   # reports the compute app as the interpreter path (`/opt/app-root/bin/python3`), so no
   # name marker can identify it. Entries must name a real container.
   resident_containers: [docling-serve]
-  power_idle_max_watts: 40      # power draw above this while util<thr -> power_drift
+  power_idle_max_watts: 60      # power draw above this while util<thr -> power_drift.
+                                # Was 40: measured 2026-10-27, this card idles at ~9 W empty
+                                # but draws 40-44 W whenever a model sits loaded and the sample
+                                # catches it idle (43.68 W at 0 % util), so 40 alerted on normal
+                                # residency. Real load is 200-276 W, far above 60.
   temp_idle_max_c: 55           # temp above this while util<thr -> temp_drift
 
 # --- Daily report ---

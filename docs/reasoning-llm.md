@@ -107,6 +107,10 @@ baseline and no thresholds:
   while `reasoner.fresh` still read true (measured: 1-3 below-floor cycles/day before the
   `qwen2.5-7b-128k` swap, then 24/24). A template value is an instruction: label it an example and
   say what the field means.
+- **`docker_prune` is never the model's call.** The verb ignores its target and prunes the whole
+  host; disk pressure is the deterministic disk rule's job and it raises the prune itself. The
+  prompt forbids the verb outright, and `filter_llm_notices` drops a model `notify` that restates an
+  orphan the dockhand rule already reported (the two claim classes the pipeline owns).
 - **`gpu_drift` must be a copy of the state's `drift_flags`.** The flags come from the collector's
   deterministic detector; a model that re-derives them invents the thresholds (*"8.93 W exceeds
   the idle max of 8.5 W"* against a configured 40 W) and triggers critical alerts. Since

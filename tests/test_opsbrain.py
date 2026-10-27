@@ -1007,6 +1007,75 @@ class TestDockhandDriftActions:
         e.dispatch("notify_dockhand_drift", "web", "storm")
         assert e.executed and e.blocked == []
 
+# ------------------------------------------------ the prompt's hard rules (regression guards)
+class TestPromptContract:
+    """`reasoner/prompt.txt` carries rules the code now depends on. Each one was learned from a
+    live incident, and a prompt rewrite that drops one silently re-opens it."""
+
+    def _prompt(self):
+        from pathlib import Path
+        return (Path(__file__).resolve().parent.parent / "reasoner" / "prompt.txt").read_text()
+
+    def test_confidence_is_defined_not_shown_as_an_answer(self):
+        # the template's literal `"confidence": 0.0` was copied into every decision for ten
+        # days, so every cycle sat below the floor and the LLM half was inert
+        p = self._prompt()
+        assert '"confidence": 0.0' not in p
+        assert "`confidence` is YOUR OWN certainty" in p
+
+    def test_gpu_drift_must_copy_the_detectors_flags(self):
+        p = self._prompt()
+        assert "GPU DRIFT IS ALREADY DECIDED" in p
+        assert "must be a COPY of it" in p
+
+    def test_pruning_is_never_the_models_call(self):
+        # the 2026-10-27 13:55 cycle: an orphan notice -> docker_prune at conf 0.95 ->
+        # `docker system prune -af` on the whole host
+        p = self._prompt()
+        assert "PRUNING IS NEVER YOUR CALL" in p
+        assert "NEVER propose `docker_prune`" in p
+
+    def test_stale_model_identity_is_not_hardcoded(self):
+        assert "Qwen 3:14B" not in self._prompt()
+
+
+# ------------------------------------------------ LLM notices the deterministic rules own
+class TestOrphanNoticeGate:
+    """`dockhand_drift_actions` already dispatches `notify_dockhand_drift` for every orphan,
+    every cycle. The model re-reporting one just doubles the ticker (2 of 3 runs still did it
+    after the prompt forbade the prune)."""
+
+    def _coll(self, orphaned=("clamav",)):
+        coll = rules_coll([make_container("clamav"), make_container("immich_server")])
+        coll["dockhand"] = {"dashboard": {"orphaned_containers": list(orphaned)}}
+        return coll
+
+    def test_orphan_notice_is_dropped(self, base_config):
+        for msg in ("Orphaned containers detected: clamav",
+                    "Orphaned containers: clamav",
+                    "clamav is an unused container"):
+            action = {"type": "notify", "target": msg, "reason": "orphan"}
+            kept, dropped = A.filter_llm_notices([action], self._coll(), set())
+            assert dropped == [action] and kept == [], msg
+
+    def test_notice_about_an_orphan_for_another_reason_is_kept(self, base_config):
+        # naming clamav is not enough: the claim must BE the orphan claim
+        action = {"type": "notify", "target": "clamav restarts every 30s", "reason": "loop"}
+        kept, dropped = A.filter_llm_notices([action], self._coll(), set())
+        assert kept == [action] and dropped == []
+
+    def test_notice_about_a_non_orphan_container_is_kept(self, base_config):
+        action = {"type": "notify", "target": "immich_server is orphaned", "reason": "x"}
+        kept, dropped = A.filter_llm_notices([action], self._coll(), set())
+        assert kept == [action] and dropped == []
+
+    def test_no_dockhand_block_is_safe(self, base_config):
+        coll = rules_coll([make_container("clamav")])
+        action = {"type": "notify", "target": "Orphaned container: clamav", "reason": "x"}
+        kept, dropped = A.filter_llm_notices([action], coll, set())
+        assert kept == [action] and dropped == []
+
+
 # ------------------------------------------------ LLM container-CPU notices need evidence
 class TestContainerCpuNoticeGate:
     """The 2026-10-14 ollama notice: one instantaneous `docker stats` sample of a 20-45 s

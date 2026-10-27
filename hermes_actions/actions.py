@@ -509,18 +509,37 @@ def sustained_cpu_evidence(rule_actions):
             if a.get("evidence") == "sustained_cpu"}
 
 
-def filter_llm_notices(actions, coll, sustained):
-    """Drop LLM-authored container-CPU notices with no deterministic evidence.
+# Tokens that make a notice an ORPHAN claim — `notify_dockhand_drift` already reports every
+# orphan every cycle, so a model notice repeating one is a duplicate, not new information.
+ORPHAN_CLAIM_TOKENS = ("orphan", "unused", "not in any stack", "missing container", "no longer")
 
-    Returns (kept, dropped). Everything else passes through untouched: this gate is
-    about one claim class, not about Qwen's freedom to report."""
+
+def filter_llm_notices(actions, coll, sustained):
+    """Drop LLM-authored notices that restate a condition the deterministic rules already report.
+
+    Two claim classes so far:
+      * a container-CPU fault with no sustained-CPU evidence (a single `docker stats` sample),
+      * an orphan/unused-container notice — `dockhand_drift_actions` dispatches
+        `notify_dockhand_drift` for each orphan every cycle, and the model re-reporting it just
+        doubles the ticker (measured 2026-10-27: 2 of 3 runs still did, after the prompt told it
+        not to).
+
+    Returns (kept, dropped). Everything else passes through untouched: this gate is about claims
+    the pipeline already owns, not about Qwen's freedom to report."""
     containers = coll.get("docker", {}).get("containers", []) or []
+    dash = (coll.get("dockhand") or {}).get("dashboard") or {}
+    orphaned = {str(n) for n in (dash.get("orphaned_containers") or [])}
     kept, dropped = [], []
     for a in actions or []:
         if str(a.get("type") or "") == "notify":
-            msg = a.get("target")
+            msg = str(a.get("target") or "")
             name = container_named_in(msg, containers)
             if name and is_container_cpu_notice(msg, containers) and name not in sustained:
+                dropped.append(a)
+                continue
+            # ...and the same orphan the dockhand rule already notified this cycle
+            low = msg.lower()
+            if name and name in orphaned and any(t in low for t in ORPHAN_CLAIM_TOKENS):
                 dropped.append(a)
                 continue
         kept.append(a)

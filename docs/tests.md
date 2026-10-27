@@ -5,7 +5,7 @@ is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
 cd /appdata/OpsBrain
-/usr/bin/python3 -m pytest     # 347 tests — this is the interpreter the service uses
+/usr/bin/python3 -m pytest     # 355 tests — this is the interpreter the service uses
 /usr/bin/python3 -m pytest -q  # quiet
 ```
 

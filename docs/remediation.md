@@ -43,6 +43,9 @@
   proposal that does not carry the disk rule's `evidence: disk_threshold` tag is blocked with
   `blocked_no_prune_evidence`. `actions.allow_prune` is a second, independent switch and now sits
   at `false`.
+- **An orphan notice the dockhand rule already reported is dropped** — `notify_dockhand_drift`
+  fires for every orphan each cycle, so a model `notify` that names one while carrying an orphan
+  claim adds nothing (the same `filter_llm_notices` that gates CPU notices).
 - **A container-CPU fault claim needs the sustained rule** — `stats.cpu_percent` is a single
   instantaneous sample, so an LLM notice naming a container with high CPU is dropped unless
   the deterministic sustained-CPU rule (`cpu_restart_threshold_percent` for

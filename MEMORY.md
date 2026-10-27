@@ -268,7 +268,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `/usr/bin/python3 -m pytest` (**347 tests**, `tests/`). They cover
+   RUN THE TESTS: `/usr/bin/python3 -m pytest` (**355 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -899,6 +899,16 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
   **Triage rule:** an event record holds the same numbers the detector used, so a flag whose
   own record contradicts its rule (`power_w <= power_idle_max_watts`, `temp_c <=
   temp_idle_max_c`, vram below `vram_max_percent`) can only have come from the LLM.
+- **`docker_prune` is never the model's call, and an orphan notice is not a disk signal
+  (2026-10-27, do not loosen).** After the prune gate landed, the model still proposed the prune
+  every cycle (blocked, but one line of noise an hour), then — once the prompt forbade the verb —
+  restated the orphan as a `notify` instead (2 of 3 probe runs). Two rules now: the prompt says
+  PRUNING IS NEVER YOUR CALL (disk pressure is the deterministic rule's job; the orphan is already
+  reported by the dockhand rule, so it says nothing about it), and `filter_llm_notices` drops a
+  model `notify` that names a container in `dockhand.dashboard.orphaned_containers` while carrying
+  an orphan claim (`orphan`/`unused`/`not in any stack`/`missing container`/`no longer`). Measured
+  after both: 0 of 3 probe runs propose a prune, and the live collector's clamav notice is dropped
+  at the filter. Naming an orphan for a DIFFERENT reason (a restart loop) still passes.
 - **What still fires legitimately:** a real `power_drift` at 40-44 W when a model sits loaded
   and idle across the sample (threshold is 40 W; the same card idles at ~9 W empty and pulls
   200-276 W under real load), and one `vram_drift` per model load (documented below). The
@@ -919,7 +929,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`/usr/bin/python3 -m pytest` (or `-q`). **347 tests** across `tests/` covering:
+`/usr/bin/python3 -m pytest` (or `-q`). **355 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

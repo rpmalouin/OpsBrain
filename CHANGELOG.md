@@ -375,6 +375,17 @@ milestone).
   sitting next to ollama is still tracked and killed as before. +3 tests (101 total).
 
 ### Changed
+- **The prompt forbids `docker_prune` outright, and a duplicate orphan notice is filtered.**
+  With the prune gate in place the model still proposed the prune every cycle (blocked, so one line
+  of noise an hour); told to stop, it restated the orphan as a `notify` instead (2 of 3 probe runs).
+  `reasoner/prompt.txt` now states PRUNING IS NEVER YOUR CALL — disk pressure belongs to the
+  deterministic disk rule, and an orphan is already reported by the dockhand rule, so the model says
+  nothing about either. `filter_llm_notices` gained the second of its claim classes: a model `notify`
+  naming a container in `dockhand.dashboard.orphaned_containers` while carrying an orphan claim
+  (`orphan` / `unused` / `not in any stack` / `missing container` / `no longer`) is dropped before
+  dispatch. Naming an orphan for a different reason — a restart loop — still passes. Measured after
+  both: 0 of 3 probe runs propose a prune, and the live clamav notice is dropped. +8 tests (355),
+  four of them a `TestPromptContract` guard so a prompt rewrite cannot silently drop these rules.
 - **`gpu_drift.power_idle_max_watts` 40 → 60 W.** Measured: this card idles at ~9 W empty but draws
   40-44 W whenever a model sits loaded and the sample catches it idle (43.68 W at 0 % util), so the
   40 W rule alerted on normal residency; real load is 200-276 W, far above 60.

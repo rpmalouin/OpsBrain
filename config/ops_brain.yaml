@@ -116,7 +116,11 @@ actions:
     - youtube-dl-server
   allow_service_restart: []     # systemd units whitelist (shell injection safe)
   allow_gpu_kill: false
-  allow_prune: true
+  allow_prune: false               # BRAKE 2026-10-27: the reasoner proposed docker_prune off an
+                                   # orphan notice and the engine ran `docker system prune -af`
+                                   # (whole host: stopped containers, unused images, build cache).
+                                   # The verb now also needs the disk-threshold rule's evidence
+                                   # (blocked_no_prune_evidence); re-enable only with that gate live.
   manual_stop_sigkill_protect: true   # treat exit 137 (no OOM) as a manual stop
   notify_webhook: ""            # optional generic webhook (POST JSON), e.g. ntfy/Telegram bot
 

@@ -215,7 +215,10 @@ class TestDeterministicRules:
     def test_disk_over_threshold_prune(self, base_config):
         coll = rules_coll([], disk="90")
         rules, warns = A.deterministic_rules(coll, {}, {})
-        assert any(r["type"] == "docker_prune" for r in rules)
+        prune = [r for r in rules if r["type"] == "docker_prune"]
+        assert prune
+        # the tag the Engine's prune gate looks for
+        assert prune[0]["evidence"] == "disk_threshold"
         assert any("disk" in w for w in warns)
 
     def test_disk_under_threshold_no_prune(self, base_config):
@@ -824,6 +827,39 @@ class TestGpuDriftActions:
         msgs = [m for m, _ in sent]
         assert msgs and "NOT applied" in msgs[0] and "killed pid" not in msgs[0]
         assert "gpu kill disabled" in msgs[0]
+
+
+class TestPruneEvidenceGate:
+    """`docker_prune` ignores its target and runs `docker system prune -af` on the whole
+    host. 2026-10-27: the LLM read "Dockhand orphan: clamav not in any stack" and proposed
+    `docker_prune`/`clamav` at conf 0.95, and the engine pruned every unused image + the
+    build cache. Only the deterministic disk rule may trigger it."""
+
+    def test_llm_only_prune_is_blocked(self, base_config):
+        base_config["actions"]["allow_prune"] = True      # even with prune enabled
+        e = A.Engine(False, prune_corroborated=False)
+        rec = e.dispatch("docker_prune", "clamav", "Orphaned container, no active services")
+        assert rec["state"] == "blocked"
+        assert rec["reason"] == "blocked_no_prune_evidence"
+        assert not e.executed
+
+    def test_disk_rule_evidence_allows_prune(self, base_config):
+        base_config["actions"]["allow_prune"] = True
+        e = A.Engine(False, prune_corroborated=True)
+        assert e.dispatch("docker_prune", "", "disk 92% > 85%")["state"] == "executed"
+
+    def test_unsupplied_gate_stays_permissive(self, base_config):
+        # a directly constructed Engine (unit tests, ad-hoc runs) is not gated; main()
+        # always supplies the value, which is what protects the live pipeline
+        base_config["actions"]["allow_prune"] = True
+        e = A.Engine(False)
+        assert e.dispatch("docker_prune", "", "disk high")["state"] == "executed"
+
+    def test_allow_prune_false_is_the_brake(self, base_config):
+        base_config["actions"]["allow_prune"] = False
+        e = A.Engine(False, prune_corroborated=True)      # even with disk evidence
+        rec = e.dispatch("docker_prune", "", "disk 92% > 85%")
+        assert rec["state"] == "blocked" and rec["detail"] == "prune disabled"
 
 
 class TestOllamaGuard:

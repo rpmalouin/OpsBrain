@@ -233,10 +233,23 @@ keep running — and the dashboard ticker surfaces it as a *warn*.
   per 20% on this box). Do NOT revert to `1e-3`.
 - container restart loop → `docker restart` + notify
 - GPU mem > 90% with resident process → `gpu_kill` (needs `allow_gpu_kill: true`)
-- disk usage > 85% → `docker system prune -af` + notify (needs `allow_prune: true`)
+- disk usage > 85% → `docker system prune -af` + notify (needs `allow_prune: true` **and** the
+  rule's own `evidence: disk_threshold` tag — see the prune gate below)
 - Netdata active alarms → surfaced as warnings
 - **Qwen confidence < 0.6** → do nothing, log only
 - Safety: `restart_limit_per_run: 3` caps destructive restarts per cycle.
+- **`docker_prune` needs deterministic disk evidence (2026-10-27 incident, do not regress).** The
+  verb IGNORES its target and runs `docker system prune -af` on the whole host: every stopped
+  container, every unused image, the build cache. Its only guards were the manual-stop gate and
+  `allow_prune`, so the first cycle after the confidence floor stopped suppressing the LLM half, the
+  model read "Dockhand orphan: clamav not in any stack", proposed `docker_prune`/`clamav` at conf
+  0.95, and the host really pruned (3 dangling images + 32 build-cache objects, 2.426 GB, no tagged
+  image or stopped container lost that time). `deterministic_rules` now tags its prune with
+  `evidence: disk_threshold`, `main()` passes `prune_corroborated=` to `Engine`, and a prune without
+  it is blocked with `reason: blocked_no_prune_evidence` — the same shape as `gpu_kill`'s evidence
+  gate. `allow_prune` is ALSO set `false` as a standing brake; both must be lifted deliberately.
+  Generalisation worth keeping: a verb that ignores its `target` is fleet-wide, and model prose is
+  never evidence for one.
 
 ## Useful commands
 
@@ -255,7 +268,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `/usr/bin/python3 -m pytest` (**341 tests**, `tests/`). They cover
+   RUN THE TESTS: `/usr/bin/python3 -m pytest` (**345 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -901,7 +914,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`/usr/bin/python3 -m pytest` (or `-q`). **341 tests** across `tests/` covering:
+`/usr/bin/python3 -m pytest` (or `-q`). **345 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

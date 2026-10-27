@@ -75,6 +75,17 @@ milestone).
   named `netdata` can never hold macmon data.
 
 ### Fixed
+- **`docker_prune` can no longer be triggered by model prose.** The verb ignores its `target` and
+  runs `docker system prune -af` on the whole host — every stopped container, every unused image,
+  the build cache — and its only guards were the manual-stop gate and `actions.allow_prune`. The
+  first cycle after the confidence floor stopped suppressing the LLM half (2026-10-27 13:55), the
+  reasoner read *"Dockhand orphan: clamav not in any stack"*, proposed `docker_prune` target
+  `clamav` at confidence 0.95, and the host pruned for real: 3 dangling images + 32 build-cache
+  objects, 2.426 GB reclaimed, no tagged image and no stopped container lost that time. The
+  deterministic disk-threshold rule now tags its prune with `evidence: disk_threshold`, `main()`
+  passes `prune_corroborated=` to the `Engine`, and a prune without that evidence is blocked with
+  `blocked_no_prune_evidence` — the same shape as the `gpu_kill` evidence gate. `allow_prune` is
+  also set to `false` as a standing brake; lifting either one is a deliberate act. +4 tests.
 - **GPU-drift alerts no longer fire on the reasoner's own invented flags.** `gpu_drift_actions`
   unions the LLM's `gpu_drift` list with the collector's deterministic `drift_flags`, and only
   `stuck_process` was gated on the detector — so the four notify-only flags (`vram_drift`,
@@ -356,6 +367,9 @@ milestone).
   sitting next to ollama is still tracked and killed as before. +3 tests (101 total).
 
 ### Changed
+- **`actions.allow_prune: false`** as a standing brake until the prune evidence gate has run in
+  production for a while. `docker system prune -af` is fleet-wide, and the disk threshold (85 %;
+  this host sits at 25 %) is the only thing that should ever reach it.
 - **The prompt defines `confidence` instead of showing it.** `reasoner/prompt.txt` carried the
   output template with a literal `"confidence": 0.0` and no definition of the field, so the 7B
   copied the literal into every decision: from the `qwen2.5-7b-128k` swap onward every cycle sat

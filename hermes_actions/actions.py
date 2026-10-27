@@ -132,7 +132,7 @@ class Engine:
     """Per-run executor with safety gates."""
 
     def __init__(self, dry_run, manual_stops=None, protected_stopped=None, storming=None,
-                 gpu_kill_corroborated=None):
+                 gpu_kill_corroborated=None, prune_corroborated=None):
         self.dry_run = dry_run
         self.cap = int(Cfg.get("actions.restart_limit_per_run", 3))
         self.used = 0
@@ -154,6 +154,14 @@ class Engine:
         # supplied" (unit tests constructing an Engine directly stay permissive —
         # the allow_gpu_kill gate still applies).
         self.gpu_kill_corroborated = gpu_kill_corroborated
+        # Does the DETERMINISTIC disk-threshold rule fire this cycle? `docker_prune`
+        # ignores its target and runs `docker system prune -af` on the whole host —
+        # every stopped container, every unused image, the build cache — so a proposal
+        # made from model prose must not reach it. Measured 2026-10-27: the reasoner
+        # read "Dockhand orphan: clamav not in any stack" and proposed
+        # `docker_prune`/`clamav` at conf 0.95; the engine pruned the host. None means
+        # "not supplied" (a directly constructed Engine stays permissive).
+        self.prune_corroborated = prune_corroborated
 
     def _rec(self, verb, target, reason):
         return {"verb": verb, "target": target, "reason": reason}
@@ -267,6 +275,17 @@ class Engine:
             self.executed.append(rec)
             return rec
         if verb == "docker_prune":
+            # A prune must rest on the deterministic disk-threshold rule: it is
+            # fleet-wide, ignores `target`, and deletes stopped containers + unused
+            # images + the build cache. An LLM proposal (typically reading an orphan
+            # notice as "prune this") is not evidence of disk pressure.
+            if self.prune_corroborated is False:
+                rec["state"] = "blocked"
+                rec["reason"] = "blocked_no_prune_evidence"
+                rec["detail"] = ("disk usage did not cross the deterministic threshold "
+                                 "this cycle (LLM-only proposal)")
+                self.blocked.append(rec)
+                return rec
             # HARD INVARIANT: `docker system prune -af` deletes stopped containers,
             # including manually-stopped (protected) ones. Docker prune has no
             # per-name exclusion, so block when any protected container is stopped.
@@ -430,7 +449,10 @@ def deterministic_rules(coll, st, baseline):
     except (TypeError, ValueError):
         disk = None
     if disk is not None and disk > disk_th:
-        rules.append({"type": "docker_prune", "target": "", "reason": f"disk {disk:.0f}% > {disk_th:.0f}%"})
+        # `evidence` is what the Engine's prune gate looks for: without it a
+        # `docker_prune` is an LLM proposal and is blocked (blocked_no_prune_evidence).
+        rules.append({"type": "docker_prune", "target": "", "evidence": "disk_threshold",
+                      "reason": f"disk {disk:.0f}% > {disk_th:.0f}%"})
         warnings.append(f"disk usage {disk:.0f}% over {disk_th:.0f}% threshold")
 
     return rules, warnings
@@ -993,7 +1015,10 @@ def main():
 
     engine = Engine(dry, manual_stops=reg, protected_stopped=protected_stopped,
                     storming=storming,
-                    gpu_kill_corroborated=stuck_process_corroborated(coll))
+                    gpu_kill_corroborated=stuck_process_corroborated(coll),
+                    prune_corroborated=any(a.get("type") == "docker_prune"
+                                           and a.get("evidence") == "disk_threshold"
+                                           for a in rule_actions))
 
     if conf >= floor:
         # Qwen's actions, minus any container-CPU fault claim the deterministic

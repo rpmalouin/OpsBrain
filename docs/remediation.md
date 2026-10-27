@@ -38,6 +38,11 @@
   (`gpu_drift.resident_containers`, e.g. docling-serve) and ollama's `llama-server` are never
   kill targets, and a drift notification now carries the measurement
   (`GPU drift flag: vram_drift (vram 9517 MB (was 842, +8675))`).
+- **`docker_prune` needs the deterministic disk rule** — the verb ignores its target and runs
+  `docker system prune -af` (every stopped container, every unused image, the build cache), so a
+  proposal that does not carry the disk rule's `evidence: disk_threshold` tag is blocked with
+  `blocked_no_prune_evidence`. `actions.allow_prune` is a second, independent switch and now sits
+  at `false`.
 - **A container-CPU fault claim needs the sustained rule** — `stats.cpu_percent` is a single
   instantaneous sample, so an LLM notice naming a container with high CPU is dropped unless
   the deterministic sustained-CPU rule (`cpu_restart_threshold_percent` for

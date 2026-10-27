@@ -518,6 +518,87 @@ class TestGpuDriftCollector:
         assert C.resident_container_pids(None) == set()
 
 
+# ------------------------------------------------------------------ GPU drift (two cards)
+def _cards(*specs):
+    """Build the GPU list collect_gpu would emit: (used, total, util, temp, power, name, uuid)."""
+    out = []
+    for i, s in enumerate(specs):
+        used, total, util, temp, power, name, uuid = (list(s) + [None] * 7)[:7]
+        out.append({"index": i, "name": name or "GPU%d" % i,
+                    "uuid": uuid if uuid is not None else "GPU-uuid-%d" % i,
+                    "mem_used_mb": used, "mem_total_mb": total,
+                    "util_gpu_percent": util, "temp_c": temp, "power_w": power})
+    return out
+
+
+class TestGpuDriftMultiGpu:
+    """dockerVM has two cards (5070 Ti 16303 MiB + 3060 12288 MiB). Before this, only
+    index 0 was evaluated, so the second card could sit at 100% for hours unseen."""
+
+    def test_second_gpu_gets_its_own_baseline(self, base_config):
+        gpus = _cards((500, 16303, 5, 40, 15, "GPU0", "GPU-aaa"),
+                      (300, 12288, 5, 40, 10, "GPU1", "GPU-bbb"))
+        flags, newb = C.evaluate_gpu_drift(gpus, _procs(), {}, {"gpu_drift": _drift_cfg()})
+        assert flags == []
+        assert set(newb["per_gpu"]) == {"0", "1"}
+        assert newb["per_gpu"]["0"]["last_vram"] == 500
+        assert newb["per_gpu"]["1"]["last_vram"] == 300
+        assert newb["per_gpu"]["1"]["gpu_name"] == "GPU1"
+        # top level still describes GPU 0, unchanged shape
+        assert newb["last_vram"] == 500 and newb["gpu_name"] == "GPU0"
+
+    def test_second_gpu_flags_are_suffixed(self, base_config):
+        gpus = _cards((500, 16303, 5, 40, 15, "GPU0", "GPU-aaa"),
+                      (12000, 12288, 5, 40, 10, "GPU1", "GPU-bbb"))   # 97% of the 3060
+        flags, _ = C.evaluate_gpu_drift(gpus, _procs(), {}, {"gpu_drift": _drift_cfg()})
+        assert "vram_overload:gpu1" in flags
+        assert "vram_overload" not in flags      # primary stays clean
+        assert "vram_overload:gpu0" not in flags
+
+    def test_primary_flag_stays_bare_with_two_cards(self, base_config):
+        gpus = _cards((16000, 16303, 5, 40, 15, "GPU0", "GPU-aaa"),
+                      (300, 12288, 5, 40, 10, "GPU1", "GPU-bbb"))
+        flags, _ = C.evaluate_gpu_drift(gpus, _procs(), {}, {"gpu_drift": _drift_cfg()})
+        assert "vram_overload" in flags
+        assert not [f for f in flags if ":" in f]
+
+    def test_per_gpu_baseline_survives_second_cycle(self, base_config):
+        gpus = _cards((500, 16303, 5, 40, 15, "GPU0", "GPU-aaa"),
+                      (1000, 12288, 5, 40, 10, "GPU1", "GPU-bbb"))
+        _, b1 = C.evaluate_gpu_drift(gpus, _procs(), {}, {"gpu_drift": _drift_cfg()})
+        gpus2 = _cards((500, 16303, 5, 40, 15, "GPU0", "GPU-aaa"),
+                       (1000 + 400, 12288, 5, 40, 10, "GPU1", "GPU-bbb"))  # +400 > creep
+        flags, b2 = C.evaluate_gpu_drift(gpus2, _procs(), b1, {"gpu_drift": _drift_cfg()})
+        assert "vram_drift:gpu1" in flags
+        assert "vram_drift" not in flags
+        assert b2["per_gpu"]["1"]["last_vram"] == 1400
+        assert b2["per_gpu"]["0"]["last_vram"] == 500
+
+    def test_process_attributed_by_gpu_uuid(self, base_config):
+        # a busy foreign process living on the SECOND card must not be tracked as the
+        # primary card's pid (and vice versa).
+        gpus = _cards((500, 16303, 5, 40, 15, "GPU0", "GPU-aaa"),
+                      (9000, 12288, 95, 60, 150, "GPU1", "GPU-bbb"))
+        procs = [{"pid": "777", "name": "ffmpeg", "mem_mb": "8000", "gpu_uuid": "GPU-bbb"}]
+        prev = {"per_gpu": {"0": {"last_vram": 500, "last_pid": "0", "cycles_with_same_pid": 0},
+                            "1": {"last_vram": 9000, "last_pid": "777", "last_power": 150,
+                                  "last_temp": 60, "cycles_with_same_pid": 4}}}
+        flags, newb = C.evaluate_gpu_drift(gpus, procs, prev, {"gpu_drift": _drift_cfg()})
+        assert newb["per_gpu"]["0"]["last_pid"] == "0"      # not attributed to GPU0
+        assert newb["per_gpu"]["1"]["last_pid"] == "777"
+        assert newb["per_gpu"]["1"]["cycles_with_same_pid"] == 5
+        assert "stuck_process:gpu1" in flags
+
+    def test_no_gpu_uuid_rows_still_work(self, base_config):
+        # collect_gpu on an older nvidia-smi (no gpu_uuid column) must behave as before.
+        gpus = _cards((500, 16303, 5, 40, 15, "GPU0", ""),
+                      (300, 12288, 5, 40, 10, "GPU1", ""))
+        procs = [{"pid": "777", "name": "ffmpeg", "mem_mb": "300"}]
+        flags, newb = C.evaluate_gpu_drift(gpus, procs, {}, {"gpu_drift": _drift_cfg()})
+        assert newb["last_pid"] == "777"
+        assert set(newb["per_gpu"]) == {"0", "1"}
+
+
 # --------------------------------------------------------------------------- GPU drift (actions)
 def _drift_coll(flags=None, gpu=None, procs=None):
     return {"gpu": {"drift_flags": flags or [], "gpus": gpu or _gpu(), "compute_processes": procs or _procs()},

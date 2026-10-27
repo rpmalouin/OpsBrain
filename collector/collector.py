@@ -506,7 +506,7 @@ def update_manual_stops(containers, cfg):
 def collect_gpu(cfg):
     """Query nvidia-smi (now incl. power draw), track a persistent baseline, and
     compute deterministic GPU-drift flags against that baseline."""
-    gp = run(["nvidia-smi", "--query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,name",
+    gp = run(["nvidia-smi", "--query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,name,uuid",
               "--format=csv,noheader,nounits"])
     gpus = []
     if gp.get("ok"):
@@ -514,6 +514,7 @@ def collect_gpu(cfg):
             parts = [p.strip() for p in line.split(",")]
             if len(parts) >= 6:
                 gpus.append({"index": idx, "name": parts[5],
+                             "uuid": parts[6] if len(parts) >= 7 else "",
                              "mem_used_mb": _to_int(parts[0]),
                              "mem_total_mb": _to_int(parts[1]),
                              "util_gpu_percent": _to_float(parts[2]),
@@ -527,14 +528,15 @@ def collect_gpu(cfg):
     if not gpus:
         gpu_error = ((gp.get("err") or gp.get("out") or "").strip()[:300]
                      or "nvidia-smi reported no GPUs")
-    procs = run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory",
+    procs = run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory,gpu_uuid",
                  "--format=csv,noheader,nounits"])
     processes = []
     if procs.get("ok"):
         for line in procs["out"].strip().splitlines():
             p = [x.strip() for x in line.split(",")]
             if len(p) >= 3:
-                processes.append({"pid": p[0], "name": p[1], "mem_mb": p[2]})
+                processes.append({"pid": p[0], "name": p[1], "mem_mb": p[2],
+                                  "gpu_uuid": p[3] if len(p) >= 4 else ""})
 
     # 1) load existing baseline
     baseline_path = _gpu_baseline_path()
@@ -630,14 +632,63 @@ def resident_container_pids(cfg):
 
 
 def evaluate_gpu_drift(gpus, processes, prev_baseline, cfg, resident_pids=None):
-    """Deterministic GPU-drift evaluation. Pure function (testable).
+    """Deterministic GPU-drift evaluation across EVERY GPU. Pure function (testable).
 
-    Returns (flags:list[str], new_baseline:dict) using the documented baseline shape.
-    Operates on the project's primary GPU (index 0). `resident_pids` is the set of
-    PIDs (strings) belonging to configured permanent GPU residents — model servers
-    such as docling-serve — which are never stuck candidates."""
+    Returns (flags:list[str], new_baseline:dict).
+
+    Per-GPU state lives under ``baseline["per_gpu"]["<index>"]`` (same inner shape as the
+    flat keys), so the second card has its own tracked VRAM/pid/power/temp instead of
+    being invisible. The TOP-LEVEL keys remain the baseline of GPU 0 in exactly the old
+    shape, so every existing consumer (reasoner prompt, actions, federation count, UI)
+    reads what it always read.
+
+    Flag wording is chosen so nothing changes behaviour silently: GPU 0's flags stay bare
+    (``vram_drift`` and friends, as before). Any other GPU's flags carry a ``:gpu<N>``
+    suffix (``vram_overload:gpu1``) — visible in the collector JSON and the UI, but
+    deliberately NOT matched by the rules that act on the primary card, so an action has
+    to opt in before it acts on a second-GPU signal.
+
+    ``resident_pids`` is the set of PIDs (strings) belonging to configured permanent GPU
+    residents — model servers such as docling-serve — which are never stuck candidates.
+    """
     resident_pids = {str(p) for p in (resident_pids or ())}
     dr = Cfg.get("gpu_drift", {}) if cfg is None else (cfg.get("gpu_drift", {}) or {})
+
+    if not gpus:
+        return [], _reset_baseline(prev_baseline)
+
+    per_gpu_prev = prev_baseline.get("per_gpu") if isinstance(prev_baseline, dict) else None
+    per_gpu_out = {}
+    flags = []
+    primary = None
+    for i, g in enumerate(gpus):
+        key = str(g.get("index", i))
+        prev = {}
+        if isinstance(per_gpu_prev, dict) and isinstance(per_gpu_prev.get(key), dict):
+            prev = per_gpu_prev[key]           # migrated / already multi-GPU baseline
+        elif i == 0:
+            prev = prev_baseline or {}         # pre-migration flat baseline = GPU 0
+        # Attribute compute apps to the card that actually holds them. A process row with
+        # no gpu_uuid (older nvidia-smi, or a caller that built rows by hand) is treated as
+        # belonging to every card, which is the old behaviour.
+        g_procs = [p for p in (processes or [])
+                   if not p.get("gpu_uuid") or p.get("gpu_uuid") == g.get("uuid")]
+        gflags, inner = _evaluate_one_gpu(g, g_procs, prev, dr, resident_pids)
+        if i == 0:
+            primary = inner
+            flags.extend(gflags)
+        else:
+            flags.extend("%s:gpu%s" % (f, key) for f in gflags)
+        per_gpu_out[key] = inner
+
+    new = dict(primary if primary is not None else _reset_baseline(prev_baseline))
+    new["per_gpu"] = per_gpu_out
+    return flags, new
+
+
+def _evaluate_one_gpu(g, processes, prev_baseline, dr, resident_pids):
+    """Drift rules for a single GPU. Contract and thresholds are unchanged from the
+    single-GPU era; only the caller (evaluate_gpu_drift) is new."""
     vram_creep = int(dr.get("vram_creep_mb", 250))
     vram_max_pct = float(dr.get("vram_max_percent", 90))
     stuck_cycles = int(dr.get("stuck_pid_cycles", 5))
@@ -645,9 +696,6 @@ def evaluate_gpu_drift(gpus, processes, prev_baseline, cfg, resident_pids=None):
     power_idle = float(dr.get("power_idle_max_watts", 40))
     temp_idle = float(dr.get("temp_idle_max_c", 55))
 
-    if not gpus:
-        return [], _reset_baseline(prev_baseline)
-    g = gpus[0]
     vram = g.get("mem_used_mb", 0)
     total = g.get("mem_total_mb", 1) or 1
     util = g.get("util_gpu_percent", 0)

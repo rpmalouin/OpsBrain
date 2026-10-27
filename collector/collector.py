@@ -551,7 +551,7 @@ def collect_gpu(cfg):
     write_json(baseline_path, baseline)
 
     return {"gpus": gpus, "compute_processes": processes,
-            "baseline": baseline, "drift_flags": flags,
+            "baseline": baseline, "baseline_prev": b, "drift_flags": flags,
             "resident_pids": sorted(resident_pids),
             "available": bool(gpus), "error": gpu_error}
 

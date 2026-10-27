@@ -75,6 +75,20 @@ milestone).
   named `netdata` can never hold macmon data.
 
 ### Fixed
+- **GPU-drift alerts no longer fire on the reasoner's own invented flags.** `gpu_drift_actions`
+  unions the LLM's `gpu_drift` list with the collector's deterministic `drift_flags`, and only
+  `stuck_process` was gated on the detector — so the four notify-only flags (`vram_drift`,
+  `power_drift`, `temp_drift`, `vram_overload`) reached both `notify(..., "gpu_drift")` and
+  `record_gpu_event` verbatim, and `gpu_drift` is a CRITICAL category for the Telegram consumer.
+  The 7B re-derived flags from the digest's numbers using thresholds it invented (*"8.93 W, which
+  exceeds the idle max of 8.5 W"* against a configured 40 W; *"842 MB, which is 5.15 % higher than
+  the baseline of 800 MB"* against a 250 MB creep rule), and flagged an idle second card at 4 MB.
+  Measured over 196 events / 249 flag occurrences: `vram_overload` 60/60 unjustifiable on their own
+  recorded numbers, `power_drift` 33/48, `temp_drift` 13/14; **31 of the 41 Telegram alerts in the
+  preceding three weeks were the model's claim alone**. `gpu_flags_corroborated()` now drops an
+  uncorroborated flag (log only, no notify, no event) — the same rule `stuck_process` has used
+  since the 2026-10-14 incident. The confidence floor never covered this path: it gates
+  `qwen["actions"]`, not its flags. +3 tests.
 - **A single instantaneous CPU sample was reported as a fault.** `stats.cpu_percent` is one
   `docker stats` reading per cycle, with no duration attached, and Qwen turned a 634.28 % sample of
   the ollama container — a 20–45 s inference burst driven by Hindsight's memory extraction — into
@@ -342,6 +356,22 @@ milestone).
   sitting next to ollama is still tracked and killed as before. +3 tests (101 total).
 
 ### Changed
+- **The prompt defines `confidence` instead of showing it.** `reasoner/prompt.txt` carried the
+  output template with a literal `"confidence": 0.0` and no definition of the field, so the 7B
+  copied the literal into every decision: from the `qwen2.5-7b-128k` swap onward every cycle sat
+  below the 0.6 floor (1-3/day before it, then 24/24) and the LLM half was inert while
+  `reasoner.fresh` still read true. The template now shows an example value plus one sentence
+  defining the field as the model's own certainty (0.0-1.0, "a healthy system with no findings is
+  HIGH confidence"). The GPU section was rewritten the same way: the state's `drift_flags` IS the
+  verdict and `gpu_drift` must be a copy of it — the rules are described so a warning cannot
+  contradict a flag, and the model is told not to compute drift itself. The stale "You are Qwen
+  3:14B" self-identity is gone (that tag is not installed here). Measured after the change on live
+  data: confidence 0.95, `gpu_drift` exactly the detector's list.
+- **A drift notification now carries its measurement.** `GPU drift flag: vram_drift` said nothing
+  actionable; it now reads `GPU drift flag: vram_drift (vram 9517 MB (was 842, +8675))`, via a new
+  `gpu.baseline_prev` block in the collector (the `gpu.baseline` block is already advanced to the
+  current cycle, so the "was" figure had nowhere else to come from). The Telegram consumer cools a
+  bare drift flag down from 6 h to once per flag per day.
 - **`ollama.options.num_ctx` 32768 → 131072.** The old cap existed because the single 16 GB card
   could not hold model + KV past 40960; the host now has two cards (27.1 GiB pool) and the 7B at
   131072 measures 8.8 GB / `100% GPU` / 153 tok/s. The reason to pin it is consistency: every other

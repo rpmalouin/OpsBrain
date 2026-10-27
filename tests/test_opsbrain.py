@@ -699,6 +699,54 @@ class TestGpuDriftActions:
         events, rem = A.gpu_drift_actions(coll, {"gpu_drift": []}, 0.9, e, {})
         assert events and "vram_drift" in events[0]["flags"]
 
+    # ---- LLM-only NOTIFY-ONLY flags (2026-10-27 Telegram spam) ----
+    def test_qwen_only_notify_flags_are_dropped(self, base_config):
+        """The 7B asserted drift flags from the digest's numbers with thresholds it
+        invented ("8.93 W exceeds the idle max of 8.5 W" against a 40 W rule); every one
+        became a critical alert + a drift event. A flag the deterministic detector did
+        not raise must not notify and must not be recorded."""
+        sent = []
+        orig = A.notify
+        A.notify = lambda m, c=None: sent.append((m, c))
+        try:
+            e = A.Engine(False)
+            coll = _drift_coll(flags=[], gpu=_gpu(mem_used=842, util=0, temp=29, power=9))
+            events, rem = A.gpu_drift_actions(
+                coll, {"gpu_drift": ["vram_drift", "power_drift", "temp_drift", "vram_overload"]},
+                0.0, e, {})
+        finally:
+            A.notify = orig
+        assert events == [] and rem == []
+        assert sent == []
+
+    def test_qwen_flag_cannot_widen_a_corroborated_one(self, base_config):
+        # collector flagged power_drift; the model adds three more -> only the real one
+        # is notified, and the event logs only the corroborated flag set.
+        sent = []
+        orig = A.notify
+        A.notify = lambda m, c=None: sent.append((m, c))
+        try:
+            e = A.Engine(False)
+            coll = _drift_coll(flags=["power_drift"], gpu=_gpu(mem_used=842, util=0, temp=29, power=9))
+            events, rem = A.gpu_drift_actions(
+                coll, {"gpu_drift": ["vram_drift", "temp_drift", "vram_overload"]}, 0.0, e, {})
+        finally:
+            A.notify = orig
+        assert len(events) == 1 and events[0]["flags"] == ["power_drift"]
+        msgs = [m for m, _ in sent]
+        assert msgs == ["GPU drift flag: power_drift (9 W while util 0%)"]  # measurement, not a bare word
+
+    def test_flag_measure_reports_the_move(self, base_config):
+        # a bare flag name is not actionable: vram_drift must say FROM WHAT.
+        coll = _drift_coll(flags=["vram_drift"], gpu=_gpu(mem_used=9517, util=0, temp=37, power=11))
+        coll["gpu"]["baseline_prev"] = {"last_vram": 842}
+        assert A._flag_measure(coll, "vram_drift") == "vram 9517 MB (was 842, +8675)"
+        # no previous baseline (first cycle, or a reset) -> current value only, no crash
+        assert A._flag_measure(coll, "vram_drift").startswith("vram 9517")
+        coll["gpu"].pop("baseline_prev")
+        assert A._flag_measure(coll, "vram_drift") == "vram 9517 MB"
+        assert A._flag_measure(coll, "temp_drift") == "37 C while util 0%"
+
     # ---- the LLM-only `stuck_process` incident (2026-10-14): docling-serve ----
     def _resident_coll(self, flags=None):
         """Live shape that produced the false alarm: a resident model server holding

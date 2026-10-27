@@ -28,11 +28,16 @@
   logs.
 - The **ollama restart hard-block** — the engine never restarts or kills Ollama, even if
   allow-listed (it is the reasoning backend).
-- **`gpu_kill` needs deterministic evidence** — the collector's own `stuck_process` flag
-  (same PID for `stuck_pid_cycles` **and** util above `util_threshold`). A kill proposed by
-  the LLM alone is blocked with `blocked_no_stuck_evidence`, and the drift path drops the
-  flag without notifying; configured permanent GPU residents (`gpu_drift.resident_containers`,
-  e.g. docling-serve) and ollama's `llama-server` are never kill targets.
+- **Every GPU-drift flag needs deterministic evidence** — the collector's own `drift_flags`.
+  A kill needs `stuck_process` (same PID for `stuck_pid_cycles` **and** util above
+  `util_threshold`): an LLM-only kill is blocked with `blocked_no_stuck_evidence`, and the
+  drift path drops the flag without notifying. The four notify-only flags
+  (`vram_drift` / `power_drift` / `temp_drift` / `vram_overload`) are gated the same way — a
+  flag the LLM asserts on its own notifies nothing and records no event, so the reasoner
+  relays the detector's verdict instead of re-deciding it. Configured permanent GPU residents
+  (`gpu_drift.resident_containers`, e.g. docling-serve) and ollama's `llama-server` are never
+  kill targets, and a drift notification now carries the measurement
+  (`GPU drift flag: vram_drift (vram 9517 MB (was 842, +8675))`).
 - **A container-CPU fault claim needs the sustained rule** — `stats.cpu_percent` is a single
   instantaneous sample, so an LLM notice naming a container with high CPU is dropped unless
   the deterministic sustained-CPU rule (`cpu_restart_threshold_percent` for

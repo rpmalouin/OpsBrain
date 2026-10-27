@@ -96,6 +96,24 @@ container flags (`OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KV_CACHE_TYPE=q8_0`) remove
 The model often keys actions as `"action"` rather than `"type"`; `sanitize()` accepts both
 and drops any verb outside the allow-list.
 
+## The decision contract: the detector decides, the model relays
+
+`reasoner/prompt.txt` states two things the model must not decide for itself, because it has no
+baseline and no thresholds:
+
+- **`confidence` is the model's own certainty, 0.0-1.0.** The template used to show the field as
+  a literal `"confidence": 0.0` with no definition, and the 7B copied that literal into every
+  answer — every cycle then sat below `actions.qwen_confidence_floor` and the LLM half was inert
+  while `reasoner.fresh` still read true (measured: 1-3 below-floor cycles/day before the
+  `qwen2.5-7b-128k` swap, then 24/24). A template value is an instruction: label it an example and
+  say what the field means.
+- **`gpu_drift` must be a copy of the state's `drift_flags`.** The flags come from the collector's
+  deterministic detector; a model that re-derives them invents the thresholds (*"8.93 W exceeds
+  the idle max of 8.5 W"* against a configured 40 W) and triggers critical alerts. Since
+  2026-10-27 the actions layer corroborates every flag on `drift_flags` anyway
+  (docs/remediation.md), so an invented one is dropped — the prompt rule keeps the model's prose
+  consistent with what actually fired.
+
 ## Freshness guard (a stale decision is never replayed)
 
 `logs/reasoner_result.json` records the collector snapshot `timestamp` the decision was

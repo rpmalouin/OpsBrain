@@ -95,6 +95,18 @@ object with a balanced-brace regex. `reasoner.py` sets `think` from config
 (`ollama.think: true`) and does not pass `format`. This was the hardest bug on the build —
 leave the call shape alone.
 
+**The prompt's output TEMPLATE is an instruction the model obeys literally — never put an
+answer in it.** `reasoner/prompt.txt` showed the confident answer's shape as
+`"confidence": 0.0` and defined the field nowhere, so the 7B copied the literal into every
+response: from the `qwen2.5-7b-128k` swap (2026-10-16) to 2026-10-27 every cycle was
+below the 0.6 floor (1-3/day before the swap, then 14 -> 24/24) and the LLM half of the
+pipeline was inert while `reasoner.fresh` still read true. The template now carries an
+explicit example value plus one sentence defining `confidence` as the model's own certainty
+0.0-1.0, "a healthy system with no findings is HIGH confidence". Same class of defect as the
+drift flags below: the prompt must say what the FIELD MEANS and let the model answer, and any
+numeric example has to be labelled an example. Also drop stale self-identity ("You are Qwen
+3:14B") from the prompt — it names a tag this host no longer runs.
+
 Other calibration notes:
 - `num_ctx` is **131072** in config (32768 until 2026-10-22, 65536 before 2026-09-16 — see
   "`num_ctx` ceiling" below); a 25k-char dump made earlier versions collapse, so the
@@ -243,7 +255,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `/usr/bin/python3 -m pytest` (**338 tests**, `tests/`). They cover
+   RUN THE TESTS: `/usr/bin/python3 -m pytest` (**341 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -851,6 +863,28 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
   dispatch record's `state`: `killed pid X` only for `executed`, otherwise
   `kill pid X NOT applied (<detail>)`. Announcing an intent as an outcome is what made this
   incident read as a self-inflicted service kill.
+- **ALL FIVE flags are corroborated by the detector, not just `stuck_process` (2026-10-27
+  spam incident, do not regress).** `gpu_drift_actions` unions `qwen["gpu_drift"]` with the
+  collector's `drift_flags`, and until this fix only `stuck_process` was gated — so the four
+  notify-only flags the LLM asserted went straight to `notify(..., "gpu_drift")` AND
+  `record_gpu_event`. The 7B re-derives flags from the digest's numbers with thresholds it
+  invents ("8.93 W, which exceeds the idle max of 8.5 W" against a configured 40 W; "842 MB,
+  which is 5.15 % higher than the baseline of 800 MB" against a 250 MB creep rule), and it
+  flags an idle 3060 at 4 MB. Measured over 196 events / 249 flag occurrences: vram_overload
+  60/60 unjustifiable on their own recorded numbers, power_drift 33/48, temp_drift 13/14;
+  **31 of the 41 Telegram alerts since 2026-10-20 were the model's claim alone**. The floor
+  does not help — it gates `qwen["actions"]`, not the flags. Now `gpu_flags_corroborated()`
+  drops an uncorroborated notify-only flag (log line, no notify, no event), and the
+  notification carries the measurement (`_flag_measure`, e.g. `vram_drift (vram 9517 MB
+  (was 842, +8675))`) instead of a bare word. The previous cycle's values come from the new
+  `gpu.baseline_prev` block — `gpu.baseline` is already advanced to this cycle.
+  **Triage rule:** an event record holds the same numbers the detector used, so a flag whose
+  own record contradicts its rule (`power_w <= power_idle_max_watts`, `temp_c <=
+  temp_idle_max_c`, vram below `vram_max_percent`) can only have come from the LLM.
+- **What still fires legitimately:** a real `power_drift` at 40-44 W when a model sits loaded
+  and idle across the sample (threshold is 40 W; the same card idles at ~9 W empty and pulls
+  200-276 W under real load), and one `vram_drift` per model load (documented below). The
+  Telegram consumer now cools a bare drift flag down to once per flag per day.
 - `reasoner` prompt includes the same five rules + `"gpu_drift": []` in the output schema;
   `sanitize()` keeps only known flags (constant `GPU_DRIFT_FLAGS`).
 - `actions.gpu_drift_actions(coll, qwen, conf, engine, st)` unions Qwen's `gpu_drift` with
@@ -867,7 +901,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`/usr/bin/python3 -m pytest` (or `-q`). **338 tests** across `tests/` covering:
+`/usr/bin/python3 -m pytest` (or `-q`). **341 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

@@ -627,12 +627,69 @@ def update_gpu_daily_stats(gpu, drift_event_count, remediations, stuck_pids=None
     return stats
 
 
+def gpu_flags_corroborated(coll):
+    """The collector's DETERMINISTIC drift flags — the only authority for drift claims.
+
+    `gpu_drift_actions` used to union the reasoner's own `gpu_drift` list with this and
+    notify on the union, so every flag the LLM asserted became a critical alert. The 7B
+    re-derives flags from the digest's raw numbers with thresholds it invents (measured
+    2026-10-27: "power draw is 8.93 W, which exceeds the idle max of 8.5 W" against a
+    configured 40 W; "842 MB, which is 5.15% higher than the baseline of 800 MB" against
+    a 250 MB creep rule and a real baseline of 842) — 106 of 249 event flag occurrences
+    were impossible on their own recorded numbers, and 31 of 41 Telegram alerts in three
+    weeks were the model's claim alone. Same rule as `stuck_process`: the detector
+    decides, the model may only relay it.
+    """
+    try:
+        return {str(f) for f in (coll.get("gpu", {}).get("drift_flags") or [])}
+    except Exception:
+        return set()
+
+
+def _flag_measure(coll, flag):
+    """The numbers behind a drift flag, so the alert is worth reading.
+
+    A bare "GPU drift flag: vram_drift" says nothing actionable; the point of the flag
+    is the size of the move, which needs the PREVIOUS baseline (`baseline_prev` — the
+    collector's `baseline` block is already advanced to this cycle's values).
+    """
+    g = (coll.get("gpu", {}).get("gpus") or [{}])[0]
+    prev = coll.get("gpu", {}).get("baseline_prev") or {}
+    used, total = g.get("mem_used_mb"), g.get("mem_total_mb")
+    util, temp, power = g.get("util_gpu_percent"), g.get("temp_c"), g.get("power_w")
+    if flag == "vram_drift":
+        was = prev.get("last_vram")
+        if was in (None, "", 0) or used is None:
+            return "vram %s MB" % used
+        try:
+            return "vram %s MB (was %s, +%s)" % (used, was, int(used) - int(was))
+        except (TypeError, ValueError):
+            return "vram %s MB (was %s)" % (used, was)
+    if flag == "vram_overload":
+        pct = ""
+        if used is not None and total:
+            try:
+                pct = ", %.0f%%" % (100.0 * float(used) / float(total))
+            except (TypeError, ValueError):
+                pct = ""
+        return "vram %s/%s MB%s" % (used, total, pct)
+    if flag == "power_drift":
+        return "%s W while util %s%%" % (power, util)
+    if flag == "temp_drift":
+        return "%s C while util %s%%" % (temp, util)
+    return ""
+
+
 def gpu_drift_actions(coll, qwen, conf, engine, st):
     """GPU-drift remediation per policy.
 
     - stuck_process + confidence>0.8  -> kill the GPU PID + notify
     - vram_drift | power_drift | temp_drift | vram_overload -> notify only
     - ollama is never restarted (enforced in Engine.dispatch).
+
+    EVERY flag must be corroborated by the collector's own `drift_flags`: the reasoner's
+    `gpu_drift` list is advisory and a flag that only the model asserts is logged and
+    dropped (no notify, no event) — see gpu_flags_corroborated().
 
     Returns (events logged this cycle, remediations applied)."""
     NOTIFY_ONLY = {"vram_drift", "power_drift", "temp_drift", "vram_overload"}
@@ -646,8 +703,21 @@ def gpu_drift_actions(coll, qwen, conf, engine, st):
     # drop unknown flags defensively
     flags = {f for f in flags if f in NOTIFY_ONLY | {"stuck_process"}}
 
+    # ...and drop anything the deterministic detector did not itself flag. Only
+    # `stuck_process` used to be gated; the four notify-only flags were not, which is
+    # how a healthy 842 MB / 9 W card produced hours of critical alerts. Note this also
+    # keeps the suffix rule honest: a second card's `vram_overload:gpu1` never reaches
+    # here, so a non-primary flag needs an explicit opt-in before it can act.
+    corroborated = gpu_flags_corroborated(coll)
+    llm_only = sorted(f for f in flags if f in NOTIFY_ONLY and f not in corroborated)
+    if llm_only:
+        log.info("dropping reasoner-only GPU drift flag(s) without deterministic evidence: "
+                 "%s (collector drift_flags=%s)", llm_only, sorted(corroborated))
+        flags -= set(llm_only)
+
     if not flags:
         return [], []
+
 
     gpu = (coll.get("gpu", {}).get("gpus") or [{}])[0]
     procs = coll.get("gpu", {}).get("compute_processes", []) or []
@@ -702,7 +772,8 @@ def gpu_drift_actions(coll, qwen, conf, engine, st):
                        f"-> notify only", "gpu_drift")
 
     for f in sorted(flags & NOTIFY_ONLY):
-        notify(f"GPU drift flag: {f}", "gpu_drift")
+        detail = _flag_measure(coll, f)
+        notify(f"GPU drift flag: {f}" + (f" ({detail})" if detail else ""), "gpu_drift")
         remediations.append({"verb": "notify", "target": f})
 
     if flags:  # all flags may have been dropped (e.g. ollama-owned stuck_process)

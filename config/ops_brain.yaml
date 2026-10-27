@@ -28,13 +28,15 @@ ollama:
                                # returns {} in this ollama for thinking models.
   options:                     # passed verbatim to Ollama /api/generate options
     temperature: 0.2
-    # num_ctx MUST stay <= 32768: at 40960 the model + KV cache needs ~16 GB, this 16 GB card
-    # cannot hold it, ollama spills ~8% of the layers to CPU and throughput collapses 74 -> 4
-    # tok/s, so the 120s call times out and the reasoner stage dies (rc=4) while actions keep
-    # replaying a stale decision doc. Measured 2026-09-16: 32768 => 14 GB, 100% GPU, 74 tok/s
-    # (1.8 GB VRAM spare); 16384 => 11 GB, 100% GPU. The digest is only ~7.4k chars (~2.5k
-    # tokens), so 32768 is a ~13x headroom ceiling, not a working limit.
-    num_ctx: 32768
+    # 2026-10-22 (dual-GPU work): 32768 -> 131072. The reason the old cap existed (this
+    # 16 GB card could not hold model+KV at 40960) is gone: the host now has TWO cards
+    # (5070 Ti 16 GB + 3060 12 GB, 27.1 GiB pool) and the 7B at 131072 measures 8.8 GB,
+    # 100% GPU, 153 tok/s. More importantly, EVERY other consumer (paperless-ngx, hindsight,
+    # paperless-gpt, open-webui) calls at 131072, and a different num_ctx re-sizes the
+    # runner: ollama unloads and reloads the model for this one hourly call, then reloads
+    # again at 128k for the next consumer. Matching the window removes that churn.
+    # The digest is only ~7.4k chars (~2.5k tokens), so 131072 is pure headroom here.
+    num_ctx: 131072
     keep_alive: 5m
 
 # --- Data sources ---

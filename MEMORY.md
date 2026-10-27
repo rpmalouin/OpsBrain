@@ -47,7 +47,9 @@ truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.
   the `/api/show` capability probe reports completion+tools only, so no `think` field is sent.
   Swapped from `qwen3:14b-64k` (thinking) → `qwen2.5-7b-65k` → `qwen2.5-7b-128k:latest`; the hourly
   decision went from ~48 s to ~3 s at the first swap and the 20k-token reasoning blocks that used to
-  hold the GPU are gone. `num_ctx` stays ≤ 32768 (see "`num_ctx` ceiling" below); only
+  hold the GPU are gone. `num_ctx` is **131072**, which is the window every other consumer on the
+  host already calls (see "`num_ctx` ceiling" below — the old 32768 cap died with the single-card
+  host); only
   config-named models are ever used — see "Model selection & the `think` gate" below.
 - **Capabilities live in this build:** GPU drift detection, confidence recovery,
   restart-impact + drift-decay metrics, **Manual Stop Protection (HARD INVARIANT)**,
@@ -94,8 +96,8 @@ object with a balanced-brace regex. `reasoner.py` sets `think` from config
 leave the call shape alone.
 
 Other calibration notes:
-- `num_ctx` is **32768** in config (was 65536 until 2026-09-16 — see "`num_ctx` ceiling"
-  below); a 25k-char dump made earlier versions collapse, so the
+- `num_ctx` is **131072** in config (32768 until 2026-10-22, 65536 before 2026-09-16 — see
+  "`num_ctx` ceiling" below); a 25k-char dump made earlier versions collapse, so the
   reasoner feeds Qwen a **compact risk digest** (`summarize_collector`) that only includes
   anomalies (restarting/exited/over-threshold containers, alarms, GPU, disk), not the full
   63-container fleet.
@@ -151,7 +153,14 @@ tok/s**, so the hourly call exceeded `ollama.timeout` (120 s), the reasoner stag
 and actions replayed the 2026-09-14 decision for ~2 days (`reasoner: {fresh: false}` every cycle).
 
 - Config was cut to **32768** (11 GB, 100% GPU) — the reasoner's digest is ~2.5k tokens, so this
-  is ~13x headroom. Do not raise it without re-measuring.
+  is ~13x headroom. That was the single-card ceiling; re-measure before changing a window.
+- **The cap is GONE as of the two-card host (2026-10-22: 32768 → 131072), and the reason is now
+  consistency, not fit.** The 7B at 131072 measures 8.8 GB at `100% GPU` / 153 tok/s on the
+  27.1 GiB pool, and EVERY other consumer (paperless-ngx, hindsight, paperless-gpt, open-webui)
+  calls at 131072. With `OLLAMA_NUM_PARALLEL=1` the runner loads at whatever `num_ctx` the LAST
+  caller asked for, so an hourly 32768 call re-sized and reloaded the model for itself and again
+  for the next 128k caller — pure churn. The digest is only ~2.5k tokens, so 131072 is pure
+  headroom here; verify the CONTEXT column of `docker exec ollama ollama ps` after a cycle.
 - The ollama container also gained `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0`
   (KV 6.5 GB → 3.4 GB), which removes any spill: 40960 now runs 100% GPU at 66-72 tok/s.
 - **The 40960 window cap does NOT move with the KV type** — ollama sizes it as if the KV were
@@ -234,7 +243,7 @@ python3 scheduler/scheduler.py --report      # generate today's report immediate
 3. Git: commit modularly (`git log` shows the pattern). `.gitignore` excludes `logs/` and
    `reports/` runtime output — do not commit those.
 4. If you touch `actions.py` allow-list/rules or `reasoner.py` sanitize/parse logic,
-   RUN THE TESTS: `python3 -m pytest` (**330 tests**, `tests/`). They cover
+   RUN THE TESTS: `/usr/bin/python3 -m pytest` (**338 tests**, `tests/`). They cover
    the exact decision-critical code (whitelist gate, deterministic rules, Qwen output
    sanitization, path/persistence) with mocked collector dicts — no live docker/GPU/Ollama
    needed. pytest + `pytest.ini` are in the repo.
@@ -786,12 +795,32 @@ ingests it.
 ## GPU drift detection
 
 Live in collector → reasoner → actions → report. Config under `gpu_drift:`:
-- `collector` queries nvidia-smi incl. **power.draw**, writes a persistent baseline to
-  `logs/gpu_baseline.json`, and computes deterministic `drift_flags` (primary GPU index 0):
+- `collector` queries nvidia-smi incl. **power.draw** and **uuid**, writes a persistent baseline to
+  `logs/gpu_baseline.json`, and computes deterministic `drift_flags`:
   `vram_drift` (> `vram_creep_mb` jump), `vram_overload` (> `vram_max_percent`),
   `stuck_process` (same NON-ollama pid >= `stuck_pid_cycles` AND util > `util_threshold`),
   `power_drift` / `temp_drift` (high power/temp while util <= threshold). Baseline fields:
-  `last_vram, last_pid, last_power, last_temp, cycles_with_same_pid`.
+  `last_vram, last_pid, last_power, last_temp, cycles_with_same_pid`, plus `per_gpu`.
+- **EVERY GPU is evaluated, not just index 0 (do not regress to `gpus[0]`).** This host runs two
+  cards (5070 Ti 16 GB + 3060 12 GB), and an index-0-only evaluator toggles silently: the second
+  card can sit at 100 %, over `vram_max_percent` or wedged for days with no flag, no event and
+  nothing in the UI. `evaluate_gpu_drift` loops over the gpu list, the rules live in
+  `_evaluate_one_gpu(g, procs, prev, dr, resident_pids)`, and everything is keyed by
+  `str(gpu["index"])`:
+  - `baseline["per_gpu"]["<index>"]` carries each card's own
+    `last_vram/last_pid/last_power/last_temp/cycles_with_same_pid`; the **top-level `last_*` keys
+    stay the GPU-0 baseline in the old shape**, because the reasoner digest, `actions.py`, the
+    federation `drift_events` count and `ui/server.py` all read the flat keys and cannot be
+    re-purposed. A pre-migration flat baseline is read as GPU 0's entry, so the first run upgrades
+    in place — no baseline reset.
+  - **Flag vocabulary: only GPU 0 keeps the bare names.** Other cards emit `<flag>:gpu<index>`
+    (`vram_overload:gpu1`). The suffix is load-bearing, not cosmetic — actions and kill paths match
+    bare strings, so a suffixed flag is visible in collector JSON/UI/events without silently
+    widening what an action will act on. A second card needs an explicit opt-in there.
+  - **Compute apps are attributed by `gpu_uuid`** (`--query-compute-apps=pid,process_name,
+    used_memory,gpu_uuid`); without it a busy process on card 1 becomes card 0's `last_pid` and
+    `stuck_process` fires on the wrong GPU. A row with no uuid (older nvidia-smi, hand-built
+    fixtures) is treated as belonging to every card, which keeps the single-GPU tests valid.
 - **Ollama exclusion (do not regress):** ollama's `llama-server` is a *permanent* GPU
   resident (the local inference backend this pipeline calls every cycle) — by design the
   same PID persists forever. The collector's tracked pid is the first **non-ollama**,
@@ -838,7 +867,7 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
 
 ## Tests
 
-`python3 -m pytest` (or `-q`). **330 tests** across `tests/` covering:
+`/usr/bin/python3 -m pytest` (or `-q`). **338 tests** across `tests/` covering:
 - `test_opsbrain.py` — whitelist gate (case-insensitive), deterministic rules (CPU
   sustain, memory creep, GPU threshold, restart loop, disk prune, Netdata alarms),
   `sanitize`/`extract_json` (Qwen normalization, type-or-action key, gpu_drift flag

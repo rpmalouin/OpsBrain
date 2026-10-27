@@ -4,9 +4,9 @@ The suite covers the decision-critical logic with mocks — **no live Docker/GPU
 is touched (GPU/kill tests mock `run()`/`notify`).
 
 ```bash
-cd /appdata/OpsBrain && . .venv/bin/activate
-python3 -m pytest        # 332 tests
-python3 -m pytest -q     # quiet
+cd /appdata/OpsBrain
+/usr/bin/python3 -m pytest     # 338 tests — this is the interpreter the service uses
+/usr/bin/python3 -m pytest -q  # quiet
 ```
 
 ## What's covered

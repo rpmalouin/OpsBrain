@@ -8,6 +8,20 @@ milestone).
 ## [Unreleased]
 
 ### Added
+- **Every GPU is evaluated, not just index 0.** `evaluate_gpu_drift` now loops over the gpu list
+  (`_evaluate_one_gpu` holds the unchanged rules) and keys its state by `str(gpu["index"])`, so a
+  second card can no longer sit at 100 %, over `vram_max_percent` or wedged with no flag, no event
+  and nothing in the UI. `logs/gpu_baseline.json` gains `baseline["per_gpu"]["<index>"]` with each
+  card's own `last_vram/last_pid/last_power/last_temp/cycles_with_same_pid`, while the **top-level
+  `last_*` keys stay the GPU-0 baseline in the old shape** — the reasoner digest, `actions.py`, the
+  federation `drift_events` count and `ui/server.py` read those and are not re-purposed. A
+  pre-migration flat baseline is read as GPU 0's entry, so the first run upgrades in place.
+  Only the primary card keeps the bare flag names; any other card emits `<flag>:gpu<index>`
+  (`vram_overload:gpu1`), visible in the collector JSON / UI / events but deliberately not matched
+  by the rules that act on the primary card. Compute apps are attributed by `gpu_uuid`
+  (`--query-compute-apps=...,gpu_uuid`) so a busy process on card 1 cannot become card 0's
+  `last_pid` and fire `stuck_process` on the wrong GPU; a row with no uuid is treated as belonging
+  to every card, which keeps the single-GPU fixtures valid. +6 tests (`TestGpuDriftMultiGpu`).
 - **The Mac Studio node is sourced from its own producer file, and renders macmon in it.** `macstudio`
   is now a **`kind: snapshot`** node: no endpoint, nothing polled, and its 15-minute producer snapshot
   *is* the node — `federation/local_snapshot.py` merges it with `primary=True`, deciding `online` and
@@ -328,6 +342,12 @@ milestone).
   sitting next to ollama is still tracked and killed as before. +3 tests (101 total).
 
 ### Changed
+- **`ollama.options.num_ctx` 32768 → 131072.** The old cap existed because the single 16 GB card
+  could not hold model + KV past 40960; the host now has two cards (27.1 GiB pool) and the 7B at
+  131072 measures 8.8 GB / `100% GPU` / 153 tok/s. The reason to pin it is consistency: every other
+  consumer (paperless-ngx, hindsight, paperless-gpt, open-webui) calls at 131072, and with
+  `OLLAMA_NUM_PARALLEL=1` a mismatched window makes the runner unload and reload for this hourly
+  call and again for the next consumer. The digest is ~2.5k tokens, so this is pure headroom.
 - **TrueNAS source moved off the deprecated REST API onto JSON-RPC 2.0 over WebSocket**
   (`wss://<host>/api/current`, `auth.login_ex PASSWORD_PLAIN`, one session per cycle for
   `pool.query` / `system.info` / `alert.list` / `disk.query`). TrueNAS 25.10 deprecates

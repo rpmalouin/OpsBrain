@@ -771,3 +771,39 @@ def test_actual_restart_policy_prefers_the_inspect_value():
     assert D._actual_restart_policy(
         {"state": "running", "restart_count": 0,
          "labels": "com.docker.compose.project=x,"}) is None
+
+
+# --- 2026-11-22: the merge must use THIS cycle's containers, not the previous file -------------
+def test_collect_dockhand_prefers_the_current_docker_doc(monkeypatch, tmp_path):
+    """On a fresh start there is no prior collector.json; merging against it flagged every
+    stack as "missing container" (measured: 10 of 40, with all 40 containers running)."""
+    from collector import dockhand_ingest as DI
+    desired = {"desired_state": [{"stack": "adminer", "services": [
+        {"service": "adminer", "running_requested": True, "replicas": 1,
+         "image": "adminer:latest", "restart": "unless-stopped", "ports": [], "volumes": [],
+         "networks": [], "depends_on": []}]}]}
+    live = [{"name": "adminer", "state": "running",
+             "labels": "com.docker.compose.project=adminer,com.docker.compose.service=adminer"}]
+    monkeypatch.setattr(DI, "pull_dockhand_state", lambda *a, **k: {"up": True, "stacks": []})
+    monkeypatch.setattr(DI, "normalize", lambda *a, **k: desired)
+    monkeypatch.setattr(DI, "read_json", lambda *a, **k: {})          # no prior collector.json
+    monkeypatch.setattr(DI.Cfg, "resolve", lambda key: str(tmp_path / "collector.json"))
+    out = DI.collect_dockhand({}, {"containers": live})
+    items = (out.get("classify") or {}).get("state_drift_items") or []
+    assert items == [], f"unexpected drift: {items}"
+
+
+def test_collect_dockhand_still_falls_back_to_the_prior_doc(monkeypatch, tmp_path):
+    from collector import dockhand_ingest as DI
+    desired = {"desired_state": [{"stack": "adminer", "services": [
+        {"service": "adminer", "running_requested": True, "replicas": 1,
+         "image": "adminer:latest", "restart": "unless-stopped", "ports": [], "volumes": [],
+         "networks": [], "depends_on": []}]}]}
+    live = [{"name": "adminer", "state": "running",
+             "labels": "com.docker.compose.project=adminer,com.docker.compose.service=adminer"}]
+    prior = {"docker": {"containers": live}}
+    monkeypatch.setattr(DI, "pull_dockhand_state", lambda *a, **k: {"up": True, "stacks": []})
+    monkeypatch.setattr(DI, "normalize", lambda *a, **k: desired)
+    monkeypatch.setattr(DI, "read_json", lambda *a, **k: prior)
+    out = DI.collect_dockhand({}, None)
+    assert (out.get("classify") or {}).get("state_drift_items") == []

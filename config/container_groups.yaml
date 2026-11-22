@@ -8,24 +8,24 @@
 media:
   - plex
   - tautulli
-  - tdarr
   - youtube-dl
-  - grimmory
+  - grimmory      # restored 2026-11-22 (book library, MariaDB-backed)
 
 ai:
-  - ollama
-  - open-webui
+  # ollama + open-webui were retired on dockerVM 2026-11-13; the LLM now lives on the ollama box
+  # (10.1.10.30) and is not a container here.
   - hermes
+  - hindsight
   - qwen
 
 infra:
   - caddy
+  # restored 2026-11-22 with the monitor pair (netdata + dozzle). dockpeek stays out: it was
+  # retired 2026-11-13 and did not come back.
   - netdata
   - dozzle
-  - dockpeek
   - dockhand
   - homepage
-  - homelab-hub
   - firefox
   - gluetun
 

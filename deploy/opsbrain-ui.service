@@ -11,7 +11,9 @@ User=root
 WorkingDirectory=/appdata/OpsBrain
 Environment=PYTHONUNBUFFERED=1
 Environment=OPSBRAIN_UI_CONFIG=/appdata/OpsBrain/ui/config.yaml
-ExecStart=/usr/bin/python3 -m uvicorn server:app --app-dir /appdata/OpsBrain/ui --host 0.0.0.0 --port 9120 --log-level info
+# 2026-11-22: the repo's venv, not /usr/bin/python3 — the system interpreter has no fastapi/
+# uvicorn/jinja2/watchdog installed, and requirements.txt never declared them.
+ExecStart=/appdata/OpsBrain/.venv/bin/python -m uvicorn server:app --app-dir /appdata/OpsBrain/ui --host 0.0.0.0 --port 9120 --log-level info
 # auto-restart on crash / kill
 Restart=always
 RestartSec=5

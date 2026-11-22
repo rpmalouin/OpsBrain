@@ -18,7 +18,50 @@ deployment, configuration, reasoning-llm, remediation, dashboard, manual-stop-pr
 truenas, federation, security, tests, troubleshooting), `CHANGELOG.md`, `README.md`
 (overview), `ui/README.md` (dashboard), this file (operational memory).
 
-## Current running state (LAST UPDATED: 2026-09-16)
+## Revived 2026-11-22 on the three-host layout (READ THIS FIRST)
+
+The pipeline is running again after the 2026-11-13 park and the 2026-11-14 host migration. What is
+TRUE now, measured on the live host (details in
+`/appdata/A--docker_stacks/.hermes/plans/2026-11-22_224445-opsbrain-revive-three-host.md`):
+
+- **Code lives at `/appdata/OpsBrain`** (clone of `rpmalouin/OpsBrain`, HEAD `439659d` + this pass),
+  with its **own venv** `/appdata/OpsBrain/.venv` (python 3.14). Both units run that interpreter:
+  the system `/usr/bin/python3` has no fastapi, and `requirements.txt` never declared the dashboard's
+  deps at all — it does now (fastapi, uvicorn, jinja2, watchdog).
+- **LLM = the ollama box, `http://10.1.10.30:11434`, `qwen3.5:27b`** — the same tag and host
+  hindsight uses. There is NO local ollama on dockerVM any more.
+- **`ollama.think: false` is load-bearing.** `qwen3.5:27b` declares the `thinking` capability, and
+  OMITTING the `think` field is not "off": ollama then applies its default (thinking ON), the whole
+  `num_predict` budget goes to reasoning and `response` comes back EMPTY. Fixed in
+  `reasoner/reasoner.py:build_body`, which now writes `think: true|false` explicitly for any model
+  known to declare the capability. Measured with the reasoner's own prompt: absent -> 2048 tokens
+  burned, 0 chars out; `think: false` -> valid JSON in ~9-12 s. `think: true` took 96 s and still
+  truncated at 4096 (15.8 k chars of reasoning).
+- **`num_ctx: 65536`** matches the box's `OLLAMA_CONTEXT_LENGTH` and hindsight's pin, so no runner
+  reload between the two consumers. `num_predict: 2048`, `timeout: 300`.
+- **Sources that are ON:** netdata (loopback 19999), dozzle (loopback 8081), dockhand (SQLite),
+  docker socket, vault_drift. **OFF:** dockpeek (retired 2026-11-13), truenas (boxes retired
+  2026-11-14), gpu_reconcile and gpu_drift (this host has no NVIDIA device).
+- **Federation nodes:** `dockervm` (this host's own `/api/status`), `macstudio` (snapshot file, the
+  Mac's producer), `ollamabox` (**new node kind `ollama`**: `federation/ollama_node.py` polls the
+  box's HTTP API and reads `nvidia-smi` over the `ollama` SSH alias — no agent installed there).
+- **`sources.netdata.alarms_skip`** carries `smbios_memory_confirmed_loss`, a permanent CRITICAL from
+  the GMKtec firmware inventory. It stays visible in netdata; it is out of the reasoner's digest only.
+- **False-alarm classes fixed in this pass** (each produced a standing wrong finding every cycle):
+  dockhand drift merged against the PREVIOUS collector.json (fresh start = every stack "missing
+  container"); `collect_dockpeek` ignored its own `enabled` flag (retired service read as DOWN);
+  the GPU digest carried `nvidia-smi: No such file` (read as "GPU monitoring unavailable"); the
+  orphan test compared container names to SERVICE names (`clamav` vs service `clamd`) and produced
+  the "DockBrain orphan: clamav" text that once drove a `docker_prune`.
+- **Front door:** `opsbrain.home` -> `10.1.10.10:9120`, CaddyUI row 66, `basic_auth admin` (same
+  credential as beets.home), `internal_tls=1`. Dashboard also at the LAN address directly.
+- **Alerting:** Hermes cron `d18255daea09` (every 2 min, telegram, no-agent) runs
+  `/root/.hermes/scripts/opsbrain-telegram-relay.py`: CRITICAL-only, deduped per condition per hour,
+  and it says so when OpsBrain has stopped writing. The old job `63fef345340a` was DELETED on
+  2026-11-14, so this is a new job, not a resume.
+- **Tests:** 379 passing (`.venv/bin/python -m pytest -q`), up from the 355 baseline.
+
+## Current running state (LAST UPDATED: 2026-09-16 — superseded by the section above)
 
 - **Service:** systemd unit `opsbrain` — ACTIVE, enabled, auto-restarts.
   `ExecStart: python3 /appdata/OpsBrain/scheduler/scheduler.py --daemon`
@@ -831,8 +874,9 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
   `stuck_process` (same NON-ollama pid >= `stuck_pid_cycles` AND util > `util_threshold`),
   `power_drift` / `temp_drift` (high power/temp while util <= threshold). Baseline fields:
   `last_vram, last_pid, last_power, last_temp, cycles_with_same_pid`, plus `per_gpu`.
-- **EVERY GPU is evaluated, not just index 0 (do not regress to `gpus[0]`).** This host runs two
-  cards (5070 Ti 16 GB + 3060 12 GB), and an index-0-only evaluator toggles silently: the second
+- **EVERY GPU is evaluated, not just index 0 (do not regress to `gpus[0]`).** This host ran two
+  cards until 2026-10-28 (5070 Ti 16 GB + 3060 12 GB; the 3060 was returned and a matching 16 GB card
+  is due back), and an index-0-only evaluator toggles silently: the second
   card can sit at 100 %, over `vram_max_percent` or wedged for days with no flag, no event and
   nothing in the UI. `evaluate_gpu_drift` loops over the gpu list, the rules live in
   `_evaluate_one_gpu(g, procs, prev, dr, resident_pids)`, and everything is keyed by
@@ -859,8 +903,13 @@ Live in collector → reasoner → actions → report. Config under `gpu_drift:`
   `_ollama_owned` / `_resident_owned` and silently drops the flag (no notify/event/state)
   if a stale collector surfaces it.
 - **Resident model servers beyond ollama — `gpu_drift.resident_containers` (do not regress).**
-  docling-serve is the second permanent GPU resident on this host (it loads its layout/table
-  models on `cuda:0` at boot and idles at 0 % util holding ~1.2 GB). The exclusion is by
+  The mechanism exists for permanent GPU residents: a container that loads models on a card at
+  boot and idles at 0 % util while holding VRAM. **The list is EMPTY since 2026-11-03** — the one
+  member it ever had, docling-serve, moved to CPU-only (`DOCLING_DEVICE=cpu`, GPU reservation
+  removed, `torch.cuda.is_available()` False, verified with a real conversion), so it no longer
+  holds VRAM and nothing can flag it as stuck. ollama's runner is exempt through `_ollama_owned`,
+  not through this list. Re-add an entry only when some container demonstrably holds a card again.
+  The exclusion is by
   **container PID** (`resident_container_pids()` → `docker inspect {{.State.Pid}}`), because
   nvidia-smi names its compute app `/opt/app-root/bin/python3` — no name marker can identify
   it, and the container's PID 1 *is* the compute-app PID. `evaluate_gpu_drift(..., resident_pids=)`

@@ -380,3 +380,38 @@ def test_main_captures_nothing_when_the_decision_is_healthy(tmp_path, monkeypatc
         '{"confidence": 0.85, "summary": "restart storm on roonserver", "warnings": ["x"]}')
     assert json.loads(out.read_text())["confidence"] == 0.85
     assert not low.exists()
+
+
+# --- 2026-11-22: the `think` field must be written, not omitted, for a thinking model --------
+def test_build_body_sends_think_false_for_a_thinking_model_when_disabled():
+    """Omitting `think` is NOT "off" — ollama's default for a thinking model is thinking ON.
+
+    Measured on qwen3.5:27b with the reasoner's own prompt: field absent -> the whole
+    num_predict budget went to reasoning and `response` came back empty (twice); with
+    `think: false` the same prompt returned valid JSON in ~12 s.
+    """
+    from reasoner import reasoner as R
+    body = R.build_body("qwen3.5:27b", "p", {}, "5m", send_think=False,
+                        supports_thinking=["completion", "tools", "thinking"])
+    assert body["think"] is False
+
+
+def test_build_body_keeps_think_true_for_a_thinking_model_when_enabled():
+    from reasoner import reasoner as R
+    body = R.build_body("qwen3.5:27b", "p", {}, "5m", send_think=True,
+                        supports_thinking=["thinking"])
+    assert body["think"] is True
+
+
+def test_build_body_omits_think_for_a_non_thinking_model():
+    """A model without the capability 400s on the field, so it must stay out."""
+    from reasoner import reasoner as R
+    body = R.build_body("qwen2.5-7b-128k", "p", {}, "5m", send_think=False,
+                        supports_thinking=["completion", "tools"])
+    assert "think" not in body
+
+
+def test_build_body_unknown_capability_keeps_the_old_shape():
+    from reasoner import reasoner as R
+    assert "think" not in R.build_body("m", "p", {}, "5m", send_think=False)
+    assert R.build_body("m", "p", {}, "5m", send_think=True)["think"] is True

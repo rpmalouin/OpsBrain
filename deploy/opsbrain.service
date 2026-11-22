@@ -1,6 +1,9 @@
 [Unit]
-Description=Ops Brain - homelab monitor/reasoner/remediator (Qwen3 14B via Ollama)
-After=docker.service ollama.service network-online.target
+Description=Ops Brain - homelab monitor/reasoner/remediator (qwen3.5:27b on the ollama box)
+# 2026-11-22: `ollama.service` was dropped from After= — this host has no local ollama any more
+# (stack retired 2026-11-13; the LLM lives on the ollama box at 10.1.10.30, reached over HTTP).
+# Ordering after a unit that does not exist here only misled the reader.
+After=docker.service network-online.target
 Wants=network-online.target
 
 [Service]
@@ -9,8 +12,10 @@ User=root
 WorkingDirectory=/appdata/OpsBrain
 Environment=OPSBRAIN_REPO=/appdata/OpsBrain
 Environment=PYTHONUNBUFFERED=1
-# NOTE: actions remain DRY-RUN unless you set actions.dry_run:false in config/ops_brain.yaml
-ExecStart=/usr/bin/python3 /appdata/OpsBrain/scheduler/scheduler.py --daemon
+# The repo carries its own venv (python 3.14): requirements.txt plus the dashboard's
+# fastapi/uvicorn/jinja2/watchdog set. /usr/bin/python3 has no fastapi, so anything started with
+# the bare system interpreter breaks the dashboard import.
+ExecStart=/appdata/OpsBrain/.venv/bin/python /appdata/OpsBrain/scheduler/scheduler.py --daemon
 Restart=always
 RestartSec=15
 Nice=5

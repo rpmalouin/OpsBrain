@@ -103,6 +103,11 @@ def _collect_node(node, timeout):
     """
     if str(node.get("kind") or "opsbrain").lower() == "snapshot":
         return _empty_node(node.get("type"))
+    if str(node.get("kind") or "opsbrain").lower() == "ollama":
+        # The ollama box (10.1.10.30): no agent installed there, so this is a poller — the HTTP
+        # API plus nvidia-smi over SSH. See federation/ollama_node.py for the wedge handling.
+        from federation import ollama_node
+        return ollama_node.collect(node, log=log)
     node_type = node.get("type")
     endpoint = node.get("collector_endpoint")
     if not endpoint:

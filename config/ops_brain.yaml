@@ -8,11 +8,13 @@ interval_seconds: 3600           # scheduler poll cadence (1 hour — homelab-tu
 
 # --- Inference (Ollama local) ---
 ollama:
-  url: http://localhost:11434/api/generate
-  model: qwen2.5-7b-128k:latest    # the host's only LLM since 2026-10-20 (7.6B Q4_K_M, tag
-                                  # num_ctx 131072, non-thinking; 8.8 GB at 100% GPU). 65k ->
-                                  # 128k so the request window matches what Hermes-Mac needs;
-                                  # every consumer names this same tag (no model swaps).
+  # 2026-11-22 (revive): this host has NO local ollama any more — the ollama stack was retired
+  # 2026-11-13 and the GPUs live in the dedicated box at 10.1.10.30 (v0.40.16, no auth on the
+  # LAN). That box serves exactly ONE tag, the same one hindsight uses:
+  url: http://10.1.10.30:11434/api/generate
+  model: qwen3.5:27b            # 26.9B Q4_K_M, 19.94 GB, 100% VRAM across BOTH 5070 Ti cards,
+                                # ctx 65536 (OLLAMA_CONTEXT_LENGTH on the box). Everything else
+                                # (hindsight) names this same tag, so no runner swap between us.
   # fallback_model / alt_models deliberately removed 2026-10-16: with a single installed LLM a
   # fallback can only name a model that no longer exists. The probe below stays and the stage
   # still fails loudly (rc=3) rather than reasoning with something nobody chose.
@@ -21,13 +23,19 @@ ollama:
   # `think` per model — required for thinking models here, HTTP 400 for the others.
   # If none of these are installed the stage fails loudly (rc=3) instead of silently
   # reasoning with an unconfigured model.
-  timeout: 120
-  think: true                  # ALLOW flag only: the reasoner probes /api/show and sends `think`
-                               # per model (qwen2.5-7b-128k declares completion+tools, no thinking,
-                               # so no `think` field is sent). Explicit because the default path
-                               # returns {} in this ollama for thinking models.
+  timeout: 300            # a 27B on a shared runner is not the old 7B: 120 s is thin
+  think: false                 # 2026-11-22 measured on qwen3.5:27b, which DOES declare
+                               # `thinking`: with think=true an 8-token cap returned an EMPTY body
+                               # (done_reason=length, whole budget in reasoning); think=false
+                               # answered in 0.26 s, and the real prompt + a 3.6k-token digest
+                               # returned valid JSON in 4.9 s cold / 3.3 s warm. This is the flag
+                               # that keeps the hourly reasoner usable on a thinking model.
   options:                     # passed verbatim to Ollama /api/generate options
     temperature: 0.2
+    # 2026-11-22: the digest is ~3.6k tokens; the JSON answer measured 135 tokens. Bound the
+    # call so a misbehaving turn cannot run to the server's context limit.
+    num_predict: 2048            # 2026-11-22: 1024 was hit exactly once (reasoning preamble +
+                                 # the JSON); the measured answer is ~300 tokens, so 2048 is headroom
     # 2026-10-22 (dual-GPU work): 32768 -> 131072. The reason the old cap existed (this
     # 16 GB card could not hold model+KV at 40960) is gone: the host now has TWO cards
     # (5070 Ti 16 GB + 3060 12 GB, 27.1 GiB pool) and the 7B at 131072 measures 8.8 GB,
@@ -36,20 +44,33 @@ ollama:
     # runner: ollama unloads and reloads the model for this one hourly call, then reloads
     # again at 128k for the next consumer. Matching the window removes that churn.
     # The digest is only ~7.4k chars (~2.5k tokens), so 131072 is pure headroom here.
-    num_ctx: 131072
+    num_ctx: 65536               # matches OLLAMA_CONTEXT_LENGTH on the box AND hindsight
     keep_alive: 5m
 
 # --- Data sources ---
 sources:
   netdata:
     base_url: http://localhost:19999
+    # restored 2026-11-22: the netdata stack is back (v2.13.0, 1,000 cgroup charts), fronted by
+    # the gated netdata.home route; read over loopback.
     enabled: true
+    # Named alarms that are known-benign ON THIS HOST: kept out of the reasoner's digest so
+    # they cannot page every cycle, while netdata itself keeps showing them.
+    #   smbios_memory_confirmed_loss — permanent CRITICAL: the GMKtec firmware reports a memory
+    #   inventory smaller than its accepted baseline; the box has run correctly for months.
+    alarms_skip:
+      - smbios_memory_confirmed_loss
   dozzle:
     base_url: http://localhost:8081
+    # restored 2026-11-22, and the publish is LOOPBACK-ONLY now (127.0.0.1:8081:8080) — the
+    # gated dozzle.home route is the only door. localhost is therefore the right base_url and
+    # a LAN address would no longer answer.
     enabled: true
   dockpeek:
     base_url: http://localhost:8001
-    enabled: true
+    # RETIRED 2026-11-13 with the monitor trio and NOT restored (Ron kept dozzle + netdata
+    # only). Stays off; the block is kept so the history is readable.
+    enabled: false
   truenas:
     # JSON-RPC 2.0 over WebSocket — the supported API. Do NOT go back to REST:
     # TrueNAS 25.10 deprecates /api/v2.0 (removed in 26.04) and raises the
@@ -57,7 +78,9 @@ sources:
     transport: jsonrpc
     ws_url: wss://truenas/api/current      # self-signed cert; verification is off client-side
     creds_file: ~/.smbcred     # username= / password= lines (auth.login_ex PASSWORD_PLAIN)
-    enabled: true
+    # 2026-11-22: both TrueNAS boxes were retired on 2026-11-14 (storage is now the Mac Studio's
+    # SMB shares), so `truenas` cannot resolve or answer. Off until a NAS exists again.
+    enabled: false
     timeout_s: 8
     # legacy, only if transport is switched back to "rest":
     # base_url: http://truenas/api/v2.0
@@ -75,7 +98,10 @@ sources:
     report_path: /appdata/OpsBrain/logs/vault_drift_report.json  # produced by the Hermes vault-drift cron
     max_age_s: 691200                                   # ~8 days (weekly cron) before marking stale
   gpu_reconcile:
-    enabled: true
+    # 2026-11-22: OFF — this host has no NVIDIA device at all (no /dev/nvidia*, no nvidia-smi,
+    # no /proc/driver/nvidia). The GPU work moved to the ollama box, which the federation
+    # `ollama` node covers instead.
+    enabled: false
     log_path: /var/log/nvidia-module-reconcile.log      # written by the driver-reconcile apt hook
     module_version_file: /sys/module/nvidia/version     # the LOADED module
     ko_root: /lib/modules                               # on-disk module: <ko_root>/<uname -r>/**/nvidia.ko*
@@ -86,7 +112,7 @@ sources:
 
 # --- Action engine ---
 actions:
-  dry_run: false                # LIVE: remediation now executes (gated by allow-list/cap)
+  dry_run: false                # LIVE since 2026-11-22 (four review cycles were dry-run first: only notify verbs proposed)
   restart_limit_per_run: 3      # cap docker/systemctl restarts per cycle
   cpu_restart_threshold_percent: 80.0
   cpu_restart_minutes: 120      # sustained CPU needed before restart (>=2 hourly samples at 3600s cadence; single-sample restart guard)
@@ -95,23 +121,17 @@ actions:
   disk_threshold_percent: 85.0
   qwen_confidence_floor: 0.6    # below this -> do nothing and log
   # Containers the engine may restart (case-insensitive match against docker name).
-  # Empty = allow all. dockpeek + last30days-runner reflect the real docker names.
+  # Empty = allow all. 2026-11-22: `homelab-hub` and `last30days-runner` were dropped — both
+  # stacks were retired 2026-11-13, so naming them only produced dead allow-list entries.
   allow_restart_containers:
     - homepage
-    - dozzle
-    - dockpeek
-    - netdata
     - caddy
-    - filerise
     # GUI/VNC browsers are NOT auto-restarted: they are interactive and a
     # restart destroys the in-use session; docker restart policy covers crashes.
     # (Removed 2026-09: qwen restarted Firefox on high CPU + storm flags every
     # cycle — each restart re-armed the storm detector.)
     - flacsentry
-    - grimmory
-    - homelab-hub
     - homepage-editor
-    - last30days-runner
     - yamtrack
     - youtube-dl-server
   allow_service_restart: []     # systemd units whitelist (shell injection safe)
@@ -168,6 +188,19 @@ federation:
     # - name: truenas
     #   type: storage
     #   collector_endpoint: "http://truenas:9120/api/status"
+    # The ollama box (10.1.10.30) — the fleet's only GPU host and its only LLM. Added 2026-11-22
+    # with a native node source (`federation/ollama_node.py`, `kind: ollama`): it polls the
+    # ollama HTTP API for what the model is doing and reads nvidia-smi over the `ollama` SSH
+    # alias for what the cards are doing. No agent is installed on the box.
+    - name: ollamabox
+      type: gpu
+      kind: ollama
+      ollama_url: "http://10.1.10.30:11434"
+      ssh_host: ollama                  # ~/.ssh/config alias -> ron@10.1.10.30
+      timeout_s: 5                      # HTTP; a wedged ollama accepts TCP and answers nothing
+      ssh_timeout_s: 10
+      gpu_temp_max_c: 80
+      vram_used_max_pct: 95
   cluster_stability_weights:
     confidence: 0.4
     drift: 0.3
@@ -187,18 +220,23 @@ manual_stop_protection:
 
 # --- GPU drift detection ---
 gpu_drift:
-  enabled: true
+  # 2026-11-22: OFF on this host (no NVIDIA device). Kept, comments and all, because the code
+  # path and its thresholds are the record of the dual-5070-Ti era; the GPUs are now in the
+  # ollama box and are watched by the federation `ollama` node instead.
+  enabled: false
   vram_creep_mb: 250           # VRAM increase between cycles that flags vram_drift
   vram_max_percent: 90         # VRAM usage % of total that flags vram_overload
   stuck_pid_cycles: 2          # same GPU PID cycled this many times + util>util_thr -> stuck_process (~2 h at 3600s cadence)
   util_threshold: 10            # GPU util % treated as "idle" for power/temp drift; stuck needs util>this
   # Permanent GPU residents: containers whose GPU process is a MODEL SERVER that holds
-  # VRAM forever and idles at 0% util between jobs (docling-serve loads its layout/table
-  # models on cuda:0 at boot). Never stuck candidates — same treatment as ollama's
-  # llama-server. Matched by the container's own PID (State.Pid), because nvidia-smi
-  # reports the compute app as the interpreter path (`/opt/app-root/bin/python3`), so no
-  # name marker can identify it. Entries must name a real container.
-  resident_containers: [docling-serve]
+  # VRAM forever and idles at 0% util between jobs. Never stuck candidates — same treatment
+  # as ollama's llama-server. Matched by the container's own PID (State.Pid), because
+  # nvidia-smi reports the compute app as the interpreter path, so no name marker can
+  # identify it. Entries must name a real container.
+  # 2026-11-03: EMPTY on purpose — docling-serve moved to CPU-only (DOCLING_DEVICE=cpu, no GPU
+  # reservation), so it holds no VRAM and cannot look like a stuck GPU process. ollama's own
+  # runner stays exempt through _ollama_owned, not through this list.
+  resident_containers: []
   power_idle_max_watts: 60      # power draw above this while util<thr -> power_drift.
                                 # Was 40: measured 2026-10-27, this card idles at ~9 W empty
                                 # but draws 40-44 W whenever a model sits loaded and the sample

@@ -1136,3 +1136,66 @@ class TestContainerCpuNoticeGate:
         # a memory-creep restart is NOT sustained-CPU evidence
         rules2 = [{"type": "docker_restart", "target": "web", "reason": "memory creep 30%"}]
         assert A.sustained_cpu_evidence(rules2) == set()
+
+
+# --- 2026-11-22 revive findings (each one paged a false alarm on the first live cycles) -------
+def test_netdata_alarms_skip_keeps_a_known_benign_alarm_out_of_the_digest(monkeypatch):
+    from collector import collector as C
+    alarms = {"ok": True, "json": {"alarms": {
+        "smbios_memory_confirmed_loss": {"name": "smbios_memory_confirmed_loss",
+                                         "status": "CRITICAL", "class": "Availability"},
+        "inbound_packets_dropped_ratio": {"name": "inbound_packets_dropped_ratio",
+                                          "status": "WARNING", "class": "Errors"}}}}
+    monkeypatch.setattr(C, "http_get", lambda url, **k: alarms if "alarms" in url else {"ok": True, "json": {"version": "v2", "hosts-available": 1}})
+    monkeypatch.setattr(C.Cfg, "get", lambda key, default=None: (
+        ["smbios_memory_confirmed_loss"] if key == "sources.netdata.alarms_skip" else
+        "http://localhost:19999" if key == "sources.netdata.base_url" else
+        True if key == "sources.netdata.enabled" else default))
+    out = C.collect_netdata({})
+    names = [a["name"] for a in out["alarms_active"]]
+    assert names == ["inbound_packets_dropped_ratio"]
+    assert out["alarms_count"] == 1
+    assert out["alarms_skipped"] == ["smbios_memory_confirmed_loss"]
+
+
+def test_dockpeek_absent_from_the_digest_when_the_source_is_disabled():
+    from reasoner import reasoner as R
+    digest = R.summarize_collector({"dockpeek": {"enabled": False}, "docker": {}, "netdata": {}})
+    assert digest["dockpeek"]["enabled"] is False
+    assert "api_up" not in digest["dockpeek"]
+
+
+def test_a_container_whose_name_differs_from_its_service_is_not_an_orphan():
+    """Measured: `clamav` (compose service `clamd`, container `clamav`) read as
+    "Dockhand orphan: clamav not in any stack" — and that notice is the text the reasoner
+    once turned into a `docker_prune`. The merge already paired it, so it is not an orphan."""
+    from collector import dockhand_ingest as DI
+    merged = [{"stack": "clamav", "service": "clamd", "matched": True,
+               "actual": {"name": "clamav", "state": "running"}},
+              {"stack": "clamav", "service": "api", "matched": True,
+               "actual": {"name": "clamav-api", "state": "running"}}]
+    docker_doc = {"containers": [{"name": "clamav", "state": "running"},
+                                 {"name": "clamav-api", "state": "running"},
+                                 {"name": "stray-tool", "state": "running"}]}
+    dash = DI.update_dashboard_snapshot({"up": True}, merged, {"state_drift_items": []}, {}, docker_doc)
+    assert dash["orphaned_containers"] == ["stray-tool"]
+
+
+def test_dockpeek_collector_honours_its_source_switch(monkeypatch):
+    """Every other source returns {"enabled": false} when disabled; dockpeek ignored the flag
+    and kept reporting up=false, so the retired service read as a DOWN SERVICE every cycle."""
+    from collector import collector as C
+    monkeypatch.setattr(C.Cfg, "get", lambda key, default=None: (
+        False if key == "sources.dockpeek.enabled" else default))
+    assert C.collect_dockpeek({}) == {"enabled": False}
+
+
+def test_gpu_section_is_marked_off_when_gpu_drift_is_disabled(monkeypatch):
+    """A host with no NVIDIA device must not hand the model 'nvidia-smi: No such file'."""
+    from reasoner import reasoner as R
+    monkeypatch.setattr(R.Cfg, "get", lambda key, default=None: (
+        False if key == "gpu_drift.enabled" else default))
+    digest = R.summarize_collector({"gpu": {"available": False, "error": "No such file"},
+                                    "docker": {}, "netdata": {}})
+    assert digest["gpu"]["enabled"] is False
+    assert "error" not in digest["gpu"]

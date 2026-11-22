@@ -251,15 +251,27 @@ def collect_netdata(cfg):
     alarms = http_get(f"{base}/api/v1/alarms?all", max_bytes=3_000_000)
     active = []
     _keep = {"CRITICAL", "WARNING", "ERROR"}
+    # 2026-11-22: named alarms that are known-benign on THIS host can be skipped by config
+    # (`sources.netdata.alarms_skip`). Nothing is silenced inside netdata itself — the alarm
+    # stays visible there — this only keeps it out of the digest the reasoner reads, so it
+    # cannot page every cycle. Measured reason for the first entry: the GMKtec firmware
+    # inventory mismatch (`smbios_memory_confirmed_loss`) is a permanent CRITICAL on this box.
+    skip = {str(n) for n in (Cfg.get("sources.netdata.alarms_skip", []) or [])}
+    skipped = []
     if alarms.get("ok") and isinstance(alarms.get("json", {}).get("alarms"), dict):
         al = alarms["json"]["alarms"]
         for a in al.values():
             status = a.get("status")
             if status in _keep:
+                if str(a.get("name")) in skip:
+                    skipped.append(str(a.get("name")))
+                    continue
                 active.append({
                     "name": a.get("name"), "status": status, "class": a.get("class"),
                     "component": a.get("component"), "value": a.get("value"),
                     "units": a.get("units"), "info": a.get("info", "")[:120]})
+    if skipped:
+        out["alarms_skipped"] = sorted(set(skipped))
     out["alarms_active"] = active[:60]     # cap for model context
     out["alarms_count"] = len(active)
     # light host overview
@@ -291,6 +303,12 @@ def collect_dozzle(cfg):
 
 
 def collect_dockpeek(cfg):
+    # 2026-11-22: honour the source switch. Every other source returns {"enabled": False} when
+    # disabled; this one ignored it and kept reporting `up: false`, so the reasoner read the
+    # retired dockpeek as a DOWN SERVICE every cycle ("dockpeek service is enabled but API and
+    # container are not running") instead of as a source we turned off.
+    if not Cfg.get("sources.dockpeek.enabled", True):
+        return {"enabled": False}
     base = Cfg.get("sources.dockpeek.base_url", "http://localhost:8001")
     # Dockpeek is a Flask app — /health is the unauthenticated liveness route;
     # container data lives at /data behind the login wall. There is NO
@@ -803,7 +821,10 @@ def collect_all(cfg):
     doc["gpu"] = collect_gpu(cfg)
     doc["vm"] = collect_vm(cfg)
     doc["truenas"] = collect_truenas(cfg)
-    doc["dockhand"] = collect_dockhand(cfg)
+    # 2026-11-22: hand the CURRENT cycle's docker section in — the ingest used to merge
+    # against the previous collector.json, which reads every stack as "missing container"
+    # on a fresh start.
+    doc["dockhand"] = collect_dockhand(cfg, doc.get("docker"))
     doc["vault_drift"] = collect_vault_drift(cfg)
     doc["gpu_reconcile"] = collect_gpu_reconcile(cfg)
     doc["sources_healthy"] = sum(1 for k in ("netdata", "dozzle", "dockpeek", "docker", "gpu", "vm", "truenas")

@@ -1087,10 +1087,32 @@ def update_dashboard_snapshot(docked, merged, classified, correlated, docker_doc
                                       "kind": "volume" if name in (it.get("missing") or []) else "network",
                                       "name": name})
 
+    def _matched_actual_names():
+        """Containers the merge already paired with a desired service.
+
+        2026-11-22: the orphan test used to compare container NAMES to SERVICE names, which
+        mis-reads any stack whose container name differs from its compose service — measured
+        on the revive, `clamav` (service `clamd`, container `clamav`) was reported as
+        "Dockhand orphan: clamav not in any stack" and that notice is exactly the kind of text
+        the reasoner once turned into a `docker_prune`. The merge already knows the answer:
+        every matched row carries `actual.name`.
+        """
+        names = set()
+        for m in merged:
+            act = m.get("actual") if isinstance(m, dict) else None
+            n = act.get("name") if isinstance(act, dict) else None
+            if n:
+                names.add(str(n).lower())
+        return names
+
+    matched_names = _matched_actual_names()
+
     def _matches_desired(cname):
         cn = str(cname or "").lower()
         if not cn:
             return False
+        if cn in matched_names:
+            return True
         for m in merged:
             svc = str(m.get("service") or "").lower()
             stack = str(m.get("stack") or "").lower()
@@ -1128,7 +1150,7 @@ def update_dashboard_snapshot(docked, merged, classified, correlated, docker_doc
 # --------------------------------------------------------------------------- orchestration
 
 
-def collect_dockhand(cfg):
+def collect_dockhand(cfg, docker_doc=None):
     """Orchestrate the Dockhand ingest for one collector cycle.
 
     Reads ``sources.dockhand`` config (db_path, compose_root, environment_id,
@@ -1159,13 +1181,20 @@ def collect_dockhand(cfg):
     desired = normalize(docked, environment_id=environment_id, compose_root=compose_root)
     prev = read_json(Cfg.resolve("paths.collector_json"), {}) or {}
     prev_docker = prev.get("docker") or {}
-    docker_containers = prev_docker.get("containers") or []
+    # 2026-11-22 — the CURRENT cycle's docker section wins when it is passed in. Merging
+    # against the PRIOR collector.json only worked while that file always existed: on a fresh
+    # start (or after any gap) the list was empty, so EVERY stack's service read "missing
+    # container" and the reasoner relayed a standing false CRITICAL. Measured on the revive:
+    # 10 of 40 stacks flagged missing while all 40 containers were up.
+    current_docker = docker_doc if isinstance(docker_doc, dict) and docker_doc else None
+    effective_docker = current_docker or prev_docker
+    docker_containers = effective_docker.get("containers") or []
     netdata = prev.get("netdata") or {}
     dozzle = prev.get("dozzle") or {}
 
     merged = merge_with_docker_actual(desired["desired_state"], docker_containers,
                                       skip_local_image_drift=skip_local_image)
-    classified = classify_drift(merged, prev_docker, {})
+    classified = classify_drift(merged, effective_docker, {})
     correlated = correlate(docked.get("container_events_recent") or [], netdata, dozzle,
                            window_s=storm_window, storm_min=storm_min, flap_min=flap_min)
     ctx_nodes = create_context_nodes(merged, classified, correlated)

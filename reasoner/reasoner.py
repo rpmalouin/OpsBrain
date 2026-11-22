@@ -177,10 +177,15 @@ def resolve_model():
 
 
 def decide_think(model, cfg_think=True, supports_thinking=None):
-    """(send_think, why) — send `think` only when the model can accept it.
+    """(send_think, why) — whether thinking should be ON for this call.
 
     supports_thinking is either None (unknown -> keep sending, the 400 retry protects),
     a bool, or the capability set returned by /api/show.
+
+    2026-11-22: `send_think` is now also used to EMIT `think: false` for a model we know is
+    thinking-capable (see build_body). Omitting the field is NOT "thinking off": ollama's
+    default for a thinking model is thinking ON, and on qwen3.5:27b that burned the entire
+    num_predict budget in reasoning and returned an empty `response` (measured twice).
     """
     if not cfg_think:
         return False, "think disabled in config"
@@ -195,16 +200,30 @@ def decide_think(model, cfg_think=True, supports_thinking=None):
     return True, "thinking model"
 
 
-def build_body(model, prompt, opts, keep, send_think):
+def build_body(model, prompt, opts, keep, send_think, supports_thinking=None):
     """Body for /api/generate.
 
     Never add format=json: alongside think=true it makes this ollama short-circuit to a
     bare {} (prompt already mandates JSON). See MEMORY.md.
+
+    2026-11-22 — the `think` field is now written EXPLICITLY (`true` or `false`) whenever the
+    model is known to declare the capability, because omitting it means "use the server
+    default", and this server's default for a thinking model is thinking ON. Measured on
+    qwen3.5:27b with the reasoner's own prompt: field absent -> the whole num_predict budget
+    went to reasoning and `response` came back empty; `think: false` -> valid JSON in ~12 s.
+    A model we know does NOT declare `thinking` keeps the field out entirely (ollama 400s on
+    models without the capability), which is what `known_thinking is False` encodes.
     """
     body = {"model": model, "prompt": prompt, "stream": False,
             "options": opts, "keep_alive": keep}
-    if send_think:
-        body["think"] = True
+    if supports_thinking is None:
+        if send_think:
+            body["think"] = True
+    else:
+        supports = supports_thinking if isinstance(supports_thinking, bool) \
+            else "thinking" in set(supports_thinking)
+        if supports:
+            body["think"] = bool(send_think)
     return body
 
 
@@ -222,7 +241,7 @@ def call_ollama(prompt, model, supports_thinking=None):
     timeout = int(Cfg.get("ollama.timeout", 120))
     send_think, why = decide_think(model, bool(Cfg.get("ollama.think", True)),
                                    supports_thinking)
-    body = build_body(model, prompt, opts, keep, send_think)
+    body = build_body(model, prompt, opts, keep, send_think, supports_thinking)
     log.info("ollama %s: think=%s (%s)", model, send_think, why)
     try:
         resp = _post_ollama(url, body, timeout)
@@ -449,8 +468,14 @@ def summarize_collector(c):
     out["netdata"] = {"up": net.get("up"), "alarms_count": net.get("alarms_count", 0),
                       "alarms_active": net.get("alarms_active", [])[:30]}
     out["dozzle"] = {"up": c.get("dozzle", {}).get("up", False)}
-    out["dockpeek"] = {"api_up": c.get("dockpeek", {}).get("up", False),
-                       "container_running": c.get("dockpeek", {}).get("container_running")}
+    # 2026-11-22: a DISABLED source is not a fault. dockpeek was retired 2026-11-13 and its
+    # source is off in config; feeding the digest `api_up: false` made the model report
+    # "dockpeek service is down" every cycle, which is a finding about our own config.
+    peek = c.get("dockpeek", {}) or {}
+    out["dockpeek"] = ({"enabled": True, "api_up": peek.get("up", False),
+                        "container_running": peek.get("container_running")}
+                       if peek.get("enabled", True)
+                       else {"enabled": False, "note": "source disabled — not a finding"})
 
     dock = c.get("docker", {})
     containers = dock.get("containers", [])
@@ -477,7 +502,16 @@ def summarize_collector(c):
                                if co.get("restarting") or co.get("state") == "exited"
                                or (co.get("restart_count") or 0) >= 2][:30],
     }
-    out["gpu"] = c.get("gpu", {})
+    # 2026-11-22: a host with NO GPU must not hand the model an error to reason about. The
+    # collector still runs its probe (and reports `available: false` + "No such file or
+    # directory: 'nvidia-smi'"), which read as "GPU monitoring unavailable" every cycle. When
+    # gpu_drift is off, say it is OFF and point at where the cards actually are.
+    if not Cfg.get("gpu_drift.enabled", True):
+        out["gpu"] = {"enabled": False,
+                      "note": "GPU monitoring is disabled on this host (no NVIDIA device); the "
+                              "ollama box's cards are covered by the federation node 'ollamabox'"}
+    else:
+        out["gpu"] = c.get("gpu", {})
     # Dockhand desired-state drift — compact so it stays out of the token budget.
     dh = c.get("dockhand", {})
     if isinstance(dh, dict) and dh.get("up"):

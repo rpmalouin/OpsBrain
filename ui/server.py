@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -42,6 +43,12 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+from common import Cfg  # noqa: E402  (pipeline config: collector cadence)
+try:                      # never let a config read take the dashboard down
+    Cfg.load()
+except Exception:        # noqa: BLE001
+    pass
 UI = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("OPSBRAIN_UI_CONFIG", UI / "config.yaml"))
 
@@ -64,6 +71,20 @@ def load_config():
 
 
 CFG = load_config()
+
+
+def _meta():
+    """Refresh cadence for the live stream, plus the PIPELINE cadence.
+
+    The dashboard used to hardcode 120 s for "Next cycle"; the scheduler runs hourly, so the
+    card read "0s" for 58 minutes of every hour. The pipeline value comes from the repo config,
+    not the UI config, because only the scheduler knows how often it actually runs.
+    """
+    try:
+        every = int(Cfg.get("interval_seconds", 0) or 0)
+    except Exception:  # noqa: BLE001
+        every = 0
+    return {"refresh_seconds": CFG["refresh_seconds"], "collector_interval_seconds": every}
 
 # ---------------------------------------------------------------- state
 _last_state = {}          # {path: (mtime_ns, size, parsed)}
@@ -455,7 +476,7 @@ def refresh_snapshot():
     """Re-read changed files, rebuild merged snapshot + history. Returns True if anything changed."""
     collector_changed = False
     changed = False
-    merged = {"_meta": {"refresh_seconds": CFG["refresh_seconds"]}, "sources": {},
+    merged = {"_meta": _meta(), "sources": {},
               "history": _history_payload(), "notifications": list(_notifications)[-50:]}
 
     for path in CFG["watch"]:
@@ -519,7 +540,7 @@ def refresh_snapshot():
 
         _snapshot.clear()
         if "_meta" not in merged:
-            merged["_meta"] = {"refresh_seconds": CFG["refresh_seconds"]}
+            merged["_meta"] = _meta()
         _snapshot.update(merged)
     return changed
 

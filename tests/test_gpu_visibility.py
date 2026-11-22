@@ -86,6 +86,62 @@ def test_collect_gpu_available_without_compute_processes(monkeypatch):
     assert out["available"] is True and out["compute_processes"] == []
 
 
+# ------------------------------------------- source switch (2026-11-22)
+# dockerVM has no NVIDIA device at all: the dashboard drew a GPU card full of dashes on every load.
+# The collector now reports `enabled` the way every other source does, and the UI drops the card when
+# it is false. The distinction that matters: disabled != broken. A disabled source must not probe,
+# must not rewrite the baseline, and must not nag; an ENABLED source that cannot see its GPUs must
+# still render (that one is a real alert).
+def test_disabled_gpu_source_probes_nothing_and_writes_no_baseline(monkeypatch, tmp_path):
+    # production nesting: `gpu_drift:` is a TOP-LEVEL block in ops_brain.yaml
+    monkeypatch.setattr(Cfg, "data", {**Cfg.data, "gpu_drift": {**Cfg.data["gpu_drift"],
+                                                              "enabled": False}})
+    called = []
+
+    def run(cmd, timeout=30, max_bytes=200000):
+        called.append(cmd)
+        raise AssertionError("collect_gpu must not shell out when the source is disabled")
+
+    monkeypatch.setattr(C, "run", run)
+    out = C.collect_gpu(Cfg.data)
+    assert out["enabled"] is False
+    assert out["gpus"] == [] and out["available"] is False
+    assert "disabled" in out["error"]
+    assert called == []
+    assert not Path(str(Cfg.get("paths.gpu_baseline"))).exists()
+
+
+def test_disabled_gpu_source_via_the_cfg_class(monkeypatch):
+    """The PRODUCTION path passes the Cfg class (main -> collect_all(Cfg)), not a dict. Reading only a
+    dict left the switch dead on the live host while the tests were green."""
+    class FakeCfg:
+        @classmethod
+        def get(cls, dotted, default=None):
+            return {"gpu_drift.enabled": False}.get(dotted, default)
+
+    def boom(*a, **k):
+        raise AssertionError("collect_gpu must not shell out when the source is disabled")
+
+    monkeypatch.setattr(C, "run", boom)
+    out = C.collect_gpu(FakeCfg)
+    assert out["enabled"] is False and out["gpus"] == []
+
+
+def test_enabled_gpu_source_says_so(monkeypatch):
+    monkeypatch.setattr(C, "run", _fake_run(gpu_ok=True))
+    assert C.collect_gpu(Cfg.data)["enabled"] is True
+
+
+def test_disabled_gpu_source_never_notifies(monkeypatch):
+    """A switched-off source is not an invisible GPU: no daily nag."""
+    sent = []
+    monkeypatch.setattr(A, "notify", lambda msg, category="action": sent.append(msg))
+    coll = {"gpu": {"enabled": False, "gpus": [], "available": False, "baseline": {},
+                    "error": "GPU monitoring disabled (sources.gpu_drift.enabled: false)"}}
+    assert A.gpu_unavailable_notice(coll, {}) is False
+    assert sent == []
+
+
 # --------------------------------------------------------------- actions notify
 def _invisible_gpu(**over):
     gpu = {"gpus": [], "available": False, "error": NVML_ERR,

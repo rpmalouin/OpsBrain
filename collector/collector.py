@@ -524,6 +524,34 @@ def update_manual_stops(containers, cfg):
 def collect_gpu(cfg):
     """Query nvidia-smi (now incl. power draw), track a persistent baseline, and
     compute deterministic GPU-drift flags against that baseline."""
+    # 2026-11-22: honour the source switch the way every other source does. This host has no NVIDIA
+    # device at all, so the dashboard drew a GPU card full of dashes ("VRAM — / —", "Power — W") on
+    # every load — furniture, not information. `enabled` lets the UI drop the card entirely. When the
+    # source IS enabled and the driver breaks, the panel still renders and shows `error`, because that
+    # is a real alert (gpu_unavailable is critical) and hiding it would be the opposite mistake.
+    # Config nesting: `gpu_drift:` is a TOP-LEVEL block in ops_brain.yaml (thresholds + the switch), and
+    # `cfg` here is the Cfg CLASS on the production path (main() calls collect_all(Cfg)) but a plain dict
+    # in the tests — so read dotted-first, then as a dict. A sources.gpu_drift lookup read True on this
+    # host and the card survived the first attempt at this fix.
+    def _flag(obj, dotted):
+        try:
+            v = obj.get(dotted, None)          # Cfg class: dotted lookup
+        except (AttributeError, TypeError):
+            v = None
+        if v is None and isinstance(obj, dict):
+            node = obj
+            for key in dotted.split("."):
+                node = node.get(key) if isinstance(node, dict) else None
+            v = node
+        return v
+
+    gd_enabled = _flag(cfg, "gpu_drift.enabled")
+    if gd_enabled is None:
+        gd_enabled = _flag(cfg, "sources.gpu_drift.enabled")
+    if gd_enabled is False:
+        return {"enabled": False, "gpus": [], "compute_processes": [], "drift_flags": [],
+                "resident_pids": [], "available": False,
+                "error": "GPU monitoring disabled (gpu_drift.enabled: false)"}
     gp = run(["nvidia-smi", "--query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,name,uuid",
               "--format=csv,noheader,nounits"])
     gpus = []
@@ -568,7 +596,7 @@ def collect_gpu(cfg):
     # 3) persist updated baseline
     write_json(baseline_path, baseline)
 
-    return {"gpus": gpus, "compute_processes": processes,
+    return {"enabled": True, "gpus": gpus, "compute_processes": processes,
             "baseline": baseline, "baseline_prev": b, "drift_flags": flags,
             "resident_pids": sorted(resident_pids),
             "available": bool(gpus), "error": gpu_error}

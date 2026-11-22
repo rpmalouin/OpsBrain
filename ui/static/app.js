@@ -58,14 +58,20 @@ function renderSystem(col) {
   const age = tsAge(col?.timestamp);
   let r = "";
   // every card gets a line: on a two-card host a single "GPU util" hid card 1 entirely
-  const util = cards.length > 1
-    ? cards.map(c => `G${c.index ?? 0} ${fmtPct(c.util_gpu_percent)}`).join(" \u00b7 ")
-    : fmtPct(g.util_gpu_percent);
-  r += `<div class="flex justify-between"><span class="text-slate-400">GPU util</span><span>${util}</span></div>`;
+  // ...and a host with NO GPU source gets no line at all (2026-11-22: it read "GPU util —" forever)
+  if (col?.gpu?.enabled !== false) {
+    const util = cards.length > 1
+      ? cards.map(c => `G${c.index ?? 0} ${fmtPct(c.util_gpu_percent)}`).join(" \u00b7 ")
+      : fmtPct(g.util_gpu_percent);
+    r += `<div class="flex justify-between"><span class="text-slate-400">GPU util</span><span>${util}</span></div>`;
+  }
   r += `<div class="flex justify-between"><span class="text-slate-400">Disk /</span><span>${escapeHtml(disks["Use%"] ?? "—")} of ${escapeHtml(disks.Size ?? "?")}</span></div>`;
   r += `<div class="flex justify-between"><span class="text-slate-400">Containers</span><span>${d.running ?? "—"} running / ${d.containers_count ?? "—"}</span></div>`;
   r += `<div class="flex justify-between"><span class="text-slate-400">Last cycle</span><span>${age === null ? "—" : age + "s ago"}</span></div>`;
-  r += `<div class="flex justify-between"><span class="text-slate-400">Next cycle</span><span>${age === null ? "—" : Math.max(0, 120 - age) + "s"}</span></div>`;
+  // the cadence comes from the server (pipeline interval), not a hardcoded 120 s — with an hourly
+  // scheduler the old constant read "Next cycle 0s" for 58 minutes of every hour.
+  const every = Number(state?._meta?.collector_interval_seconds) || null;
+  r += `<div class="flex justify-between"><span class="text-slate-400">Next cycle</span><span>${age === null || !every ? "—" : Math.max(0, every - age) + "s"}</span></div>`;
   return panel("System Overview", `<div class="space-y-1 text-sm">${r}</div>`);
 }
 
@@ -384,8 +390,12 @@ function ageDays(seconds) {
 }
 
 function renderGpuPanel(col) {
+  // No GPU source (host without an NVIDIA device, or the source switched off) hides the card: the
+  // panel would otherwise be a skeleton of dashes ("VRAM — / —", "Power — W"). `enabled === false`
+  // is explicit — an older collector without the field still renders, and an ENABLED source that
+  // cannot see its GPUs still renders so the error stays visible. 2026-11-22.
+  if (col?.gpu?.enabled === false) return "";
   const cards = col?.gpu?.gpus || [];
-  const g = cards[0] || {};
   const base = col?.gpu?.baseline || {};
   const perGpu = base.per_gpu || {};
   let b = "";
@@ -427,6 +437,8 @@ function renderGpuPanel(col) {
 }
 
 function renderDriftTimeline(col) {
+  // Same gate as the GPU panel: a host with no GPU source gets no empty GPU timeline (2026-11-22).
+  if (col?.gpu?.enabled === false) return "";
   const h = state.history || {};
   const gpu = (col?.gpu?.gpus || [])[0] || {};
   const flags = col?.gpu?.drift_flags || [];

@@ -842,6 +842,13 @@ def collect_vm(cfg):
 
 def collect_all(cfg):
     doc = {"timestamp": now_iso(), "collector_version": "1.0", "host": Cfg.get("hostname", "dockerVM")}
+    # The dashboard used to hardcode 120 s for "Next cycle" and read "0s" for 58 minutes of every hour
+    # on an hourly scheduler. The cadence belongs to the pipeline, so the pipeline states it, and the UI
+    # reads it from the data it already receives (no dashboard restart needed to correct the clock).
+    try:
+        doc["collector_interval_seconds"] = int(str(Cfg.get("interval_seconds", 0) or 0))
+    except Exception:  # noqa: BLE001
+        doc["collector_interval_seconds"] = 0
     doc["netdata"] = collect_netdata(cfg)
     doc["dozzle"] = collect_dozzle(cfg)
     doc["dockpeek"] = collect_dockpeek(cfg)

@@ -68,9 +68,10 @@ function renderSystem(col) {
   r += `<div class="flex justify-between"><span class="text-slate-400">Disk /</span><span>${escapeHtml(disks["Use%"] ?? "—")} of ${escapeHtml(disks.Size ?? "?")}</span></div>`;
   r += `<div class="flex justify-between"><span class="text-slate-400">Containers</span><span>${d.running ?? "—"} running / ${d.containers_count ?? "—"}</span></div>`;
   r += `<div class="flex justify-between"><span class="text-slate-400">Last cycle</span><span>${age === null ? "—" : age + "s ago"}</span></div>`;
-  // the cadence comes from the server (pipeline interval), not a hardcoded 120 s — with an hourly
-  // scheduler the old constant read "Next cycle 0s" for 58 minutes of every hour.
-  const every = Number(state?._meta?.collector_interval_seconds) || null;
+  // the cadence comes from the pipeline itself (collector doc, or the UI server's _meta), never a
+  // hardcoded 120 s — the old constant read "Next cycle 0s" for 58 minutes of every hour.
+  const every = Number(state?._meta?.collector_interval_seconds) ||
+                Number(state?.collector?.collector_interval_seconds) || null;
   r += `<div class="flex justify-between"><span class="text-slate-400">Next cycle</span><span>${age === null || !every ? "—" : Math.max(0, every - age) + "s"}</span></div>`;
   return panel("System Overview", `<div class="space-y-1 text-sm">${r}</div>`);
 }

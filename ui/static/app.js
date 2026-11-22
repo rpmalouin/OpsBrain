@@ -276,7 +276,11 @@ function renderNodeComparison() {
 // ------------------------------------------------- TrueNAS panel
 function renderTruenas(col) {
   const tn = col?.truenas || {};
-  if (!tn.enabled) return panel("TrueNAS", `<div class="text-slate-500 text-sm">TrueNAS collection disabled.</div>`);
+  // Both NAS boxes were retired on 2026-11-14 (storage is the Mac Studio's SMB shares now), so the
+  // source is off for the foreseeable future. Render NOTHING while it is off — a permanent
+  // "collection disabled" card is furniture, not information. (Same lesson as the retired dockpeek:
+  // a disabled source must disappear from the digest, not read as a standing failure.)
+  if (!tn.enabled) return "";
   const up = tn.up;
   const pools = tn.pools || [];
   const alerts = tn.alerts_active || [];

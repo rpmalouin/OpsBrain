@@ -128,6 +128,22 @@ def test_context_attention_actionable(base_config):
     assert ctx["attention"] in ("actionable", "low")
 
 
+def test_context_uses_the_producers_real_total_not_the_capped_list(base_config):
+    """A producer may ship 60 of ~190 findings. drift_count must be the real number, and the
+    listed count has to be visible, or the reasoner tells Ron '60 items flagged' every cycle."""
+    rep = _report([{"path": "A.md", "issue": "orphan note: no inbound links"}])
+    rep["findings_total"] = 192
+    ctx = V.create_context_nodes(rep, V.classify(rep))
+    assert ctx["drift_count"] == 192
+    assert ctx["listed_count"] == 1
+
+
+def test_context_falls_back_to_the_list_when_no_total_is_stated(base_config):
+    rep = _report([{"path": "A.md", "issue": "orphan note"},
+                   {"path": "B.md", "issue": "broken link"}])
+    assert V.create_context_nodes(rep, V.classify(rep))["drift_count"] == 2
+
+
 def test_dashboard_summary(base_config):
     rep = _report([
         {"path": "A.md", "issue": "broken link"},

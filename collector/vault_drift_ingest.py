@@ -166,7 +166,11 @@ def create_context_nodes(report, classified):
         attention = "low"
     return {
         "attention": attention,
-        "drift_count": total,
+        # A producer may cap the list it ships (the vault has ~190 orphans; handing the model every
+        # path is noise). `drift_count` must still be the REAL number, so trust the producer's own
+        # total when it states one, and report how many are listed. 2026-11-22.
+        "drift_count": int(report.get("findings_total") or total),
+        "listed_count": total,
         "needs_review_count": counts.get("needs_review", 0),
         "broken_links": classified.get("broken_links", []),
         "orphans": classified.get("orphans", []),

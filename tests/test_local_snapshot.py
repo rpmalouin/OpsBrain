@@ -375,6 +375,29 @@ def test_derived_alerts_flags_a_read_only_share():
     assert LS.derived_alerts(data) == ["mount is read-only: /Volumes/Data"]
 
 
+def test_derived_alerts_is_quiet_for_an_internal_disk_directory():
+    # The producer's 2026-11-13 shape: /Users/ron/Data is a plain directory on the internal disk,
+    # so the mount table says mounted=false while the path is present and writable. Not a fault.
+    data = {"mounts": [{"path": "/Users/ron/Data", "mounted": False, "present": True,
+                        "fstype": None, "source": None, "read_only": None}]}
+    assert LS.derived_alerts(data) == []
+
+
+def test_derived_alerts_still_flags_a_dropped_share_whose_mountpoint_exists():
+    # A real mount that dropped keeps its fstype/source, and its mountpoint directory is still
+    # readable — `present: true` must not silence it.
+    data = {"mounts": [{"path": "/Volumes/appdata", "mounted": False, "present": True,
+                        "fstype": "smbfs", "source": "//ron@dockervm/appdata"}]}
+    assert LS.derived_alerts(data) == ["mount not mounted: /Volumes/appdata"]
+
+
+def test_derived_alerts_flags_a_missing_path():
+    data = {"mounts": [{"path": "/Users/ron/Data", "mounted": False, "present": False,
+                        "fstype": None, "source": None}]}
+    assert LS.derived_alerts(data) == ["path missing: /Users/ron/Data"]
+    assert LS.alert_keys({}, ["path missing: /Users/ron/Data"]) == ["path_missing"]
+
+
 def test_derived_alerts_flags_the_gateway_heartbeat():
     assert LS.derived_alerts({"gateway": {"present": False}}) == ["hermes gateway heartbeat missing"]
     stale = LS.derived_alerts({"gateway": {"present": True, "age_seconds": 900}})

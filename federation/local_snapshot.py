@@ -57,6 +57,7 @@ SNAPSHOT_KEYS = ("time_machine", "mounts", "services", "gateway", "hermes_cron",
 TOKEN_PREFIXES = (
     ("mount not mounted", "mount_not_mounted"),
     ("mount is read-only", "mount_read_only"),
+    ("path missing", "path_missing"),
     ("hermes gateway heartbeat missing", "gateway_missing"),
     ("hermes gateway heartbeat stale", "gateway_stale"),
     ("time machine backup", "time_machine_stale"),
@@ -127,7 +128,9 @@ def derived_alerts(data, tm_stale_hours=DEFAULT_TM_STALE_HOURS,
 
     Deliberately narrow, and deliberately never about capacity. In order:
 
-    * a mount that is not mounted — an unmounted share is a fault, not a number
+    * a mount that is not mounted — an unmounted share is a fault, not a number; a plain directory
+      that merely answers mounted=false is not (`present` is the truth for "is it there")
+    * a watched path that is missing — `present: false`, nothing readable at that path
     * a mount that is mounted READ-ONLY — a share silently remounted read-only is a fault too
     * the Hermes gateway heartbeat missing or older than `gateway_stale_s` — the Mac's own agent is
       the one service nothing else can see
@@ -145,10 +148,22 @@ def derived_alerts(data, tm_stale_hours=DEFAULT_TM_STALE_HOURS,
     for mount in data.get("mounts") or []:
         if not isinstance(mount, dict):
             continue
-        if not mount.get("mounted", True):
-            out.append(f"mount not mounted: {mount.get('path')}")
-        elif mount.get("read_only"):
-            out.append(f"mount is read-only: {mount.get('path')}")
+        path = mount.get("path")
+        mounted = mount.get("mounted")
+        present = mount.get("present")
+        is_mount = bool(mount.get("fstype") or mount.get("source"))
+        # Since 2026-11-13 the producer reports two different truths: `mounted` is the mount-table
+        # answer and `present` is "the path is there and readable/writable". A plain directory on an
+        # internal disk answers mounted=false to the first by design (`/Users/ron/Data`), which is not
+        # a fault; absence is only a fault when `present` says so. A real mount that dropped still
+        # flags even if its mountpoint directory is readable, because it carries an fstype/source.
+        plain_directory = present is True and not is_mount
+        if present is False:
+            out.append(f"path missing: {path}")
+        elif mounted is False and not plain_directory:
+            out.append(f"mount not mounted: {path}")
+        elif mount.get("read_only") and mounted is not False:
+            out.append(f"mount is read-only: {path}")
     gateway = data.get("gateway")
     if isinstance(gateway, dict) and ("present" in gateway or "age_seconds" in gateway):
         if not gateway.get("present"):

@@ -698,8 +698,8 @@ function render() {
     renderConfidenceRecovery(reasoner),
     renderDriftDecay(collector),
     renderRestartImpact(),
-    renderDecisions(reasoner, actions),
     renderReport(reasoner, actions, collector),
+    renderDecisions(reasoner, actions),
     // Container Health is by far the tallest card (a row per container). Last, so it cannot stretch
     // the short cards beside it into empty boxes — the grid sizes rows to their tallest member.
     renderContainers(collector),

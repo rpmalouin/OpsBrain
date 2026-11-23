@@ -1001,6 +1001,33 @@ class TestDockhandDriftActions:
         assert any("flap" in m for m in msgs)
         assert any("orphan" in m for m in msgs)
 
+    def test_quiet_archive_reports_historical_and_never_a_storm(self, base_config):
+        # 2026-11-23: a window frozen on the newest archived event reported a dead
+        # throwaway container as a live storm for 13 hourly cycles. A quiet archive
+        # must be reported AS stale -- never dressed up as a current storm.
+        coll = self._dh_coll(storms=False, drift=False)
+        coll["dockhand"]["correlate"]["event_archive"] = {
+            "quiet": True, "age_hours": 13.1,
+            "newest_event_at": "2026-11-23T01:31:13Z",
+            "suppressed_storms": [{"service": "redirprobe", "count": 8}],
+        }
+        e = A.Engine(True)
+        recs = A.dockhand_drift_actions(coll, e)
+        assert len(recs) == 1
+        msg = str(recs[0].get("reason"))
+        assert "event archive quiet 13.1h" in msg
+        assert "historical, not current" in msg
+        assert "redirprobe (8)" in msg
+        assert "restart storm" not in msg.lower()
+
+    def test_no_archive_notice_while_the_archive_is_live(self, base_config):
+        coll = self._dh_coll(storms=False, drift=False)
+        coll["dockhand"]["correlate"]["event_archive"] = {
+            "quiet": False, "age_hours": 0.1, "newest_event_at": "2026-11-23T14:38:48Z",
+            "suppressed_storms": [],
+        }
+        assert A.dockhand_drift_actions(coll, A.Engine(True)) == []
+
     def test_engine_accepts_dockhand_verb(self, base_config):
         # notify_dockhand_drift is a registered notify-only verb, not "unknown"
         e = A.Engine(True)

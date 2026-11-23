@@ -687,6 +687,24 @@ selected"` — do NOT switch to it; the DB is the source of truth.
   die/destroy/restart per container in window; health flaps ≥2 toggles, from Dockhand's
   archived `container_events`, ~10k rows) → `create_context_nodes` → `update_dashboard_snapshot`.
   Merged into collector.json under `dockhand`.
+- **The storm window ends at `now`, not at the newest archived event (2026-11-23, do not
+  regress).** Dockhand writes a `container_events` row only when something happens (3183 rows
+  in a month), so anchoring `correlate()` on `max(timestamp)` freezes the window wherever the
+  last event landed and re-reports it forever. Measured: a 4-container throwaway probe from
+  01:30:31-01:30:57Z (18 rows, 8 of them die/destroy) plus a 13-hour archive silence
+  (none between 01:31:13Z and 14:37:48Z) produced the identical line "Dockhand restart storm
+  redirprobe: 8 in 30m" in **13 consecutive hourly cycles** for a container that no longer
+  existed — while the same defect can HIDE a real storm whose events aged past that window.
+  `collect_dockhand` now passes `now=datetime.now(timezone.utc)`; a clockless caller keeps the
+  deterministic anchor, so the pure tests are unchanged. Either way `correlate()` returns
+  `event_archive` (`newest_event_at`, `age_s`/`age_hours`, `quiet`, `anchored_on`,
+  `suppressed_storms`), `dockhand_drift_actions` reports a quiet archive **as quiet** ("event
+  archive quiet 13.1h ... N restart candidate(s) are historical, not current") instead of a
+  storm, and the dashboard panel shows the same line. A quiet archive never raises
+  `attention` — silence is absence of evidence, not evidence of health. Regression tests:
+  `test_correlate_window_ends_at_now_not_at_newest_event`,
+  `test_correlate_naive_timestamps_do_not_raise_with_now`,
+  `test_quiet_archive_reports_historical_and_never_a_storm`.
 - **NOTIFY-ONLY** (deliberate): `actions.dockhand_drift_actions()` emits
   `notify_dockhand_drift` (registered notify-only verb) for drift/storms/flaps/orphans. It
   NEVER proposes `docker_restart`, so it can't override Manual-Stop Protection or the

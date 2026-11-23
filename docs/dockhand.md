@@ -57,13 +57,25 @@ yields `{"up": false, "err": ...}`, never a raised exception):
    stream, ~10k rows) compute **restart storms** (≥3 die/destroy/restart/`recreate` per
    container in the window) and **health flaps** (≥2 healthy↔unhealthy toggles). This is a
    signal OpsBrain's own hourly polling cannot see.
+   **The window ends at `now`, never at the newest archived event.** Dockhand writes an event
+   only when something happens (3183 rows in a month), so a quiet archive used to freeze the
+   window wherever the last event landed and re-report it forever: on 2026-11-23 eight
+   die/destroy rows from a 27-second throwaway-container probe at 01:30 were re-counted as
+   "restart storm, 8 in 30m" every hour for 13 cycles, because no event was written between
+   01:31:13Z and 14:37:48Z. The same bug could hide a real storm whose events had aged past
+   the newest-event window. `collect_dockhand` passes `now=`; a caller with no clock omits it
+   and gets the old deterministic anchor. Either way the result carries `event_archive`:
+   `newest_event_at`, `age_s`/`age_hours`, `quiet` (nothing inside the window at all),
+   `anchored_on`, and `suppressed_storms` — the candidates the newest-event anchor would have
+   counted and this one does not, so a stale window reads as stale instead of as a storm.
 6. **`create_context_nodes()`** — collapse drift into compact reasoner-facing nodes
    (`{stack, service, expected, actual, cause, evidence}`) + a one-line `drift_summary` +
-   an `attention` level.
+   an `attention` level. A quiet archive appends its age and any historical candidates to the
+   summary; it never raises `attention`, since a silent archive is absence of evidence.
 7. **`update_dashboard_snapshot()`** — the dashboard shape: `stack_drift`, `service_drift`,
    `dependency_failures`, `image_mismatch`, `health_violations`, `restart_storms`,
-   `orphaned_containers` (running containers not in any stack), `missing_resources`.
-   `orphaned` is case-insensitive so `Firefox` matches the `firefox` stack.
+   `event_archive`, `orphaned_containers` (running containers not in any stack),
+   `missing_resources`. `orphaned` is case-insensitive so `Firefox` matches the `firefox` stack.
 
 `collect_dockhand(cfg)` orchestrates all of it and returns the full multi-level doc
 (normalize / merge / classify / correlate / context_nodes / dashboard), which the collector

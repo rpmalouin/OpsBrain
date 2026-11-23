@@ -24,7 +24,7 @@ import json
 import re
 import sqlite3
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -897,25 +897,62 @@ def _parse_ts(ts):
         return None
 
 
-def correlate(docked_events, netdata, dozzle, window_s=1800, storm_min=3, flap_min=2, storm_cap=20):
+def _aware(ts):
+    """Normalise a parsed stamp to an aware UTC datetime.
+
+    `datetime.fromisoformat` returns a NAIVE datetime for an offset-less stamp
+    (Dockhand has written both), and comparing naive with aware raises
+    TypeError inside max() — which would take the whole correlate() down. A
+    naive stamp from this source is UTC, so label it rather than dropping it.
+    """
+    if ts is None:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def correlate(docked_events, netdata, dozzle, window_s=1800, storm_min=3, flap_min=2,
+              storm_cap=20, now=None):
     """Correlate recent container events into restart storms and health flaps.
 
-    Pure: the newest event timestamp is the window reference, so the result
-    depends only on the input (timestamps as ISO strings). Counts
-    die/destroy/restart/recreate per container in the last ``window_s`` seconds
-    (storm at >= ``storm_min``) and healthy<->unhealthy transitions (flap at
-    >= ``flap_min`` toggles). netdata_relation flags CRITICAL alarms that
-    mention a stormed container. dozzle is accepted for the contract; the
+    Counts die/destroy/restart/recreate per container inside a ``window_s``
+    window (storm at >= ``storm_min``) and healthy<->unhealthy transitions
+    (flap at >= ``flap_min`` toggles). netdata_relation flags CRITICAL alarms
+    that mention a stormed container. dozzle is accepted for the contract; the
     relation is netdata-only.
+
+    ``now`` ENDS the window at wall-clock time and is what the live collector
+    passes. Omitting it falls back to the newest event in the input, which keeps
+    the function pure and deterministic for a caller with no clock (the tests).
+
+    2026-11-23 — anchoring the window on the newest event ALONE is a
+    stale-data bug, not a convenience: Dockhand accumulates events only when
+    something happens (3183 rows in a month), so a quiet archive freezes the
+    window wherever the last event landed and re-reports it forever. Measured:
+    no events at all between 01:31:13Z and 14:37:48Z, so eight die/destroy rows
+    left by a 27-second throwaway-container probe at 01:30 sat inside a "last 30
+    minutes" that never moved, and the same "restart storm" notice fired every
+    hour for 13 cycles (01:31Z to 14:31Z) for a container that had been gone for
+    hours. The same bug silences real storms: once a container's own events age
+    past the newest-event window they can never be counted again.
+
+    The correction is reported, not hidden: ``event_archive`` carries the newest
+    event's age plus ``suppressed_storms`` — candidates the OLD rule would have
+    counted inside the window that ENDS at the newest event and that the
+    corrected window excludes. Those are historical, so they never raise
+    attention; the notifier says so in words instead of inventing a storm.
     """
     netdata = netdata or {}
     events = [e for e in (docked_events or []) if isinstance(e, dict)]
     parsed = []
     for e in events:
-        ts = _parse_ts(e.get("timestamp"))
+        ts = _aware(_parse_ts(e.get("timestamp")))
         if ts is not None:
             parsed.append((ts, e))
-    ref = max((ts for ts, _ in parsed), default=None)
+    newest = max((ts for ts, _ in parsed), default=None)
+    # Wall-clock end of the window wins over the newest event: a quiet archive
+    # must not freeze the window (see the 2026-11-23 note in the docstring).
+    now = _aware(now)
+    ref = max([t for t in (newest, now) if t is not None], default=None)
     cutoff = ref - timedelta(seconds=window_s) if ref else None
 
     storms = []
@@ -969,11 +1006,46 @@ def correlate(docked_events, netdata, dozzle, window_s=1800, storm_min=3, flap_m
             if any(sc.lower() and sc.lower() in hay for sc in stormed):
                 matched_alarms.append(a.get("name") or (a.get("info") or "")[:80] or "alarm")
 
+    # What the OLD (newest-event-anchored) window would have counted and this one
+    # does not: storms whose events all predate the corrected cutoff. Reported so
+    # a stale window is visible as stale, instead of passing for a live storm.
+    suppressed = []
+    if newest is not None and cutoff is not None:
+        old_lo = newest - timedelta(seconds=window_s)
+        stale_by = {}
+        for ts, e in parsed:
+            if old_lo <= ts < cutoff and e.get("action") in STORM_ACTIONS:
+                cont = str(e.get("container_name") or "")
+                if cont:
+                    stale_by.setdefault(cont, []).append(ts)
+        for cont, tss in stale_by.items():
+            if len(tss) >= storm_min:
+                suppressed.append({
+                    "service": cont,
+                    "count": len(tss),
+                    "newest_event_at": max(tss).isoformat().replace("+00:00", "Z"),
+                })
+        suppressed = suppressed[:storm_cap]
+
+    age_s = int((ref - newest).total_seconds()) if (ref is not None and newest is not None) else None
+    event_archive = {
+        "newest_event_at": newest.isoformat().replace("+00:00", "Z") if newest else None,
+        "age_s": age_s,
+        "age_hours": round(age_s / 3600.0, 1) if age_s is not None else None,
+        "window_s": int(window_s),
+        # Quiet = the archive holds nothing inside the window, so storms/flaps are
+        # nil by absence of evidence, not by evidence of health.
+        "quiet": bool(newest is None or (age_s is not None and age_s > window_s)),
+        "anchored_on": "now" if now is not None else "newest_event",
+        "suppressed_storms": suppressed,
+    }
+
     return {
         "restart_storms": storms,
         "health_flaps": flaps,
         "recent_events_count": len(events),
         "recent_events": events[-20:],
+        "event_archive": event_archive,
         "netdata_relation": {
             "alarms_count": int(netdata.get("alarms_count") or 0),
             "critical_alarm_matches_storm": bool(matched_alarms),
@@ -1055,6 +1127,19 @@ def create_context_nodes(merged, classified, correlated, node_cap=20):
         summary = f"{len(stack_kinds)} stack{'s' if len(stack_kinds) != 1 else ''} drifting: {parts}"
     else:
         summary = "no drift"
+
+    # A quiet event archive means "no storms" is absence of evidence, not health —
+    # say so in the one-line summary rather than letting silence read as clean.
+    archive = correlated.get("event_archive") or {}
+    if archive.get("quiet"):
+        parts = [summary,
+                 f"event archive quiet {archive.get('age_hours')}h "
+                 f"(newest {archive.get('newest_event_at') or 'none'})"]
+        suppressed = archive.get("suppressed_storms") or []
+        if suppressed:
+            names = ", ".join(f"{s.get('service')} ({s.get('count')})" for s in suppressed[:3])
+            parts.append(f"{len(suppressed)} restart candidate(s) are historical, not current: {names}")
+        summary = "; ".join(parts)
 
     attention = ("high" if (classified.get("drift_count") or 0) > 0
                  or correlated.get("restart_storms") or correlated.get("health_flaps")
@@ -1139,6 +1224,7 @@ def update_dashboard_snapshot(docked, merged, classified, correlated, docker_doc
         "image_mismatch": classified.get("image_drift_items") or [],
         "health_violations": classified.get("health_drift_items") or [],
         "restart_storms": correlated.get("restart_storms") or [],
+        "event_archive": correlated.get("event_archive") or {},
         "orphaned_containers": orphaned,
         "missing_resources": missing_resources,
         "dockhand_up": dockhand_up,
@@ -1196,7 +1282,8 @@ def collect_dockhand(cfg, docker_doc=None):
                                       skip_local_image_drift=skip_local_image)
     classified = classify_drift(merged, effective_docker, {})
     correlated = correlate(docked.get("container_events_recent") or [], netdata, dozzle,
-                           window_s=storm_window, storm_min=storm_min, flap_min=flap_min)
+                           window_s=storm_window, storm_min=storm_min, flap_min=flap_min,
+                           now=datetime.now(timezone.utc))
     ctx_nodes = create_context_nodes(merged, classified, correlated)
     dash = update_dashboard_snapshot(docked, merged, classified, correlated,
                                      docker_doc=prev_docker)

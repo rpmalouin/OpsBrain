@@ -395,6 +395,21 @@ function renderDockhandPanel(col) {
     for (const o of orphans.slice(0, 5)) b += `<li>• ${escapeHtml(o)}</li>`;
     b += `</ul>`;
   }
+  // A quiet event archive means the zero above is absence of evidence, not health.
+  // Before 2026-11-23 the window was anchored on the newest archived event, so a
+  // silent archive froze it and re-reported an old throwaway container as a storm.
+  const arch = corr.event_archive || {};
+  if (arch.quiet) {
+    const hrs = numOrNull(arch.age_hours);
+    const age = hrs === null ? "unknown" : hrs.toFixed(1) + "h";
+    b += `<div class="mt-1 text-xs text-amber-300/70">event archive quiet ${age} · newest ${escapeHtml(arch.newest_event_at || "none")}</div>`;
+    const supp = arch.suppressed_storms || [];
+    if (supp.length) {
+      b += `<ul class="space-y-0.5 text-xs text-slate-400">`;
+      for (const s of supp.slice(0, 3)) b += `<li>• ${escapeHtml(s.service)} · ${s.count} historical restarts, not current</li>`;
+      b += `</ul>`;
+    }
+  }
   return panel("Dockhand", `<div class=\"space-y-1\">${b}</div>`);
 }
 

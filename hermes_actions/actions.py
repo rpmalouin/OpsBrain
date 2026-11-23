@@ -880,6 +880,19 @@ def dockhand_drift_actions(coll, engine):
         results.append(engine.dispatch(
             "notify_dockhand_drift", name,
             f"Dockhand orphan: {name} not in any stack"))
+    # A stale event window is reported AS stale. Before 2026-11-23 this case emitted
+    # "Dockhand restart storm <name>: 8 in 30m" every hour for a container that had
+    # been gone for 13 hours, because the 30-minute window was anchored on the newest
+    # archived event instead of on now (collector/dockhand_ingest.correlate).
+    archive = correlated.get("event_archive") or {}
+    suppressed = archive.get("suppressed_storms") or []
+    if archive.get("quiet") and suppressed:
+        names = ", ".join(f"{s.get('service')} ({s.get('count')})" for s in suppressed[:3])
+        results.append(engine.dispatch(
+            "notify_dockhand_drift", names,
+            f"Dockhand event archive quiet {archive.get('age_hours')}h "
+            f"(newest {archive.get('newest_event_at') or 'none'}), so "
+            f"{len(suppressed)} restart candidate(s) are historical, not current: {names}"))
     return results
 
 

@@ -2,6 +2,7 @@
 DB, no live docker — temp SQLite files only)."""
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -609,6 +610,53 @@ def test_correlate_health_flap():
     assert two["health_flaps"] == []
 
 
+def test_correlate_window_ends_at_now_not_at_newest_event():
+    # 2026-11-23 regression. Dockhand archived nothing between 01:31:13Z and 14:37:48Z,
+    # so a window anchored on the newest event sat frozen at 01:01-01:31 and re-counted
+    # eight die/destroy rows from a dead 27-second probe container every hour for 13
+    # cycles. Anchored on now, the same rows are historical and raise no storm.
+    now = datetime(2026, 8, 29, 16, 0, tzinfo=timezone.utc)
+    events = [_ev("redirprobe", "die", m) for m in (5, 6, 7)]      # 15:05-15:07, 53 min old
+    out = D.correlate(events, {}, {}, now=now)
+    assert out["restart_storms"] == []
+    arch = out["event_archive"]
+    assert arch["anchored_on"] == "now"
+    assert arch["quiet"] is True
+    assert arch["newest_event_at"] == "2026-08-29T15:07:00Z"
+    assert arch["age_hours"] == 0.9
+    # ... and the stale candidate is named as historical instead of vanishing
+    assert arch["suppressed_storms"] == [
+        {"service": "redirprobe", "count": 3, "newest_event_at": "2026-08-29T15:07:00Z"}]
+
+
+def test_correlate_with_now_still_counts_current_events():
+    now = datetime(2026, 8, 29, 15, 20, tzinfo=timezone.utc)        # events 13 min old
+    events = [_ev("web", "die", m) for m in (5, 6, 7)]
+    out = D.correlate(events, {}, {}, now=now)
+    assert out["restart_storms"][0]["service"] == "web"
+    assert out["restart_storms"][0]["count"] == 3
+    assert out["event_archive"]["quiet"] is False
+    assert out["event_archive"]["suppressed_storms"] == []
+
+
+def test_correlate_without_now_keeps_the_newest_event_anchor():
+    # No clock supplied = the old deterministic behaviour, for pure callers/tests.
+    events = [_ev("web", "die", m) for m in (5, 6, 7)]
+    out = D.correlate(events, {}, {})
+    assert out["event_archive"]["anchored_on"] == "newest_event"
+    assert out["restart_storms"][0]["service"] == "web"
+
+
+def test_correlate_naive_timestamps_do_not_raise_with_now():
+    # Dockhand has written offset-less stamps; comparing naive against aware raises
+    # TypeError inside max() and would take the whole correlate() down.
+    now = datetime(2026, 8, 29, 15, 20, tzinfo=timezone.utc)
+    events = [{"container_name": "web", "action": "die", "timestamp": "2026-08-29T15:05:00"}]
+    out = D.correlate(events, {}, {}, now=now)
+    assert out["recent_events_count"] == 1
+    assert out["event_archive"]["newest_event_at"] == "2026-08-29T15:05:00Z"
+
+
 # --------------------------------------------------------------------------- context nodes / dashboard
 
 
@@ -679,6 +727,23 @@ def test_update_dashboard_snapshot_lists():
     assert dash["missing_resources"]  # volume "/gone" is present as a missing volume
     assert dash["drift_count"] == classified["drift_count"]
     assert dash["generated_at"]
+
+
+def test_dashboard_carries_the_event_archive():
+    # The dashboard must expose the archive's age/quiet state, so a silent archive is
+    # visible as silence rather than passing for a clean bill of health.
+    merged, classified = _drifty_classified_with_resources()
+    correlated = {"restart_storms": [], "health_flaps": [],
+                  "event_archive": {"quiet": True, "age_hours": 13.1,
+                                    "newest_event_at": "2026-11-23T01:31:13Z",
+                                    "suppressed_storms": [{"service": "redirprobe",
+                                                           "count": 8}]}}
+    dash = D.update_dashboard_snapshot(docked={"up": True}, merged=merged,
+                                       classified=classified, correlated=correlated,
+                                       docker_doc={"containers": []})
+    assert dash["restart_storms"] == []
+    assert dash["event_archive"]["quiet"] is True
+    assert dash["event_archive"]["age_hours"] == 13.1
 
 
 # --------------------------------------------------------------------------- collect

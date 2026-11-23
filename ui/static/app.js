@@ -276,7 +276,14 @@ function renderNodeComparison() {
       `<td class="py-1 text-center mono" style="color:${sColor}">${s === null ? "—" : s.toFixed(0)}</td>` +
       `</tr>`;
   }
-  let r = `<table class="w-full text-sm"><thead><tr class="text-xs text-slate-400 text-left"><th>Node</th><th class="text-center">Conf</th><th class="text-center">Drift</th><th class="text-center">Anom</th><th class="text-center">Restart</th><th class="text-center">Stab</th></tr></thead><tbody>${rows}</tbody></table>`;
+  // The Node cell carries up to four sub-lines of host facts, so the table's min-content width can beat
+  // the card's 340px minimum and the table used to spill OUTSIDE the panel. Scroll it inside instead,
+  // and let long tokens in the sub-lines break — a monitor that paints over its neighbours is broken.
+  let r = `<div class="tbl-scroll"><table class="w-full text-sm">` +
+    `<thead><tr class="text-xs text-slate-400 text-left"><th>Node</th>` +
+    `<th class="text-center">Conf</th><th class="text-center">Drift</th><th class="text-center">Anom</th>` +
+    `<th class="text-center">Restart</th><th class="text-center">Stab</th></tr></thead>` +
+    `<tbody>${rows}</tbody></table></div>`;
   return panel("Node Comparison", r);
 }
 
@@ -517,7 +524,9 @@ function renderContainers(col) {
       return `<tr><td>${escapeHtml(c.name)}${badge}</td><td class="${exited}">${escapeHtml(c.state)}</td><td>${fmtPct(cpu)}</td>` +
              `<td>${fmtPct(mem)}</td><td>${c.restart_count ?? 0}</td></tr>`;
     }).join("");
-    b += `<table><thead><tr class="text-slate-400 text-xs"><th>Container</th><th>State</th><th>CPU</th><th>RAM</th><th>Restarts</th></tr></thead><tbody>${rows}</tbody></table>`;
+    // same containment as Node Comparison: container names are longer than a 340px card
+    b += `<div class="tbl-scroll"><table><thead><tr class="text-slate-400 text-xs"><th>Container</th>` +
+      `<th>State</th><th>CPU</th><th>RAM</th><th>Restarts</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
   return panel("Container Health", b);
 }

@@ -14,6 +14,10 @@
   .crit { color:#f87171; }
   .mono { font-family:ui-monospace,monospace; }
   .grid-main { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:0.75rem; align-items:start; }
+  /* Tables in a 340px-wide card must scroll, never paint outside their panel (Node Comparison, 2026-11-22). */
+  .tbl-scroll { overflow-x:auto; }
+  .tbl-scroll th, .tbl-scroll td.text-center { white-space:nowrap; }
+  .tbl-scroll td:first-child { overflow-wrap:break-word; }
   table { width:100%; border-collapse:collapse; font-size:0.8rem; }
   th,td { text-align:left; padding:0.2rem 0.4rem; border-bottom:1px solid #334155; }
   /* group filter buttons (dsh groups.js) */

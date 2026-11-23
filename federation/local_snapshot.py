@@ -315,6 +315,35 @@ def _display_from_snapshot(node, block, ram_warn_pct, ram_heavy_pct):
                    "active_ratio": _f(metrics.get("gpu_active_ratio"))}
 
 
+def cron_digest(data):
+    """The cron block as the model (and the dashboard) may see it: overdue, never raw age.
+
+    The producer reports `oldest_last_run_hours` (raw age) beside `overdue[]`,
+    `oldest_overdue_hours` and `max_age_period_ratio` (age relative to each job's own period) since
+    2026-11-23. A monthly job three weeks into its cycle is healthy but shows a raw age of ~500 h, so
+    the raw number must never be the thing that reaches a reasoner — a digest that carries only
+    `overdue`/`ratio` cannot turn a long period into an anomaly.
+
+    Additive by construction: a producer that predates the normalised fields degrades to
+    `{"enabled": True}` plus whatever it does report, rather than an error.
+    """
+    cron = data.get("hermes_cron")
+    if not isinstance(cron, dict):
+        return {"enabled": False}
+    out: dict = {"enabled": True}
+    for key in ("jobs_total", "jobs_enabled", "jobs_paused"):
+        if key in cron:
+            out[key] = cron[key]
+    out["jobs_failing"] = [str(j) for j in (cron.get("jobs_failing") or [])]
+    out["overdue"] = [str(j) for j in (cron.get("overdue") or [])]
+    for key in ("oldest_overdue_hours", "max_age_period_ratio"):
+        if key in cron:
+            out[key] = cron[key]
+    if cron.get("unreadable"):
+        out["unreadable"] = True
+    return out
+
+
 def merge_snapshot(node, snap, source=None, primary=False, tm_stale_hours=None, gateway_stale_s=None,
                    ram_warn_pct=None, ram_heavy_pct=None):
     """Attach a producer snapshot to a collected node block (mutates and returns it).
@@ -362,6 +391,9 @@ def merge_snapshot(node, snap, source=None, primary=False, tm_stale_hours=None, 
             gateway_stale_s=(gateway_stale_s if gateway_stale_s is not None
                              else DEFAULT_GATEWAY_STALE_S),
             ram_warn_pct=warn, ram_heavy_pct=heavy)
+        # the normalised cron view travels with the snapshot, so no consumer has to reach for the raw
+        # age: a monthly job mid-cycle is overdue=[]/ratio<1 and cannot read as a fault
+        block["cron"] = cron_digest(data)
         extra = block["alert_count"] + len(block["derived_alerts"])
         if primary:
             node["online"] = True

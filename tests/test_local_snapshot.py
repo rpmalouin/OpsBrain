@@ -398,6 +398,35 @@ def test_derived_alerts_flags_a_missing_path():
     assert LS.alert_keys({}, ["path missing: /Users/ron/Data"]) == ["path_missing"]
 
 
+def test_cron_digest_never_carries_the_raw_age():
+    # A monthly job three weeks into its cycle: healthy, and the raw 514 h must not be the thing
+    # that reaches a reasoner.
+    data = {"hermes_cron": {"jobs_total": 29, "jobs_enabled": 29, "jobs_paused": 0,
+                            "jobs_failing": [], "oldest_last_run_hours": 514.34,
+                            "overdue": [], "oldest_overdue_hours": None,
+                            "max_age_period_ratio": 0.96}}
+    digest = LS.cron_digest(data)
+    assert "oldest_last_run_hours" not in digest
+    assert digest["overdue"] == [] and digest["max_age_period_ratio"] == 0.96
+    assert digest["jobs_total"] == 29 and digest["enabled"] is True
+
+
+def test_cron_digest_reports_a_genuinely_overdue_job():
+    data = {"hermes_cron": {"jobs_total": 3, "jobs_failing": ["nightly"],
+                            "overdue": ["nightly"], "oldest_overdue_hours": 7.5,
+                            "max_age_period_ratio": 2.1}}
+    digest = LS.cron_digest(data)
+    assert digest["overdue"] == ["nightly"]
+    assert digest["oldest_overdue_hours"] == 7.5
+    assert "oldest_last_run_hours" not in digest
+
+
+def test_cron_digest_tolerates_a_producer_without_the_normalised_fields():
+    digest = LS.cron_digest({"hermes_cron": {"jobs_total": 21, "oldest_last_run_hours": 264.78}})
+    assert digest == {"enabled": True, "jobs_total": 21, "jobs_failing": [], "overdue": []}
+    assert LS.cron_digest({}) == {"enabled": False}
+
+
 def test_derived_alerts_flags_the_gateway_heartbeat():
     assert LS.derived_alerts({"gateway": {"present": False}}) == ["hermes gateway heartbeat missing"]
     stale = LS.derived_alerts({"gateway": {"present": True, "age_seconds": 900}})

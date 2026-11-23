@@ -423,6 +423,11 @@ def merge_snapshot(node, snap, source=None, primary=False, tm_stale_hours=None, 
 
     for key in SNAPSHOT_KEYS:
         if key in data:
+            if key == "hermes_cron":
+                # replaced by the normalised `cron` view (state == "ok" branch): keeping the raw block
+                # beside it would leave `oldest_last_run_hours` one key away from a consumer that
+                # reaches for the old name — the UI did exactly that until 2026-11-23.
+                continue
             block[key] = data[key]
 
     prod_host = data.get("host")

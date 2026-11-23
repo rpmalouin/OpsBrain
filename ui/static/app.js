@@ -222,13 +222,16 @@ function nodeSnapshotLine(n) {
   if (gw !== null) bits.push("gw " + Math.round(gw) + "s");
   const mounts = Array.isArray(s.mounts) ? s.mounts : [];
   if (mounts.length) {
-    const mounted = mounts.filter(m => m && m.mounted).length;
+    // a plain directory that answers mounted:false but is present is not a dropped mount (same rule
+    // the collector uses in derived_alerts) — count it as mounted or the tile under-reports
+    const mounted = mounts.filter(m => m && (m.mounted || (!m.fstype && !m.source && m.present))).length;
     bits.push("mounts " + mounted + "/" + mounts.length);
   }
-  const cron = s.hermes_cron || {};
+  const cron = s.cron || s.hermes_cron || {};
   if (cron.jobs_total !== undefined && cron.jobs_total !== null) {
     const failing = Array.isArray(cron.jobs_failing) ? cron.jobs_failing.length : 0;
-    bits.push("cron " + failing + "/" + cron.jobs_total + " failing");
+    const overdue = Array.isArray(cron.overdue) ? cron.overdue.length : 0;
+    bits.push("cron " + failing + "/" + cron.jobs_total + " failing" + (overdue ? " · " + overdue + " overdue" : ""));
   }
   if (s.soc_available === false) bits.push("macmon unavailable");
   let html = escapeHtml("snapshot " + bits.join(" · "));

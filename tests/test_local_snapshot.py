@@ -208,10 +208,14 @@ def test_merge_carries_the_telemetry_the_poll_cannot_see(tmp_path):
     node = {"online": True, "anomalies": 0, "alerts_count": 0}
     LS.merge_snapshot(node, LS.read_snapshot(_write(tmp_path, _producer())))
     snap = node["snapshot"]
-    for key in ("time_machine", "mounts", "services", "hermes_cron", "local_model", "disks"):
+    for key in ("time_machine", "mounts", "services", "cron", "local_model", "disks"):
         assert key in snap, key
     assert snap["time_machine"]["latest_backup_age_hours"] is not None
-    assert snap["hermes_cron"]["jobs_total"] >= 1
+    assert snap["cron"]["jobs_total"] >= 1
+    # the raw block must not ride beside the normalised one: `oldest_last_run_hours` is one key away
+    # from any consumer that reaches for the old name
+    assert "hermes_cron" not in snap
+    assert "oldest_last_run_hours" not in snap["cron"]
 
 
 def test_merge_gives_a_node_without_host_a_host_block(tmp_path):

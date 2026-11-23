@@ -222,10 +222,15 @@ function nodeSnapshotLine(n) {
   if (gw !== null) bits.push("gw " + Math.round(gw) + "s");
   const mounts = Array.isArray(s.mounts) ? s.mounts : [];
   if (mounts.length) {
-    // a plain directory that answers mounted:false but is present is not a dropped mount (same rule
-    // the collector uses in derived_alerts) — count it as mounted or the tile under-reports
-    const mounted = mounts.filter(m => m && (m.mounted || (!m.fstype && !m.source && m.present))).length;
-    bits.push("mounts " + mounted + "/" + mounts.length);
+    // Count REAL mounts only. A plain directory on the boot volume reports mounted:false with
+    // present:true (/Users/ron/Data since 2026-11-13) — it is not a mount at all, so "5/5" claimed five
+    // mounts where four exist and the number read like a fault. It is still satisfied (the collector
+    // treats present:true as OK), so it is named instead of counted: "4/4 (1 internal)". A genuinely
+    // dropped share has mounted:false AND present:false, stays in the denominator, and shows as 3/4.
+    const internal = mounts.filter(m => m && !m.mounted && m.present).length;
+    const real = mounts.filter(m => m && m.mounted).length;
+    bits.push("mounts " + real + "/" + (mounts.length - internal) +
+              (internal ? " (" + internal + " internal)" : ""));
   }
   const cron = s.cron || s.hermes_cron || {};
   if (cron.jobs_total !== undefined && cron.jobs_total !== null) {

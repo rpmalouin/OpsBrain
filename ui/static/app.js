@@ -698,9 +698,11 @@ function render() {
     renderConfidenceRecovery(reasoner),
     renderDriftDecay(collector),
     renderRestartImpact(),
-    renderContainers(collector),
     renderDecisions(reasoner, actions),
     renderReport(reasoner, actions, collector),
+    // Container Health is by far the tallest card (a row per container). Last, so it cannot stretch
+    // the short cards beside it into empty boxes — the grid sizes rows to their tallest member.
+    renderContainers(collector),
   ];
   grid.innerHTML = cards.join("");
   renderGroupButtons($("groupBtns"), groups, (sel) => { activeGroup = sel; render(); }, state.collector?.docker?.containers || []);

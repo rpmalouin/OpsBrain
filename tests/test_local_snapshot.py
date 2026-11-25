@@ -431,6 +431,18 @@ def test_cron_digest_tolerates_a_producer_without_the_normalised_fields():
     assert LS.cron_digest({}) == {"enabled": False}
 
 
+def test_cron_digest_carries_the_overdue_grace_so_a_ratio_above_1_is_not_lateness():
+    # The producer's grace is 1.5x a job's own period: ratio 1.18 with overdue [] is healthy, and the
+    # reader must be able to see the band rather than guess at it.
+    digest = LS.cron_digest({"hermes_cron": {"jobs_total": 29, "overdue": [],
+                                            "max_age_period_ratio": 1.18}})
+    assert digest["max_age_period_ratio"] == 1.18
+    assert digest["overdue_grace_ratio"] == 1.5
+    assert digest["overdue"] == []
+    # no ratio reported -> no band claimed
+    assert "overdue_grace_ratio" not in LS.cron_digest({"hermes_cron": {"jobs_total": 1}})
+
+
 def test_cron_digest_takes_incidents_but_never_the_bulk_collections():
     # Schema 3: jobs/runs/incidents/outputs/logs arrive together; 152 KB in the live document.
     cron = {"jobs_total": 29, "jobs": [{"id": "a"}], "runs": [{"job_id": "a"}] * 200,

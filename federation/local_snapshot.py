@@ -48,6 +48,9 @@ DEFAULT_TM_STALE_HOURS = 48       # a Time Machine backup older than this is wor
 DEFAULT_GATEWAY_STALE_S = 300     # the Hermes gateway heartbeat is ~15 s old when healthy
 DEFAULT_RAM_WARN_PCT = 10.0       # ram_available/total below this reads as pressure (macmon's own line)
 DEFAULT_RAM_HEAVY_PCT = 5.0       # ...and below this as heavy (macmon's own line)
+# the producer's cron grace: a job is late only past 1.5 x its own measured period, so a ratio of 1.18
+# is inside the band. `overdue[]` is the authority; this constant exists so a consumer can say why.
+OVERDUE_GRACE_RATIO = 1.5
 SNAPSHOT_KEYS = ("time_machine", "mounts", "services", "gateway", "hermes_cron",
                  "local_model", "disks", "soc", "volumes_watched", "volumes_skipped")
 
@@ -332,6 +335,11 @@ def cron_digest(data):
     `logs` are bulk and stay out, so a digest consumer never inherits 150 KB. A sub-collection that
     FAILED reports itself instead of reading as empty: `incidents: []` and `incidents_error` are not
     the same claim, and silence about a failed read is not health.
+
+    `overdue[]` is the authority, and `max_age_period_ratio` is not a fault on its own: the producer's
+    grace is 1.5 x each job's own measured period (measured 2026-11-25: ratio 1.18 with overdue []) .
+    The grace travels in the digest as `overdue_grace_ratio` so no consumer has to know it, and so a
+    ratio above 1 cannot be read as lateness by a reader that never saw the band.
     """
     cron = data.get("hermes_cron")
     if not isinstance(cron, dict):
@@ -345,6 +353,9 @@ def cron_digest(data):
     for key in ("oldest_overdue_hours", "max_age_period_ratio"):
         if key in cron:
             out[key] = cron[key]
+    if "max_age_period_ratio" in out:
+        # the band the producer applies, so a reader cannot mistake 1.18 for lateness
+        out["overdue_grace_ratio"] = OVERDUE_GRACE_RATIO
     if isinstance(cron.get("incidents"), list):
         out["incidents"] = [i.get("job_name") or i.get("name") or i.get("job_id") or str(i)
                             if isinstance(i, dict) else str(i) for i in cron["incidents"]]

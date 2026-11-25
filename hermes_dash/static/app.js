@@ -12,7 +12,7 @@
   "use strict";
 
   var REFRESH_MS = 30000;
-  var HOSTS = ["dockervm", "macstudio"];
+  var HOSTS = ["dockervm", "macstudio", "ollamabox"];
   var STATIC = !!window.__HERMES_STATIC__;
 
   // The Home tab embeds the OpsBrain page. Over the caddy route this page is https, so
@@ -32,7 +32,7 @@
     tab: "home",
     detail: null, // {host, jobId}
     q: "",
-    data: { dockervm: null, macstudio: null },
+    data: { dockervm: null, macstudio: null, ollamabox: null },
     generatedAt: null,
     err: null,
     lastOk: null,
@@ -161,9 +161,12 @@
 
   function onRoute() {
     var route = parseHash();
+    var changed = route.tab !== ui.tab;
     ui.tab = route.tab;
     ui.detail = route.detail || null;
     render();
+    // switching to a host fetches it now rather than waiting for the next 30 s tick
+    if (changed && route.tab !== "home" && !STATIC) refresh();
   }
 
   // ---------------------------------------------------------------- data
@@ -189,10 +192,16 @@
   function refresh() {
     if (STATIC) return;
     if (document.visibilityState !== "visible") return;
-    Promise.all(HOSTS.map(fetchHost))
-      .then(function (docs) {
-        ui.data.dockervm = docs[0];
-        ui.data.macstudio = docs[1];
+    // the ollama tab costs an SSH round trip on the far host, so it is fetched only while
+    // it is the tab being viewed (dockervm/macstudio are local files and always fetched)
+    var want = HOSTS.filter(function (h) {
+      return h !== "ollamabox" || ui.tab === "ollamabox";
+    });
+    Promise.all(want.map(function (h) {
+      return fetchHost(h).then(function (doc) { return [h, doc]; });
+    }))
+      .then(function (pairs) {
+        pairs.forEach(function (pair) { ui.data[pair[0]] = pair[1]; });
         ui.generatedAt = new Date().toISOString();
         ui.err = null;
         ui.lastOk = new Date();
@@ -755,6 +764,125 @@
     }
   }
 
+
+  // ---------------------------------------------------------------- Ollama box cards
+  function renderOllamaBox(pane, doc) {
+    var grid = pane.querySelector(".grid");
+    var c = doc.counts || {};
+    var svc = doc.service || {};
+    var host = doc.host || {};
+    var stateCls = doc.state === "ok" ? "ok" : doc.state === "api-only" ? "warn" : "crit";
+    var keepAlive = null;
+    (doc.loaded || []).forEach(function (m) {
+      if (m.expires_in_s !== null && m.expires_in_s !== undefined) {
+        keepAlive = keepAlive === null ? m.expires_in_s : Math.min(keepAlive, m.expires_in_s);
+      }
+    });
+
+    var tiles =
+      tile("Service", svc.active || "?", "ollama " + (svc.version || "?"), svc.active === "active" ? "ok" : "crit") +
+      tile("Loaded", c.loaded === null || c.loaded === undefined ? "?" : c.loaded,
+        (c.loaded_vram_gib || 0) + " GB of weights in VRAM", c.loaded ? "ok" : "") +
+      tile("GPUs", c.gpus === null || c.gpus === undefined ? "?" : c.gpus,
+        (c.vram_used_gib || 0) + " / " + (c.vram_total_gib || 0) + " GiB held (" + (c.vram_percent || 0) + "%)") +
+      tile("GPU util", (c.util_percent || 0) + "%", "0% = idle between calls") +
+      tile("Keep-alive", keepAlive === null ? "—" : fmtAge(keepAlive), keepAlive === null ? "nothing loaded" : "until the model unloads",
+        keepAlive !== null && keepAlive < 120 ? "warn" : "") +
+      tile("Host load", (host.load || ["?"])[0] || "?",
+        (host.cores || "?") + " cores · " + (host.mem_used_gb === null || host.mem_used_gb === undefined ? "?" : host.mem_used_gb) +
+        " of " + (host.mem_total_gb || "?") + " GB RAM") +
+      tile("Log errors", c.log_errors || 0, "last 12 journal lines", c.log_errors ? "crit" : "ok");
+    putCard(grid, "tiles", cardTitle("At a glance") + '<div class="tiles">' + tiles + "</div>", { wide: true });
+
+    var loaded = doc.loaded || [];
+    var lt = '<table><thead><tr><th>Model</th><th class="n">Weights in VRAM</th><th class="n">Context</th><th>Capabilities</th><th class="n">Unloads in</th></tr></thead><tbody>';
+    loaded.forEach(function (m) {
+      var caps = (m.capabilities || []).map(function (cap) {
+        return '<span class="tag ' + (cap === "vision" ? "info" : cap === "thinking" ? "warn" : "") + '">' + esc(cap) + "</span>";
+      }).join(" ");
+      lt += "<td><strong>" + esc(m.name) + "</strong>" +
+        '<div class="muted">' + esc((m.details || {}).parameter_size || "") + " " + esc((m.details || {}).quantization_level || "") +
+        (m.runner ? " · " + esc(m.runner) : "") + "</div></td>" +
+        '<td class="n">' + (m.size_vram ? (m.size_vram / 1e9).toFixed(1) + " GB" : "—") + "</td>" +
+        '<td class="n">' + (m.context_length || "—") + (m.native_context ? ' <span class="muted">of ' + m.native_context + "</span>" : "") + "</td>" +
+        "<td>" + (caps || '<span class="muted">—</span>') + "</td>" +
+        '<td class="n nowrap">' + esc(m.expires_in_s === null || m.expires_in_s === undefined ? "—" : fmtAge(m.expires_in_s)) + "</td></tr>";
+    });
+    if (!loaded.length) lt += '<tr><td colspan="5" class="empty">nothing loaded — the next caller pays a model load</td></tr>';
+    lt += "</tbody></table>";
+    putCard(grid, "loaded", cardTitle("Loaded now", loaded.length) + '<div class="tbl-scroll">' + lt + "</div>", { wide: true });
+
+    var gpus = doc.gpus || [];
+    var gt = '<table><thead><tr><th>GPU</th><th class="n">VRAM</th><th class="n">Util</th><th class="n">Temp</th><th class="n">Power</th><th>Compute app</th></tr></thead><tbody>';
+    gpus.forEach(function (g) {
+      var apps = (g.apps || []).map(function (a) {
+        return esc(a.process) + ' <span class="muted">pid ' + esc(a.pid) + " · " + (a.mem_mib ? (a.mem_mib / 1024).toFixed(1) + " GiB" : "") + "</span>";
+      }).join("<br>");
+      gt += "<td><strong>" + esc(g.index) + "</strong> · " + esc(g.name) + "</td>" +
+        '<td class="n nowrap">' + (g.mem_used_mib ? (g.mem_used_mib / 1024).toFixed(1) : "?") + " / " +
+        (g.mem_total_mib ? (g.mem_total_mib / 1024).toFixed(1) : "?") + " GiB</td>" +
+        '<td class="n">' + (g.util_percent === null ? "—" : g.util_percent + "%") + "</td>" +
+        '<td class="n">' + (g.temp_c === null ? "—" : g.temp_c + " °C") + "</td>" +
+        '<td class="n">' + (g.power_w === null ? "—" : g.power_w + " W") + "</td>" +
+        "<td>" + (apps || '<span class="muted">idle</span>') + "</td></tr>";
+    });
+    if (!gpus.length) gt += '<tr><td colspan="6" class="empty">nvidia-smi gave nothing — see the sources card</td></tr>';
+    gt += "</tbody></table>";
+    putCard(grid, "gpus", cardTitle("GPUs", gpus.length) + '<div class="tbl-scroll">' + gt + "</div>", { wide: true });
+
+    var mt = '<table><thead><tr><th>Model</th><th class="n">Size</th><th class="n">Params</th><th>Quant</th><th class="n">Pulled</th></tr></thead><tbody>';
+    (doc.models || []).forEach(function (m) {
+      mt += "<td><strong>" + esc(m.name) + "</strong></td>" +
+        '<td class="n">' + (m.size ? (m.size / 1e9).toFixed(1) + " GB" : "—") + "</td>" +
+        '<td class="n">' + esc(m.parameter_size || "—") + "</td>" +
+        "<td>" + esc(m.quantization_level || "—") + "</td>" +
+        '<td class="n nowrap">' + esc(fmtAgo(m.modified_at)) + "</td></tr>";
+    });
+    if (!(doc.models || []).length) mt += '<tr><td colspan="5" class="empty">no models installed on that box</td></tr>';
+    mt += "</tbody></table>";
+    putCard(grid, "models", cardTitle("Models on disk", (doc.models || []).length) + '<div class="tbl-scroll">' + mt + "</div>", { wide: true });
+
+    var hb = '<dl class="kv">' +
+      "<dt>unit</dt><dd>" + esc(svc.unit || "ollama") + " · " + esc(svc.active || "?") + (svc.since ? " since " + esc(svc.since) : "") + "</dd>" +
+      "<dt>version</dt><dd>API " + esc(svc.version || "?") + " · CLI " + esc(svc.cli_version || "?") + "</dd>" +
+      "<dt>uptime</dt><dd>" + esc(host.uptime || "?") + "</dd>" +
+      "<dt>cores</dt><dd>" + esc(host.cores || "?") + "</dd>" +
+      "<dt>RAM</dt><dd>" + esc(host.mem_used_gb === null || host.mem_used_gb === undefined ? "?" : host.mem_used_gb) + " GB used of " +
+      esc(host.mem_total_gb || "?") + " GB" + (host.mem_available_gb ? " · " + esc(host.mem_available_gb) + " GB available" : "") + "</dd>" +
+      "</dl>";
+    putCard(grid, "host", cardTitle("Host") + hb, { wide: true });
+
+    var log = doc.log || [];
+    var hidden = doc.log_hidden || 0;
+    putCard(grid, "log", cardTitle(hidden || log.length ? "Service log (last " + log.length + ")" : "Service log") +
+      (log.length
+        ? '<pre class="err">' + esc(log.join("\n")) + "</pre>"
+        : '<div class="empty good">nothing but routine access lines — no errors or restarts in the journal tail</div>') +
+      (hidden ? '<div class="muted" style="margin-top:.35rem">' + hidden +
+        " routine access line(s) from this page's own polls hidden.</div>" : ""), { wide: true });
+
+    var src = doc.sources || {};
+    var st = '<table><thead><tr><th>Source</th><th>Target</th><th class="n">Latency</th><th>State</th></tr></thead><tbody>';
+    Object.keys(src).forEach(function (key) {
+      var s = src[key] || {};
+      st += "<td>" + esc(key) + "</td>" +
+        '<td class="mono" style="overflow-wrap:anywhere">' + esc(s.path || s.target || "") + "</td>" +
+        '<td class="n nowrap">' + (s.latency_ms === null || s.latency_ms === undefined ? "—" : esc(s.latency_ms) + " ms") + "</td>" +
+        "<td>" + (s.ok ? '<span class="tag ok">ok</span>' : '<span class="tag crit">' + esc(s.error || "failed") + "</span>") + "</td></tr>";
+    });
+    st += "</tbody></table>" +
+      '<div class="muted" style="margin-top:.4rem">HTTP is the model API on :11434; the GPU and host rows come from one SSH command over the ollama alias. ' +
+      "This tab is only fetched while you are looking at it.</div>";
+    putCard(grid, "sources", cardTitle("What this reads") + st, { wide: true });
+
+    var gaps = doc.not_connected || [];
+    if (gaps.length) {
+      putCard(grid, "gap", cardTitle("Not connected") + gaps.map(function (line) {
+        return '<div class="row"><div class="grow">' + esc(line) + "</div></div>";
+      }).join(""), { wide: true });
+    }
+  }
+
   // ---------------------------------------------------------------- job detail
   function renderDetail(pane, doc) {
     var job = (doc.jobs || []).filter(function (j) { return j.id === ui.detail.jobId; })[0];
@@ -878,12 +1006,13 @@
     if (placeholder) placeholder.remove();
     if (mode === "detail") renderDetail(pane, doc);
     else if (host === "dockervm") renderDockerVm(pane, doc);
+    else if (host === "ollamabox") renderOllamaBox(pane, doc);
     else renderMacStudio(pane, doc);
   }
 
   function render() {
     renderChrome();
-    ["home", "dockervm", "macstudio"].forEach(function (name) {
+    ["home", "dockervm", "macstudio", "ollamabox"].forEach(function (name) {
       var pane = document.getElementById("pane-" + name);
       if (!pane) return;
       var show = ui.tab === name;
@@ -965,8 +1094,11 @@
   // ---------------------------------------------------------------- boot
   if (STATIC) {
     var data = window.__STATIC_DATA__ || { hosts: {} };
-    ui.data.dockervm = (data.hosts || {}).dockervm || null;
-    ui.data.macstudio = (data.hosts || {}).macstudio || null;
+    // every host, not just the two that existed first: a hardcoded pair left a new tab
+    // stuck on "reading the snapshot" forever
+    HOSTS.forEach(function (h) {
+      ui.data[h] = ((data.hosts || {})[h]) || null;
+    });
     ui.generatedAt = data.generated_at || null;
     onRoute();
   } else {

@@ -1,7 +1,7 @@
 # Hermes cron dashboard (loopback-only, read-only, no model)
 
-Three tabs in one page: the existing OpsBrain dashboard (home), **dockerVM — Hermes**
-and **Mac Studio — Hermes**. It answers "what are my scheduled jobs doing, what is
+Four tabs in one page: the existing OpsBrain dashboard (home), **dockerVM — Hermes**,
+**Mac Studio — Hermes** and **Ollama** (the inference box at 10.1.10.30). It answers "what are my scheduled jobs doing, what is
 failing or overdue, what did they say" without putting a model in the loop: a script
 reads files and SQLite on this host and a small local web server renders them.
 
@@ -41,6 +41,20 @@ dockerVM tab (`HERMES_HOME=/root/.hermes`, profile `default`):
 | Scheduler liveness | `cron/ticker_heartbeat`, `cron/ticker_last_success` | ~60 s ticker |
 | Warnings / errors | tails of `logs/errors.log` + `logs/gateway.log`, grouped by message signature | file tail, re-read per request (cached 3 s) |
 | Log files | top-level `logs/*.log` + `state/*.log` | mtime per file |
+
+Ollama tab:
+
+| Section | Source | Freshness |
+|---|---|---|
+| Service state/version, models on disk, loaded models (+ context, capabilities, VRAM, unload countdown) | `http://10.1.10.30:11434/api/{version,tags,ps,show}` | live per request (server cache 45 s) |
+| GPUs (both 5070 Ti: VRAM, util, temp, power, compute apps by uuid), unit state, uptime, cores, RAM, journal tail | one SSH command over the `ollama` alias (`BatchMode`, 10 s timeout) | same cache window |
+| Service log | `journalctl -u ollama` tail, with this page's own poll lines removed and repeated messages collapsed (both counted on the card) | same |
+
+The tab is fetched **only while it is the tab being viewed** — every collect costs an SSH round
+trip on the far host, so it is cached 45 s and skipped by the 30 s refresh otherwise. A 200 with
+an empty body is reported as an error, not as health: that box has wedged that way before
+(accepted TCP, answered nothing). An unreachable API or SSH is `state: unreachable` /
+`api-only` with the error text, never an empty-but-green card.
 
 Mac Studio tab:
 

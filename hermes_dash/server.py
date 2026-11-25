@@ -32,8 +32,10 @@ from hermes_dash import collector as C  # noqa: E402
 
 STATIC = HERE / "static"
 STATIC_FILES = {"app.js", "app.css", "index.html"}
-HOSTS = ("dockervm", "macstudio")
-CACHE_TTL = 3.0
+HOSTS = ("dockervm", "macstudio", "ollamabox")
+# The ollama box costs one SSH round trip (~0.5 s) per collect, so it is cached longer and
+# only fetched while its tab is the one being viewed (see static/app.js).
+CACHE_TTL = {"dockervm": 3.0, "macstudio": 3.0, "ollamabox": 45.0}
 
 # Names the front door may proxy here with. The bind stays loopback; caddy is
 # host-networked and dials 127.0.0.1, so the ONLY thing that changes when a route
@@ -55,7 +57,8 @@ def state_for(host: str) -> dict:
     key = host
     hit = _cache.get(key)
     now = time.monotonic()
-    if hit and now - hit[0] < CACHE_TTL:
+    ttl = CACHE_TTL.get(host, 3.0) if isinstance(CACHE_TTL, dict) else CACHE_TTL
+    if hit and now - hit[0] < ttl:
         return hit[1]
     doc = C.collect(host) if host in HOSTS else C.collect_all()
     _cache[key] = (now, doc)

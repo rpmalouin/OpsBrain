@@ -434,6 +434,146 @@ def test_mac_missing_file_is_not_health(tree, monkeypatch):
     assert "never wrote" in doc["not_connected"][0]
 
 
+
+# ---------------------------------------------------------------- ollama box
+SSH_FIXTURE = """
+@@UNIT
+active
+Mon 2026-11-23 17:04:28 UTC
+@@VER
+ollama version is 0.40.16
+@@GPU
+0, GPU-aaa, NVIDIA GeForce RTX 5070 Ti, 10566, 16303, 0, 39.50, 18.89
+1, GPU-bbb, NVIDIA GeForce RTX 5070 Ti, 9930, 16303, 0, 41.42, 11.16
+@@APPS
+GPU-aaa, 185026, /usr/local/lib/ollama/llama-server, 10556
+GPU-bbb, 185026, /usr/local/lib/ollama/llama-server, 9904
+@@HOST
+ 14:40:57 up 1 day, 21:36,  1 user,  load average: 1.68, 3.21, 3.27
+32
+Mem:             121          10          93           0          19         110
+@@LOG
+[GIN] 2026/11/25 - 14:41:37 | 200 |   1.11ms |      10.1.10.10 | GET      "/api/tags"
+[GIN] 2026/11/25 - 14:41:37 | 200 |   0.02ms |       127.0.0.1 | GET      "/api/version"
+[GIN] 2026/11/25 - 14:40:00 | 500 |  10.00ms |      10.1.10.34 | POST     "/api/generate"
+"""
+
+
+def _ollama_http_stub(ok=True):
+    def fake(path, payload=None):
+        if not ok:
+            return {"path": path, "ok": False, "error": "URLError: refused", "latency_ms": 1.0,
+                    "size": 0, "data": None}
+        data = {
+            "/api/version": {"version": "0.40.16"},
+            "/api/tags": {"models": [{"name": "qwen3.5:27b", "size": 17_500_000_000,
+                                      "modified_at": ts(-216),
+                                      "details": {"family": "qwen35", "parameter_size": "26.9B",
+                                                  "quantization_level": "Q4_K_M"}}]},
+            "/api/ps": {"models": [{"name": "qwen3.5:27b", "model": "qwen3.5:27b",
+                                    "size": 19_944_366_404, "size_vram": 19_944_366_404,
+                                    "context_length": 65536, "runner": "llamacpp",
+                                    "expires_at": ts(13), "details": {"parameter_size": "26.9B"}}]},
+            "/api/show": {"capabilities": ["completion", "vision", "tools", "thinking"],
+                          "model_info": {"qwen35.context_length": 262144}},
+        }[path]
+        return {"path": path, "ok": True, "error": None, "latency_ms": 1.2, "size": 100, "data": data}
+    return fake
+
+
+def test_ollama_document_parses_the_box(monkeypatch):
+    monkeypatch.setattr(C, "_http_json", _ollama_http_stub(True))
+    monkeypatch.setattr(C, "_ssh_read", lambda script: {
+        "ok": True, "error": None, "latency_ms": 465.0, "text": SSH_FIXTURE})
+    doc = C.collect_ollamabox()
+    assert doc["state"] == "ok"
+    assert doc["service"]["active"] == "active"
+    assert doc["service"]["version"] == "0.40.16"
+    assert doc["service"]["cli_version"] == "0.40.16"
+    assert len(doc["models"]) == 1 and doc["models"][0]["quantization_level"] == "Q4_K_M"
+    loaded = doc["loaded"][0]
+    assert loaded["context_length"] == 65536
+    assert loaded["native_context"] == 262144
+    assert "vision" in loaded["capabilities"]
+    assert 0 < loaded["expires_in_s"] <= 13 * 60
+    assert [g["index"] for g in doc["gpus"]] == [0, 1]
+    assert doc["gpus"][0]["apps"][0]["process"].endswith("llama-server")
+    assert doc["gpus"][1]["apps"][0]["mem_mib"] == 9904
+    assert doc["host"]["cores"] == 32
+    assert doc["host"]["load"] == [1.68, 3.21, 3.27]
+    assert doc["host"]["mem_total_gb"] == 121
+    assert doc["counts"]["vram_used_gib"] == 20.0
+    assert doc["counts"]["vram_total_gib"] == 31.8
+    assert doc["counts"]["loaded_vram_gib"] == 19.9
+
+
+def test_ollama_log_hides_only_this_pages_own_polls(monkeypatch):
+    monkeypatch.setattr(C, "_http_json", _ollama_http_stub(True))
+    monkeypatch.setattr(C, "_ssh_read", lambda script: {
+        "ok": True, "error": None, "latency_ms": 400.0, "text": SSH_FIXTURE})
+    doc = C.collect_ollamabox()
+    assert doc["log_hidden"] == 2, "the two 200s on /api/tags and /api/version are ours"
+    assert any('"/api/generate"' in ln for ln in doc["log"]), "a real 500 must survive the filter"
+    assert doc["counts"]["log_errors"] == 1
+
+
+def test_ollama_unreachable_is_not_health(monkeypatch):
+    monkeypatch.setattr(C, "_http_json", _ollama_http_stub(False))
+    monkeypatch.setattr(C, "_ssh_read", lambda script: {
+        "ok": False, "error": "ssh: connect to host 10.1.10.30 port 22: Connection timed out",
+        "latency_ms": 10000.0, "text": ""})
+    doc = C.collect_ollamabox()
+    assert doc["state"] == "unreachable"
+    assert doc["gpus"] == [] and doc["loaded"] == [] and doc["models"] == []
+    assert doc["counts"]["gpus"] == 0
+    assert "timed out" in (doc["sources"]["ssh_gpu_host"]["error"] or "")
+    assert doc["service"]["http_error"]
+
+
+def test_ollama_api_only_when_ssh_fails(monkeypatch):
+    monkeypatch.setattr(C, "_http_json", _ollama_http_stub(True))
+    monkeypatch.setattr(C, "_ssh_read", lambda script: {
+        "ok": False, "error": "Permission denied (publickey)", "latency_ms": 90.0, "text": ""})
+    doc = C.collect_ollamabox()
+    assert doc["state"] == "api-only", "the model API answering while ssh fails is its own state"
+    assert len(doc["loaded"]) == 1
+    assert doc["gpus"] == []
+
+
+def test_http_200_with_an_empty_body_is_an_error(tmp_path, monkeypatch):
+    """Measured on that box before: a wedged process accepts TCP and answers nothing."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Empty(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Empty)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setattr(C, "OLLAMA_URL", f"http://127.0.0.1:{srv.server_address[1]}")
+    try:
+        out = C._http_json("/api/version")
+        assert out["ok"] is False
+        assert "empty body" in out["error"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_ssh_blocks_split_on_markers():
+    blocks = C._ssh_blocks(SSH_FIXTURE)
+    assert set(blocks) == {"UNIT", "VER", "GPU", "APPS", "HOST", "LOG"}
+    assert blocks["UNIT"][0] == "active"
+    assert len([ln for ln in blocks["GPU"] if ln.strip()]) == 2
+
 # ---------------------------------------------------------------- serving rules
 def test_servable_allows_job_output_and_logs(tree):
     out = next((tree["home"] / "cron" / "output" / "aaaa11112222").glob("*.md"))

@@ -28,6 +28,8 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,6 +43,12 @@ ROLLUP_FILE = Path(os.environ.get("HERMES_DASH_ROLLUP", str(STATE_DIR / "hermes_
 MAC_SNAPSHOT = Path(
     os.environ.get("HERMES_DASH_MAC_SNAPSHOT", str(OPSBRAIN / "logs" / "macstudio_node.json"))
 )
+# The ollama box (10.1.10.30): a bare-metal inference server — HTTP for the model API,
+# one SSH command for the GPU/host facts. No agent is installed there.
+OLLAMA_URL = os.environ.get("HERMES_DASH_OLLAMA_URL", "http://10.1.10.30:11434")
+OLLAMA_SSH = os.environ.get("HERMES_DASH_OLLAMA_SSH", "ollama")
+OLLAMA_HTTP_TIMEOUT = 3.0
+OLLAMA_SSH_TIMEOUT = 10.0
 
 JOBS_FILE = HERMES_HOME / "cron" / "jobs.json"
 EXEC_DB = HERMES_HOME / "cron" / "executions.db"
@@ -864,11 +872,287 @@ def collect_macstudio(ref: datetime | None = None) -> dict:
     return base
 
 
+
+# ---------------------------------------------------------------- ollama box document
+def _http_json(path: str, payload: dict | None = None) -> dict:
+    """One small JSON call with a hard timeout. Never raises; says what failed."""
+    import urllib.error
+    import urllib.request
+
+    url = OLLAMA_URL.rstrip("/") + path
+    started = time.monotonic()
+    out: dict = {"path": path, "ok": False, "error": None, "latency_ms": None, "size": 0, "data": None}
+    try:
+        data = None
+        headers = {}
+        if payload is not None:
+            data = json.dumps(payload).encode()
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers)
+        with urllib.request.urlopen(req, timeout=OLLAMA_HTTP_TIMEOUT) as res:
+            raw = res.read()
+            out["size"] = len(raw)
+            out["latency_ms"] = round((time.monotonic() - started) * 1000, 1)
+            if not raw:
+                # measured on this box before: a wedged process accepts TCP and answers nothing
+                out["error"] = "200 with an empty body — the service accepted the connection and replied with nothing"
+                return out
+            out["data"] = json.loads(raw)
+            out["ok"] = True
+    except urllib.error.HTTPError as exc:
+        out["error"] = f"HTTP {exc.code}"
+        out["latency_ms"] = round((time.monotonic() - started) * 1000, 1)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        out["latency_ms"] = round((time.monotonic() - started) * 1000, 1)
+    except json.JSONDecodeError as exc:
+        out["error"] = f"unparseable JSON: {exc}"
+    return out
+
+
+SSH_SCRIPT = """
+echo "@@UNIT"; systemctl is-active ollama 2>&1; systemctl show -p ActiveEnterTimestamp --value ollama 2>/dev/null
+echo "@@VER"; ollama --version 2>&1 | head -1
+echo "@@GPU"; nvidia-smi --query-gpu=index,uuid,name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw --format=csv,noheader,nounits 2>&1
+echo "@@APPS"; nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader,nounits 2>&1
+echo "@@HOST"; uptime; nproc; free -g | sed -n 2p
+echo "@@LOG"; journalctl -u ollama -n 60 --no-pager -o cat 2>/dev/null | tail -60
+"""
+
+
+def _ssh_read(script: str) -> dict:
+    """One SSH round trip. BatchMode so it can never block on a prompt."""
+    started = time.monotonic()
+    out: dict = {"ok": False, "error": None, "latency_ms": None, "text": ""}
+    cmd = [
+        "ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={int(OLLAMA_SSH_TIMEOUT)}",
+        "-o", "StrictHostKeyChecking=accept-new", OLLAMA_SSH, script,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=OLLAMA_SSH_TIMEOUT + 4)
+        out["latency_ms"] = round((time.monotonic() - started) * 1000, 1)
+        if proc.returncode != 0:
+            out["error"] = (proc.stderr or proc.stdout or f"ssh exit {proc.returncode}").strip()[:300]
+            return out
+        out["text"] = proc.stdout
+        out["ok"] = True
+    except subprocess.TimeoutExpired:
+        out["error"] = f"ssh timed out after {OLLAMA_SSH_TIMEOUT + 4:.0f}s"
+        out["latency_ms"] = round((time.monotonic() - started) * 1000, 1)
+    except OSError as exc:
+        out["error"] = str(exc)
+    return out
+
+
+def _ssh_blocks(text: str) -> dict[str, list[str]]:
+    blocks: dict[str, list[str]] = {}
+    current = None
+    for line in text.splitlines():
+        if line.startswith("@@"):
+            current = line[2:].strip()
+            blocks[current] = []
+        elif current:
+            blocks[current].append(line)
+    return blocks
+
+
+def _num_or_none(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def collect_ollamabox(ref: datetime | None = None) -> dict:
+    ref = ref or now_utc()
+    version = _http_json("/api/version")
+    tags = _http_json("/api/tags")
+    ps = _http_json("/api/ps")
+    ssh = _ssh_read(SSH_SCRIPT)
+    blocks = _ssh_blocks(ssh["text"]) if ssh["ok"] else {}
+
+    def lines(key: str) -> list[str]:
+        return [ln.strip() for ln in blocks.get(key, []) if ln.strip()]
+
+    # ---- service
+    unit_lines = lines("UNIT")
+    unit_active = unit_lines[0] if unit_lines else None
+    unit_since = unit_lines[1] if len(unit_lines) > 1 else None
+    service = {
+        "unit": "ollama",
+        "active": unit_active,
+        "since": unit_since or None,
+        "version": (version.get("data") or {}).get("version") if version["ok"] else None,
+        "cli_version": (lines("VER") or [""])[0].replace("ollama version is", "").strip() or None,
+        "http_ok": version["ok"],
+        "http_error": version["error"],
+    }
+
+    # ---- loaded models (+ capabilities from one /api/show per loaded model)
+    loaded = []
+    for entry in (ps.get("data") or {}).get("models", []) if ps["ok"] else []:
+        row = {
+            "name": entry.get("name") or entry.get("model"),
+            "size": entry.get("size"),
+            "size_vram": entry.get("size_vram"),
+            "context_length": entry.get("context_length"),
+            "runner": entry.get("runner"),
+            "expires_at": entry.get("expires_at"),
+            "details": entry.get("details") or {},
+            "capabilities": None,
+        }
+        expires = parse_ts(entry.get("expires_at"))
+        row["expires_in_s"] = round((expires - ref).total_seconds(), 1) if expires else None
+        show = _http_json("/api/show", {"model": row["name"]}) if row["name"] else {"ok": False}
+        if show.get("ok"):
+            d = show["data"] or {}
+            row["capabilities"] = d.get("capabilities") or []
+            info = d.get("model_info") or {}
+            row["native_context"] = next(
+                (v for k, v in info.items() if k.endswith(".context_length")), None
+            )
+        loaded.append(row)
+
+    # ---- models on disk
+    models = []
+    for entry in (tags.get("data") or {}).get("models", []) if tags["ok"] else []:
+        d = entry.get("details") or {}
+        models.append({
+            "name": entry.get("name"),
+            "size": entry.get("size"),
+            "modified_at": entry.get("modified_at"),
+            "family": d.get("family"),
+            "parameter_size": d.get("parameter_size"),
+            "quantization_level": d.get("quantization_level"),
+        })
+
+    # ---- GPUs + compute apps attributed by uuid
+    gpus = []
+    for line in lines("GPU"):
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 8:
+            continue
+        gpus.append({
+            "index": int(_num_or_none(parts[0]) or 0),
+            "uuid": parts[1],
+            "name": parts[2],
+            "mem_used_mib": _num_or_none(parts[3]),
+            "mem_total_mib": _num_or_none(parts[4]),
+            "util_percent": _num_or_none(parts[5]),
+            "temp_c": _num_or_none(parts[6]),
+            "power_w": _num_or_none(parts[7]),
+            "apps": [],
+        })
+    for line in lines("APPS"):
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 4:
+            continue
+        for gpu in gpus:
+            if gpu["uuid"] == parts[0]:
+                gpu["apps"].append({
+                    "pid": int(_num_or_none(parts[1]) or 0),
+                    "process": parts[2],
+                    "mem_mib": _num_or_none(parts[3]),
+                })
+
+    # ---- host
+    host_lines = lines("HOST")
+    load = None
+    uptime = host_lines[0] if host_lines else None
+    if uptime and "load average:" in uptime:
+        try:
+            load = [float(x.strip()) for x in uptime.split("load average:")[1].split(",")]
+        except ValueError:
+            load = None
+    cores = int(_num_or_none(host_lines[1]) or 0) if len(host_lines) > 1 else None
+    mem = host_lines[2].split() if len(host_lines) > 2 else []
+    host = {
+        "uptime": uptime,
+        "load": load,
+        "cores": cores or None,
+        "mem_total_gb": int(_num_or_none(mem[1]) or 0) if len(mem) > 1 else None,
+        "mem_used_gb": int(_num_or_none(mem[2]) or 0) if len(mem) > 2 else None,
+        "mem_available_gb": int(_num_or_none(mem[6]) or 0) if len(mem) > 6 else None,
+    }
+
+    vram_used = sum(g["mem_used_mib"] or 0 for g in gpus)
+    vram_total = sum(g["mem_total_mib"] or 0 for g in gpus)
+    # The unit log is dominated by the GIN access lines for THIS page's own polls, which
+    # would make the panel say nothing. Drop only those (200s on the four endpoints the
+    # collector itself calls) and say how many were hidden, so nothing is silently lost.
+    raw_log = lines("LOG")
+    own = ('"/api/version"', '"/api/tags"', '"/api/ps"', '"/api/show"')
+    log_lines = [ln for ln in raw_log if not (any(o in ln for o in own) and " | 200 | " in ln)]
+    hidden = len(raw_log) - len(log_lines)
+    # Collapse runs of the same message (llama.cpp prints a timing line per task, which
+    # would otherwise be the whole panel) using the same signature function the warning
+    # grouping uses: consecutive repeats become one line with a count.
+    collapsed: list[list] = []
+    for line in log_lines:
+        sig = _signature(line)
+        if collapsed and collapsed[-1][0] == sig:
+            collapsed[-1][2] += 1
+        else:
+            collapsed.append([sig, line, 1])
+    log_lines = [
+        (f"{line}  (×{n})" if n > 1 else line) for _sig, line, n in collapsed
+    ][-12:]
+    counts = {
+        "models": len(models),
+        "loaded": len(loaded),
+        "gpus": len(gpus),
+        "vram_used_gib": round(vram_used / 1024, 1) if gpus else None,
+        "vram_total_gib": round(vram_total / 1024, 1) if gpus else None,
+        "vram_percent": round(vram_used / vram_total * 100, 1) if vram_total else None,
+        "util_percent": round(sum(g["util_percent"] or 0 for g in gpus), 1) if gpus else None,
+        "loaded_vram_gib": round(sum((m.get("size_vram") or 0) for m in loaded) / 1e9, 1) if loaded else 0.0,
+        "log_errors": sum(
+            1
+            for ln in log_lines
+            if "error" in ln.lower() or "panic" in ln.lower() or re.search(r"\|\s*5\d\d\s*\|", ln)
+        ),
+        "log_hidden": hidden,
+    }
+
+    up = (version["ok"] or ps["ok"] or tags["ok"])
+    return {
+        "host_id": "ollamabox",
+        "kind": "ollama",
+        "label": "Ollama box — 10.1.10.30",
+        "as_of": iso(ref),
+        "state": "ok" if up and ssh["ok"] else ("api-only" if up else "unreachable"),
+        "service": service,
+        "loaded": loaded,
+        "models": models,
+        "gpus": gpus,
+        "host": host,
+        "log": log_lines,
+        "log_hidden": hidden,
+        "counts": counts,
+        "sources": {
+            "api_version": {k: version[k] for k in ("path", "ok", "error", "latency_ms", "size")},
+            "api_tags": {k: tags[k] for k in ("path", "ok", "error", "latency_ms", "size")},
+            "api_ps": {k: ps[k] for k in ("path", "ok", "error", "latency_ms", "size")},
+            "ssh_gpu_host": {
+                "ok": ssh["ok"], "error": ssh["error"], "latency_ms": ssh["latency_ms"],
+                "target": OLLAMA_SSH,
+            },
+        },
+        "not_connected": [
+            "no Hermes install on this host — the box runs ollama only, so there is no job history"
+            " or run output to show here",
+            "no per-request usage stats: ollama's API does not expose them",
+        ],
+    }
+
+
 def collect(host: str, ref: datetime | None = None) -> dict:
     if host == "dockervm":
         return collect_dockervm(ref)
     if host == "macstudio":
         return collect_macstudio(ref)
+    if host == "ollamabox":
+        return collect_ollamabox(ref)
     raise ValueError(f"unknown host: {host}")
 
 
@@ -879,5 +1163,6 @@ def collect_all(ref: datetime | None = None) -> dict:
         "hosts": {
             "dockervm": collect_dockervm(ref),
             "macstudio": collect_macstudio(ref),
+            "ollamabox": collect_ollamabox(ref),
         },
     }

@@ -37,6 +37,18 @@ milestone).
   federation digest deliberately keeps carrying only the normalised verdicts and incidents
   (155,668 B in → 185 B out). +34 tests
   (`tests/test_hermes_dash.py`), 398 → 432 passing. Operator view: `hermes_dash/README.md`.
+- **A fourth tab for the ollama box (10.1.10.30).** `collect_ollamabox` reads the model API
+  (`/api/{version,tags,ps,show}`) and one SSH command over the `ollama` alias for the two 5070
+  Ti cards (`nvidia-smi` VRAM/util/temp/power plus compute apps attributed by uuid), the unit
+  state, uptime, cores, RAM and the journal tail. Tiles: service, loaded models and their VRAM,
+  GPU pool and utilisation, keep-alive countdown, host load, log errors. Cards: loaded now
+  (context, capabilities, unload countdown), GPUs, models on disk, host, service log, sources
+  and latency. Three rules carried in the code: **a 200 with an empty body is an error** (that
+  box wedged that way before), the tab is **fetched only while it is the viewed tab** and cached
+  45 s because every collect is an SSH round trip, and the journal panel drops this page's own
+  poll lines (counted, never silently) and collapses repeats. An unreachable API or SSH reports
+  `unreachable` / `api-only` with the error text instead of an empty green card.
+  +6 tests, 435 → 441 passing.
 - **The dashboard renders every GPU card, and tracks each one's trend.** `ui/static/app.js` read
   `gpu.gpus[0]` in four places, so with two cards the panel showed card 0 only — a second-GPU flag
   (`vram_overload:gpu1`) had no numbers behind it, and System Overview collapsed both cards into one

@@ -59,13 +59,13 @@ TRUE now, measured on the live host (details in
   `/root/.hermes/scripts/opsbrain-telegram-relay.py`: CRITICAL-only, deduped per condition per hour,
   and it says so when OpsBrain has stopped writing. The old job `63fef345340a` was DELETED on
   2026-11-14, so this is a new job, not a resume.
-- **Tests:** 432 passing (`.venv/bin/python -m pytest -q`), up from the 355 baseline; 34 of them
+- **Tests:** 441 passing (`.venv/bin/python -m pytest -q`), up from the 355 baseline; 40 of them
   are `tests/test_hermes_dash.py` for the 9130 cron dashboard.
 
 ## Hermes cron dashboard — second surface, port 9130 (added 2026-11-25)
 
-`hermes_dash/` is a SECOND, independent page: three tabs (the OpsBrain page as Home via an
-iframe, `dockerVM — Hermes`, `Mac Studio — Hermes`). Not part of `ui/`. It **binds
+`hermes_dash/` is a SECOND, independent page: four tabs (the OpsBrain page as Home via an
+iframe, `dockerVM — Hermes`, `Mac Studio — Hermes`, `Ollama`). Not part of `ui/`. It **binds
 127.0.0.1:9130 only** (`hermes-dash.service`) and is reachable from the LAN **only through
 the door**: `hermesjobs.home`, CaddyUI row **70**, `internal_tls=1`, `basic_auth admin`
 (same credential as `opsbrain.home`), homepage tile *Hermes jobs*. The process accepts only
@@ -114,6 +114,14 @@ Gotchas paid for on the first build:
   the 58 log files with sizes and ages and says so.
 - **The `failing`/`overdue` aggregate lists carry objects today but bare job ids in some
   producer builds** — render both, resolving an id through the per-job rows.
+- **The Ollama tab costs an SSH round trip, so it is fetched only while it is the viewed tab**
+  and cached 45 s server-side (`CACHE_TTL` is per host). It reads `/api/{version,tags,ps,show}`
+  over HTTP plus ONE ssh command (`nvidia-smi` GPUs + compute apps, `systemctl show`, uptime,
+  `nproc`, `free -g`, `journalctl`), all in `collect_ollamabox`. Two rules learned there:
+  **a 200 with an empty body is an error, not health** (that box has wedged that way: TCP
+  accepted, nothing answered), and **the journal tail is mostly this page's own polls** — they
+  are filtered out and counted (`log_hidden`), and repeated messages are collapsed, or the
+  panel shows twelve identical GIN lines and says nothing.
 - **A route means the Host gate needs the public name too.** Keep `PUBLIC_HOSTS` in step
   with the Caddy row, or the door's proxy gets 421 and the page reads broken through
   `https://hermesjobs.home` while `:9130` is fine.

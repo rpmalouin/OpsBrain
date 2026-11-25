@@ -1,6 +1,7 @@
 # ── Runtime state (never commit) ─────────────────────────────
 logs/
 reports/
+state/
 *.log
 *.jsonl
 

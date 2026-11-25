@@ -59,7 +59,49 @@ TRUE now, measured on the live host (details in
   `/root/.hermes/scripts/opsbrain-telegram-relay.py`: CRITICAL-only, deduped per condition per hour,
   and it says so when OpsBrain has stopped writing. The old job `63fef345340a` was DELETED on
   2026-11-14, so this is a new job, not a resume.
-- **Tests:** 379 passing (`.venv/bin/python -m pytest -q`), up from the 355 baseline.
+- **Tests:** 428 passing (`.venv/bin/python -m pytest -q`), up from the 355 baseline; 30 of them
+  are `tests/test_hermes_dash.py` for the 9130 cron dashboard.
+
+## Hermes cron dashboard — second surface, port 9130 (added 2026-11-25)
+
+`hermes_dash/` is a SECOND, independent page: three tabs (the OpsBrain page as Home via an
+iframe, `dockerVM — Hermes`, `Mac Studio — Hermes`). It is deliberately not part of
+`ui/`: it binds **127.0.0.1:9130 only** (`hermes-dash.service`, no Caddy route, no LAN
+exposure), answers **GET only**, refuses any `Host` that is not its own listen address
+(421 — that is the DNS-rebinding gate), and serves a linked file only when its REAL path
+is inside `cron/output`, `logs`, `state` (`.log`), or `reports` — so `.env`,
+`config.yaml`, `auth.json`, `state.db`, `jobs.json` and any `*.json`/`*.db` answer 403
+with a reason. Full contract + the operator's view: `hermes_dash/README.md`.
+
+**No model, no cron job.** A refresh is one GET against stdlib readers (jobs.json,
+`executions.db` mode=ro, `cron_incidents`, `cron/output`, log tails, gateway/ticker
+heartbeats). The static fallback is `hermes-dash-snapshot.timer` (30 min, systemd) which
+writes `state/hermes-snapshots/latest.html` (self-contained: data + CSS + JS + the newest
+output and log text) and appends unseen executions to `state/hermes_runs.jsonl`.
+**Never turn that into a Hermes cron job** — every run would land in the very run history
+this page displays.
+
+Gotchas paid for on the first build:
+
+- **`executions` is a 1000-row ring** (~1 day here). "Run history" is ring + rollup; the
+  rollup is what makes it more than a day, and it dedupes by execution id with the live
+  DB winning on status.
+- **`cron/output` keeps 50 files per job**, and a silent run still writes one
+  ("silent (empty output)"). Three one-shot jobs that never fired have no folder at all —
+  that is normal, not a gap.
+- **An incident row outlives its job.** `cron_incidents` still carries a `detected` row
+  for `abe53228a4a5` (a job deleted in September). The page calls that orphaned rather
+  than red, and the tile ages it (oldest 74d) so it reads as a record, not an alarm.
+- **Logs cross 1 MB within a day**, so a size cap in the allow-list made `errors.log`
+  unservable. Logs are served as the last 300 kB with an explicit "N bytes omitted"
+  banner; only non-log files are refused for size.
+- **The Mac tab is aggregate only and says so.** `logs/macstudio_node.json` (the Mac's own
+  15-min producer) carries `hermes_cron` counts, `failing[]`, `overdue[]`,
+  `max_age_period_ratio`, alerts and the gateway beat — not per-job rows, run history or
+  output files, which live in `/Users/ron/.hermes` on the Mac. Connecting that needs
+  either a producer extension (preferred) or a read-only SSH key; both are Ron's call.
+- Layout rule learned here: a card's width class must be re-applied on every render, not
+  only at creation, or a card added before a layout change stays half width forever.
 
 ## Current running state (LAST UPDATED: 2026-09-16 — superseded by the section above)
 

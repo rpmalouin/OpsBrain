@@ -8,6 +8,23 @@ milestone).
 ## [Unreleased]
 
 ### Added
+- **A second, loopback-only page for the Hermes cron fleet (`hermes_dash/`, port 9130).** Three
+  tabs: the existing dashboard as Home (iframe), `dockerVM — Hermes` and `Mac Studio — Hermes`.
+  No model in the loop — `collector.py` reads `cron/jobs.json`, `cron/executions.db` (`executions`
+  ring + `cron_incidents`, opened `mode=ro`), `cron/output/<job>/*.md`, the log tails and the
+  gateway/ticker heartbeats, and the page refetches every 30 s only while visible, replacing a
+  card in place only when its content hash changes (scroll, search text and an open job drill-down
+  survive a refresh). Safety is enforced in `server.py`, not just documented: 127.0.0.1 only, GET
+  only (405 otherwise), any foreign `Host` → 421, and `/api/file` serves only real paths inside
+  `cron/output`, `logs`, `state` (`.log`) or `reports` — `.env`, `config.yaml`, `auth.json`,
+  `state.db`, `jobs.json` and any `*.json`/`*.db` are refused with a reason (logs are served as
+  their last 300 kB, since they pass 1 MB in a day). The static fallback is a **systemd timer**
+  (30 min, never a Hermes cron job — a per-minute job would crowd the history this page shows)
+  writing `state/hermes-snapshots/latest.html` with data, CSS, JS and the newest output/log text
+  inlined, plus a rollup of executions into `state/hermes_runs.jsonl` because `executions` is a
+  1000-row ring (~1 day). The Mac tab is aggregate only and says so: `logs/macstudio_node.json`
+  carries counts/failing/overdue/alerts, not per-job rows. +30 tests
+  (`tests/test_hermes_dash.py`), 398 → 428 passing. Operator view: `hermes_dash/README.md`.
 - **The dashboard renders every GPU card, and tracks each one's trend.** `ui/static/app.js` read
   `gpu.gpus[0]` in four places, so with two cards the panel showed card 0 only — a second-GPU flag
   (`vram_overload:gpu1`) had no numbers behind it, and System Overview collapsed both cards into one

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes jobs — OpsBrain</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="dot" id="dot"></span>
+    <h1>Hermes jobs</h1>
+    <span class="sub">OpsBrain</span>
+  </div>
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Dashboard tabs">
+    <button class="tab" data-tab="home" role="tab">Home</button>
+    <button class="tab" data-tab="dockervm" role="tab">dockerVM</button>
+    <button class="tab" data-tab="macstudio" role="tab">Mac Studio</button>
+  </nav>
+  <div class="meta">
+    <span id="conn" class="chip">connecting…</span>
+    <span id="asof" class="muted nowrap"></span>
+  </div>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<main>
+  <section id="pane-home" class="pane">
+    <iframe id="opsbrainFrame" title="OpsBrain dashboard" src="about:blank"></iframe>
+    <p id="homeNote" class="muted pad hidden"></p>
+  </section>
+  <section id="pane-dockervm" class="pane hidden"></section>
+  <section id="pane-macstudio" class="pane hidden"></section>
+</main>
+
+<footer>
+  Read-only: reads the Hermes cron store, run database, job output folder, gateway state and logs.
+  No model in the loop, no writes to any Hermes profile. Snapshots: a separate timer writes a static copy.
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+[Unit]
+Description=Static Hermes dashboard snapshot every 30 minutes
+
+[Timer]
+# OnBootSec/OnUnitActiveSec alone schedule nothing for a timer enabled long after
+# boot (the boot elapse is in the past and the unit was never active): OnActiveSec
+# gives the first run, OnUnitActiveSec repeats from each finish.
+OnActiveSec=2min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Unit=hermes-dash-snapshot.service
+
+[Install]
+WantedBy=timers.target

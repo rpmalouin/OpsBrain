@@ -1,0 +1,21 @@
+[Unit]
+Description=Write a static Hermes dashboard snapshot (+ run-history rollup)
+Documentation=file:/appdata/OpsBrain/hermes_dash/README.md
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/appdata/OpsBrain
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/appdata/OpsBrain/.venv/bin/python /appdata/OpsBrain/hermes_dash/snapshot.py
+StandardOutput=journal
+StandardError=journal
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/root/.hermes
+# the only writable place this job needs
+ReadWritePaths=/appdata/OpsBrain/state

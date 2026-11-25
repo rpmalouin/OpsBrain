@@ -1,0 +1,30 @@
+[Unit]
+Description=Hermes cron dashboard (loopback-only, read-only, no model)
+Documentation=file:/appdata/OpsBrain/hermes_dash/README.md
+After=network.target
+# Deliberately NOT Requires= the gateway: this page must still answer when the
+# gateway is down or restarting — that is exactly when it is worth reading.
+[Service]
+Type=simple
+User=root
+# root because /root/.hermes is mode 0700; the server is loopback-only, GET-only,
+# and serves only files under the collector's allow-list.
+WorkingDirectory=/appdata/OpsBrain
+Environment=PYTHONUNBUFFERED=1
+Environment=HERMES_DASH_BIND=127.0.0.1
+Environment=HERMES_DASH_PORT=9130
+ExecStart=/appdata/OpsBrain/.venv/bin/python /appdata/OpsBrain/hermes_dash/server.py --bind 127.0.0.1 --port 9130
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+Nice=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# /root/.hermes must stay readable; everything else is read-only to this process
+ReadOnlyPaths=/root/.hermes /appdata/OpsBrain
+
+[Install]
+WantedBy=multi-user.target

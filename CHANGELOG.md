@@ -9,7 +9,8 @@ milestone).
 
 ### Added
 - **A second, loopback-only page for the Hermes cron fleet (`hermes_dash/`, port 9130).** Three
-  tabs: the existing dashboard as Home (iframe), `dockerVM — Hermes` and `Mac Studio — Hermes`.
+  tabs: the existing dashboard as Home (same-origin `/fleet` proxy since 2026-11-25, see *Changed*),
+  `dockerVM — Hermes` and `Mac Studio — Hermes`.
   No model in the loop — `collector.py` reads `cron/jobs.json`, `cron/executions.db` (`executions`
   ring + `cron_incidents`, opened `mode=ro`), `cron/output/<job>/*.md`, the log tails and the
   gateway/ticker heartbeats, and the page refetches every 30 s only while visible, replacing a
@@ -106,6 +107,22 @@ milestone).
   nobody. Measured 2026-10-10: the answer is sporadically degenerate (0.00 with an "all healthy, no
   findings" summary on a digest that yields 0.85/0.75/0.80 across three fresh runs on the same
   input; 7.2 % of 6,243 logged cycles sit below the floor, 1-5/day since the hourly retune).
+
+### Changed
+- **The cron dashboard's Home tab embeds OpsBrain on its own origin — one login instead of two.**
+  The tab was an iframe of `https://opsbrain.home`, a second origin, so the browser asked for the
+  same front-door credential a second time inside the page. `hermes_dash/server.py` now serves that
+  dashboard itself under **`/fleet/`**: `GET` only, `127.0.0.1:9120` upstream, the upstream status
+  passed through unchanged (a 500 stays a 500, an unreachable upstream is a 502 naming the address),
+  root-absolute `"/static` and `"/api` references re-pointed in text responses while JSON passes
+  byte-identical, and **`/stream`** relayed byte-for-byte — the upstream page renders only on a
+  websocket message, so without the relay the tab would sit permanently blank. The `Host` gate and
+  the GET-only rule apply to the proxy exactly as to everything else. The proxy lives in this server
+  and not at the door on purpose: CaddyUI owns srv0 and rebuilds the Caddyfile from rows that carry a
+  host and a port only, so a hand-added `handle_path /fleet/*` would be erased on its next start.
+  `opsbrain.home`, its CaddyUI row and the `ui/` app are untouched, and the page there renders
+  unchanged. Five new tests (the rewrite, script+api passthrough, 502 with a reason, the
+  host/method gates, `/stream` without an upgrade); suite 446.
 
 ### Removed
 - **The whole Netdata path for the Mac Studio — retired, not repurposed, because it was measured to

@@ -722,3 +722,89 @@ def test_snapshot_is_self_contained(tree, monkeypatch, tmp_path):
     assert "/static/app.js" not in html, "a snapshot may not depend on the server"
     assert "failing minutely" in html
     assert (tree["state"] / "hermes_runs.jsonl").exists()
+
+
+# ------------------------------------------------ fleet proxy (same-origin Home tab)
+@pytest.fixture()
+def upstream():
+    """A stub standing in for the OpsBrain app: root-absolute assets, an API, and a page link."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    routes = {
+        "/": (200, "text/html",
+             b'<html><script src="/static/app.js"></script><a href="/report">r</a></html>'),
+        "/static/app.js": (200, "application/javascript", b'fetch("/api/groups");'),
+        "/api/groups": (200, "application/json", b'[{"name":"media"}]'),
+        "/report": (200, "text/html", b"<html>report</html>"),
+    }
+
+    class Stub(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):  # noqa: N802 - stdlib signature
+            code, ctype, body = routes.get(self.path, (404, "text/plain", b"nope"))
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield srv.server_address[1]
+    srv.shutdown()
+    srv.server_close()
+
+
+@pytest.fixture()
+def fleet(http, upstream, monkeypatch):
+    monkeypatch.setattr(S, "OPSBRAIN_UPSTREAM", ("127.0.0.1", upstream))
+    return http
+
+
+def test_fleet_page_is_rewritten_to_the_prefix(fleet):
+    """The upstream addresses its assets root-absolutely; under /fleet they must be re-pointed."""
+    base, _ = fleet
+    code, body = _get(base + "/fleet/")
+    assert code == 200
+    assert 'src="/fleet/static/app.js"' in body
+    assert 'href="/fleet/report"' in body
+    assert 'src="/static/' not in body
+
+
+def test_fleet_script_and_api_are_served_under_the_prefix(fleet):
+    base, _ = fleet
+    code, body = _get(base + "/fleet/static/app.js")
+    assert code == 200 and 'fetch("/fleet/api/groups")' in body
+    code, body = _get(base + "/fleet/api/groups")
+    assert code == 200
+    assert json.loads(body) == [{"name": "media"}], "JSON is data — it must not be rewritten"
+    assert _get(base + "/fleet/report")[0] == 200
+
+
+def test_fleet_upstream_down_is_a_502_with_a_reason(http, monkeypatch):
+    base, _ = http
+    monkeypatch.setattr(S, "OPSBRAIN_UPSTREAM", ("127.0.0.1", 9))  # discard port: nothing listens
+    code, body = _get(base + "/fleet/")
+    assert code == 502 and "not answering" in body
+
+
+def test_fleet_keeps_the_host_and_method_gates(fleet):
+    base, _ = fleet
+    assert _get(base + "/fleet/", host="evil.example")[0] == 421
+    req = urllib.request.Request(base + "/fleet/", method="POST", data=b"x")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as res:
+            code = res.status
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+    assert code == 405
+
+
+def test_stream_without_an_upgrade_is_refused(fleet):
+    base, _ = fleet
+    code, body = _get(base + "/stream")
+    assert code == 400 and "websocket" in body

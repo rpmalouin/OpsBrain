@@ -15,16 +15,19 @@
   var HOSTS = ["dockervm", "macstudio", "ollamabox"];
   var STATIC = !!window.__HERMES_STATIC__;
 
-  // The Home tab embeds the OpsBrain page. Over the caddy route this page is https, so
-  // an http:// iframe would be blocked as mixed content — pick by our own scheme.
-  // A static snapshot keeps the raw placeholders, hence the defaults.
+  // The Home tab embeds the OpsBrain page. It used to be an iframe of https://opsbrain.home
+  // — a second origin, so the browser asked for the same door credential again inside the
+  // page ("the double login"). server.py now proxies that app under /fleet on THIS origin,
+  // so the iframe is same-origin and the credential the page was opened with is the one it
+  // uses. Two fallbacks remain: a static snapshot opened from disk (file://) has no server
+  // to proxy through, and an older server may not answer /fleet — both fall back to the
+  // separate name, where the second prompt is the price of the page still working at all.
   function opsbrainUrl() {
-    var body = document.body ? document.body.dataset : {};
-    var http = body.opsbrainHttp && body.opsbrainHttp.indexOf("{{") === -1
-      ? body.opsbrainHttp : "http://127.0.0.1:9120/";
-    var https = body.opsbrainHttps && body.opsbrainHttps.indexOf("{{") === -1
-      ? body.opsbrainHttps : "https://opsbrain.home/";
-    return location.protocol === "https:" ? https : http;
+    if (location.protocol === "file:") {
+      var https0 = document.body && document.body.dataset.opsbrainHttps;
+      return https0 && https0.indexOf("{{") === -1 ? https0 : "https://opsbrain.home/";
+    }
+    return "/fleet/";
   }
   var OPSBRAIN_URL = opsbrainUrl();
 

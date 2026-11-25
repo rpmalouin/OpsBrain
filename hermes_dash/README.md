@@ -63,14 +63,35 @@ Mac Studio tab:
 | Job counts, failing, overdue, worst age/period | `logs/macstudio_node.json` → `hermes_cron` (written by the Mac's own 15-minute producer) | document age from file mtime; `ok` < 45 min, `stale` < 2 h, `dead` after |
 | Alerts, gateway heartbeat, host, Time Machine, mounts, disk % | same document (`alerts[]`, `gateway`, `host`, `time_machine`, `mounts[]`, `disks[]`) | same |
 
-## The Home tab owns the OpsBrain page, and its route is load-bearing
+## The Home tab embeds OpsBrain on THIS origin — no second login
 
-The Home tab embeds `https://opsbrain.home` (or `http://127.0.0.1:9120` when you are on the box).
-That is a **second hostname and a second login**, and it is the only reason the OpsBrain page still
-needs its Caddy route. On 2026-11-25 its homepage tile was removed at Ron's request so the door shows
-one page — but the route and `opsbrain-ui.service` stay: drop either and this tab goes blank. If the
-duplication ever becomes annoying, the fix is to move the fleet cards INTO a tab here, not to remove
-the route first.
+For its first hours the Home tab was an iframe of `https://opsbrain.home`, a **second origin**,
+so the browser asked for the same door credential a second time inside the page. That was fixed
+on 2026-11-25 by serving that app here instead: `server.py` proxies it under **`/fleet/`**, and
+the tab loads `/fleet/` — same scheme, host and port as the page around it, so the credential the
+page was opened with is the one the iframe uses.
+
+Why a proxy here rather than a path route at the door: **CaddyUI owns srv0** and rebuilds the
+Caddyfile from its own rows, which carry a host and a port only. A hand-added `handle_path
+/fleet/*` would be erased on the next `caddyui` start. The proxy therefore lives in this server,
+where nothing else rewrites it.
+
+What it forwards, all `GET`, all read-only: `/fleet/*` → `127.0.0.1:9120/*`, including
+`/fleet/static/*`, `/fleet/api/*` and `/fleet/report`, plus **`/stream`**, the upstream websocket
+relayed byte-for-byte (`BaseHTTPRequestHandler` gets nothing from that protocol; the page renders
+only on a stream message, so without the relay the tab would sit permanently blank). Text responses
+have their root-absolute paths re-pointed (`"/static/` → `"/fleet/static/`, `"/api/` →
+`"/fleet/api/`) because at its own origin that app *is* the root; JSON passes through untouched,
+because rewriting data would be a lie.
+
+The upstream status is passed through unchanged (a 500 stays a 500), an unreachable upstream is a
+**502 with the reason**, and the `Host` and GET-only gates apply to `/fleet/*` exactly as they do
+to everything else — a foreign `Host` is still 421. `opsbrain.home` and its route stay as they
+were: that name is OpsBrain's own front door, and the tab no longer depends on it.
+
+Two fallbacks keep working: the static snapshot opened from disk (`file://`) has no server to
+proxy through and falls back to `https://opsbrain.home/`, and an older server without `/fleet`
+fails the iframe visibly rather than silently.
 
 ## What the LAN can read now (and what it cannot)
 
@@ -78,10 +99,13 @@ the route first.
 `opsbrain.home` and `beets.home` — over `tls internal`, so the connection is encrypted with
 the homelab CA (not a public certificate). Anyone with that credential can read: the names of
 every Hermes cron job, each job's schedule and last error, the job output text of the newest
-runs, grouped warnings and error lines from `logs/errors.log` / `gateway.log`, and the Mac's
-node document. That is the reason the page is behind the door rather than on `:9130`.
+runs, grouped warnings and error lines from `logs/errors.log` / `gateway.log`, the Mac's
+node document, **and — through `/fleet/` — everything the OpsBrain dashboard shows**, which is
+the same content that name already served behind the same credential. That is the reason the page
+is behind the door rather than on `:9130`.
 Secrets are not reachable either way — the file allow-list refuses `.env`, `config.yaml`,
-`auth.json`, `state.db`, `jobs.json` and everything outside the four served folders.
+`auth.json`, `state.db`, `jobs.json` and everything outside the four served folders, and `/fleet`
+reaches exactly one loopback app with no file surface of its own.
 
 ## The Mac's per-job detail: an ask, not a guess
 
@@ -124,9 +148,11 @@ left in place by `--remove`.
 
 ## Tests
 
-    .venv/bin/python -m pytest tests/test_hermes_dash.py -q     # 30 tests
+    .venv/bin/python -m pytest tests/test_hermes_dash.py -q     # 45 tests
 
 They build a fixture Hermes tree and assert the refusals (foreign Host → 421, POST →
 405, `.env`/`config.yaml`/`state.db`/symlink-escaped path → 403), the verdicts
 (failing, overdue with its grace, incidents open vs resolved), the ring+rollup merge,
-log-tail truncation and the self-contained snapshot.
+log-tail truncation, the self-contained snapshot, and — against a stub upstream — the
+`/fleet` proxy: the path rewrite, script+api passthrough, a 502 with a reason when
+OpsBrain is down, the host/method gates on `/fleet/*`, and `/stream` refusing a plain GET.

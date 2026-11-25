@@ -56,20 +56,25 @@ TRUE now, measured on the live host (details in
 - **Front door:** `opsbrain.home` -> `10.1.10.10:9120`, CaddyUI row 66, `basic_auth admin` (same
   credential as beets.home), `internal_tls=1`. Dashboard also at the LAN address directly.
   **The homepage tile was REMOVED 2026-11-25** (byte-exact edit + `docker restart homepage`, because
-  this image does not hot-reload `services.yaml`) so the door shows one page — `hermesjobs.home`,
-  whose Home tab iframes this one. The ROUTE must stay: removing it blanks that Home tab. Restore
-  the tile from `/root/backups/homepage-services-20261125-pre-opsbrain-tile.yaml`.
+  this image does not hot-reload `services.yaml`) so the door shows one page — `hermesjobs.home`.
+  **That page no longer iframes this name:** since 2026-11-25 the Home tab loads `/fleet/`, a
+  same-origin proxy served by `hermes_dash/server.py`, so opening `hermesjobs.home` is ONE login.
+  The route stays because `opsbrain.home` is this dashboard's own front door, not because a tab
+  depends on it. Restore the homepage tile from
+  `/root/backups/homepage-services-20261125-pre-opsbrain-tile.yaml` if the door should list it again.
 - **Alerting:** Hermes cron `d18255daea09` (every 2 min, telegram, no-agent) runs
   `/root/.hermes/scripts/opsbrain-telegram-relay.py`: CRITICAL-only, deduped per condition per hour,
   and it says so when OpsBrain has stopped writing. The old job `63fef345340a` was DELETED on
   2026-11-14, so this is a new job, not a resume.
-- **Tests:** 441 passing (`.venv/bin/python -m pytest -q`), up from the 355 baseline; 40 of them
+- **Tests:** 446 passing (`.venv/bin/python -m pytest -q`), up from the 355 baseline; 45 of them
   are `tests/test_hermes_dash.py` for the 9130 cron dashboard.
 
 ## Hermes cron dashboard — second surface, port 9130 (added 2026-11-25)
 
-`hermes_dash/` is a SECOND, independent page: four tabs (the OpsBrain page as Home via an
-iframe, `dockerVM — Hermes`, `Mac Studio — Hermes`, `Ollama`). Not part of `ui/`. It **binds
+`hermes_dash/` is a SECOND, independent page: four tabs (the OpsBrain page as Home, `dockerVM —
+Hermes`, `Mac Studio — Hermes`, `Ollama`). **The Home tab is served same-origin under `/fleet/`**
+by this module's own server, not iframed from `opsbrain.home`: for its first hours it was, and the
+browser then asked for the same door credential a second time inside the page. Not part of `ui/`. It **binds
 127.0.0.1:9130 only** (`hermes-dash.service`) and is reachable from the LAN **only through
 the door**: `hermesjobs.home`, CaddyUI row **70**, `internal_tls=1`, `basic_auth admin`
 (same credential as `opsbrain.home`), homepage tile *Hermes jobs*. The process accepts only
@@ -90,6 +95,14 @@ this page displays.
 
 Gotchas paid for on the first build:
 
+- **A page that iframes another origin costs a second login, so the Home tab is proxied, not iframed.**
+  `hermesjobs.home` and `opsbrain.home` are different origins even with the same `basic_auth`, so the
+  browser challenged for the credential again inside the page. The fix is `/fleet/` served by
+  `hermes_dash/server.py` (GET only, upstream status passed through, `"/static` and `"/api`
+  re-pointed in text responses, `/stream` relayed byte-for-byte because the page renders only on a
+  websocket message; an unreachable upstream is a 502 with the reason). **It cannot live at the door:**
+  CaddyUI owns srv0 and rebuilds the Caddyfile from rows carrying host+port only, so a hand-added
+  `handle_path` would be erased on its next start.
 - **`executions` is a 1000-row ring** (~1 day here). "Run history" is ring + rollup; the
   rollup is what makes it more than a day, and it dedupes by execution id with the live
   DB winning on status.

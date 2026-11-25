@@ -168,7 +168,19 @@
 
   // ---------------------------------------------------------------- data
   function fetchHost(host) {
-    return fetch("/api/state?host=" + encodeURIComponent(host), { cache: "no-store", credentials: "omit" }).then(function (res) {
+    // credentials MUST be same-origin: behind the caddy route this page is served with
+    // basic_auth, and "omit" strips the cached front-door login from the API call only —
+    // the HTML and static files still load, so the page renders and then reports every
+    // fetch as unreachable (measured 2026-11-25: GET / 200, /static/* 200, /api/state 401).
+    return fetch("/api/state?host=" + encodeURIComponent(host), {
+      cache: "no-store",
+      credentials: "same-origin",
+    }).then(function (res) {
+      if (res.status === 401 || res.status === 403) {
+        var err = new Error("auth " + res.status);
+        err.auth = true;
+        throw err;
+      }
       if (!res.ok) throw new Error("HTTP " + res.status);
       return res.json();
     });
@@ -188,6 +200,7 @@
         render();
       })
       .catch(function (err) {
+        ui.authErr = !!(err && err.auth);
         ui.err = err && err.message ? err.message : String(err);
         render();
       });
@@ -232,6 +245,12 @@
       banner.textContent =
         "STATIC SNAPSHOT — captured " + (gen ? fmtClock(gen) + " (" + fmtAgo(gen) + ")" : "at build time") +
         ". The live server is not running. Drill-downs show the text captured at that moment; nothing here is live.";
+    } else if (ui.authErr) {
+      // a 401 here is the front door refusing the API call, not a dead server — say which
+      banner.className = "banner crit";
+      banner.textContent =
+        "NOT AUTHORISED — the front door refused the data calls (401) while the page itself loaded. " +
+        "Sign in to " + location.host + " and reload; nothing is wrong with the server.";
     } else if (ui.err) {
       banner.className = "banner crit";
       banner.textContent =

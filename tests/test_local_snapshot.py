@@ -431,6 +431,28 @@ def test_cron_digest_tolerates_a_producer_without_the_normalised_fields():
     assert LS.cron_digest({}) == {"enabled": False}
 
 
+def test_cron_digest_takes_incidents_but_never_the_bulk_collections():
+    # Schema 3: jobs/runs/incidents/outputs/logs arrive together; 152 KB in the live document.
+    cron = {"jobs_total": 29, "jobs": [{"id": "a"}], "runs": [{"job_id": "a"}] * 200,
+            "outputs": [{"text": "x" * 1000}] * 87, "logs": [{"path": "/x"}] * 58,
+            "incidents": [{"job_id": "b1a9", "job_name": "drive-skills-sync"}],
+            "overdue": [], "max_age_period_ratio": 1.18}
+    digest = LS.cron_digest({"hermes_cron": cron})
+    assert digest["incidents"] == ["drive-skills-sync"]
+    for bulk in ("jobs", "runs", "outputs", "logs"):
+        assert bulk not in digest
+    assert "errors" not in digest
+
+
+def test_cron_digest_reports_a_failed_sub_collection_instead_of_an_empty_list():
+    # "incidents: []" and "incidents_error: ..." are different claims: silence about a failed read
+    # is not health.
+    digest = LS.cron_digest({"hermes_cron": {"jobs_total": 3, "incidents": [],
+                                            "incidents_error": "permission denied"}})
+    assert digest["incidents"] == []
+    assert digest["errors"] == {"incidents_error": "permission denied"}
+
+
 def test_derived_alerts_flags_the_gateway_heartbeat():
     assert LS.derived_alerts({"gateway": {"present": False}}) == ["hermes gateway heartbeat missing"]
     stale = LS.derived_alerts({"gateway": {"present": True, "age_seconds": 900}})

@@ -326,6 +326,12 @@ def cron_digest(data):
 
     Additive by construction: a producer that predates the normalised fields degrades to
     `{"enabled": True}` plus whatever it does report, rather than an error.
+
+    Schema 3 (2026-11-25) adds `jobs`, `runs`, `incidents`, `outputs` and `logs` — 152 KB in the live
+    document. `incidents` is the fault list and comes through (small, actionable); `runs`/`outputs`/
+    `logs` are bulk and stay out, so a digest consumer never inherits 150 KB. A sub-collection that
+    FAILED reports itself instead of reading as empty: `incidents: []` and `incidents_error` are not
+    the same claim, and silence about a failed read is not health.
     """
     cron = data.get("hermes_cron")
     if not isinstance(cron, dict):
@@ -339,6 +345,13 @@ def cron_digest(data):
     for key in ("oldest_overdue_hours", "max_age_period_ratio"):
         if key in cron:
             out[key] = cron[key]
+    if isinstance(cron.get("incidents"), list):
+        out["incidents"] = [i.get("job_name") or i.get("name") or i.get("job_id") or str(i)
+                            if isinstance(i, dict) else str(i) for i in cron["incidents"]]
+    errors = {k: str(v)[:200] for k, v in cron.items()
+              if k.endswith("_error") and v}
+    if errors:
+        out["errors"] = errors
     if cron.get("unreadable"):
         out["unreadable"] = True
     return out

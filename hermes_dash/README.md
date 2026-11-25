@@ -63,6 +63,15 @@ Mac Studio tab:
 | Job counts, failing, overdue, worst age/period | `logs/macstudio_node.json` → `hermes_cron` (written by the Mac's own 15-minute producer) | document age from file mtime; `ok` < 45 min, `stale` < 2 h, `dead` after |
 | Alerts, gateway heartbeat, host, Time Machine, mounts, disk % | same document (`alerts[]`, `gateway`, `host`, `time_machine`, `mounts[]`, `disks[]`) | same |
 
+## The Home tab owns the OpsBrain page, and its route is load-bearing
+
+The Home tab embeds `https://opsbrain.home` (or `http://127.0.0.1:9120` when you are on the box).
+That is a **second hostname and a second login**, and it is the only reason the OpsBrain page still
+needs its Caddy route. On 2026-11-25 its homepage tile was removed at Ron's request so the door shows
+one page — but the route and `opsbrain-ui.service` stay: drop either and this tab goes blank. If the
+duplication ever becomes annoying, the fix is to move the fleet cards INTO a tab here, not to remove
+the route first.
+
 ## What the LAN can read now (and what it cannot)
 
 `hermesjobs.home` is gated by `basic_auth admin` — the same credential as

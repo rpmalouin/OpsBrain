@@ -55,6 +55,10 @@ TRUE now, measured on the live host (details in
   the "DockBrain orphan: clamav" text that once drove a `docker_prune`.
 - **Front door:** `opsbrain.home` -> `10.1.10.10:9120`, CaddyUI row 66, `basic_auth admin` (same
   credential as beets.home), `internal_tls=1`. Dashboard also at the LAN address directly.
+  **The homepage tile was REMOVED 2026-11-25** (byte-exact edit + `docker restart homepage`, because
+  this image does not hot-reload `services.yaml`) so the door shows one page — `hermesjobs.home`,
+  whose Home tab iframes this one. The ROUTE must stay: removing it blanks that Home tab. Restore
+  the tile from `/root/backups/homepage-services-20261125-pre-opsbrain-tile.yaml`.
 - **Alerting:** Hermes cron `d18255daea09` (every 2 min, telegram, no-agent) runs
   `/root/.hermes/scripts/opsbrain-telegram-relay.py`: CRITICAL-only, deduped per condition per hour,
   and it says so when OpsBrain has stopped writing. The old job `63fef345340a` was DELETED on

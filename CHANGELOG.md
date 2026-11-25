@@ -22,9 +22,17 @@ milestone).
   (30 min, never a Hermes cron job — a per-minute job would crowd the history this page shows)
   writing `state/hermes-snapshots/latest.html` with data, CSS, JS and the newest output/log text
   inlined, plus a rollup of executions into `state/hermes_runs.jsonl` because `executions` is a
-  1000-row ring (~1 day). The Mac tab is aggregate only and says so: `logs/macstudio_node.json`
-  carries counts/failing/overdue/alerts, not per-job rows. +30 tests
-  (`tests/test_hermes_dash.py`), 398 → 428 passing. Operator view: `hermes_dash/README.md`.
+  1000-row ring (~1 day). **Published the same way OpsBrain is:** CaddyUI row 70
+  `hermesjobs.home` → `127.0.0.1:9130`, `internal_tls=1`, `basic_auth admin` (the row cloned
+  wholesale from `opsbrain.home`, so the same credential arrives populated), Caddyfile block
+  appended in place with that block's `basic_auth` line copied verbatim, homepage tile *Hermes
+  jobs*. The process still binds loopback and accepts only its own names in `Host` (a foreign
+  `Host` is 421), so the door is the only way in. The Mac tab is aggregate only until the Mac
+  ships schema 3 (`hermes_cron.{jobs[],runs[],incidents[],outputs[],logs[]}` — asked for in
+  `task_request` `20261125T141718Z-c02ab9c4`); the consumer half already passes those rows
+  through (capped) and renders a jobs/runs/incidents/outputs card set plus a job drill-down
+  with the output text in the same overlay, tested against that shape. +34 tests
+  (`tests/test_hermes_dash.py`), 398 → 432 passing. Operator view: `hermes_dash/README.md`.
 - **The dashboard renders every GPU card, and tracks each one's trend.** `ui/static/app.js` read
   `gpu.gpus[0]` in four places, so with two cards the panel showed card 0 only — a second-GPU flag
   (`vram_overload:gpu1`) had no numbers behind it, and System Overview collapsed both cards into one

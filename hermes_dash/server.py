@@ -34,6 +34,19 @@ STATIC = HERE / "static"
 STATIC_FILES = {"app.js", "app.css", "index.html"}
 HOSTS = ("dockervm", "macstudio")
 CACHE_TTL = 3.0
+
+# Names the front door may proxy here with. The bind stays loopback; caddy is
+# host-networked and dials 127.0.0.1, so the ONLY thing that changes when a route
+# exists is which Host header is legitimate. Everything else is still 421.
+PUBLIC_HOSTS = tuple(
+    h.strip().lower()
+    for h in os.environ.get("HERMES_DASH_PUBLIC_HOSTS", "hermesjobs.home").split(",")
+    if h.strip()
+)
+# The Home tab embeds the OpsBrain page. Served over http://127.0.0.1 the iframe must
+# be http; served through the route (https) any http iframe is blocked as mixed content.
+OPSBRAIN_HTTP = os.environ.get("HERMES_DASH_OPSBRAIN_HTTP", "http://127.0.0.1:9120/")
+OPSBRAIN_HTTPS = os.environ.get("HERMES_DASH_OPSBRAIN_HTTPS", "https://opsbrain.home/")
 _cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -67,7 +80,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline';"
-            " frame-src 'self' http://127.0.0.1:9120 http://localhost:9120",
+            f" frame-src 'self' http://127.0.0.1:9120 http://localhost:9120 "
+            f"{OPSBRAIN_HTTP.rstrip('/')} {OPSBRAIN_HTTPS.rstrip('/')}",
         )
         for key, value in (extra or {}).items():
             self.send_header(key, value)
@@ -81,14 +95,23 @@ class Handler(BaseHTTPRequestHandler):
     def _text(self, text: str, code: int = 200, ctype: str = "text/plain; charset=utf-8"):
         self._send(code, text.encode("utf-8", errors="replace"), ctype)
 
+    @property
+    def srv(self) -> "Server":
+        """Typed view of the running server (BaseHTTPRequestHandler types it as BaseServer)."""
+        return self.server  # type: ignore[return-value]
+
     def _host_ok(self) -> bool:
+        port = self.srv.server_address[1]
         allowed = {
-            f"{self.server.bind_address}:{self.server.server_address[1]}",
-            f"localhost:{self.server.server_address[1]}",
-            f"[::1]:{self.server.server_address[1]}",
+            f"{self.srv.bind_address}:{port}".lower(),
+            f"localhost:{port}".lower(),
+            f"[::1]:{port}".lower(),
         }
+        for name in PUBLIC_HOSTS:
+            # caddy sends the bare host on 443; accept the explicit-port forms too
+            allowed.update({name, f"{name}:443", f"{name}:{port}"})
         host = (self.headers.get("Host") or "").strip().lower()
-        return host in {a.lower() for a in allowed}
+        return host in allowed
 
     # ---------------------------------------------------------------- routes
     def do_GET(self):  # noqa: N802 - stdlib signature
@@ -115,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/api/file":
             self._serve_file((query.get("path") or [""])[0])
         elif route == "/api/health":
-            self._json({"ok": True, "hosts": list(HOSTS), "bind": self.server.bind_address})
+            self._json({"ok": True, "hosts": list(HOSTS), "bind": self.srv.bind_address, "public_hosts": list(PUBLIC_HOSTS)})
         else:
             self._text("404 not found\n", code=404)
 
@@ -134,6 +157,15 @@ class Handler(BaseHTTPRequestHandler):
         path = STATIC / name
         try:
             body = path.read_bytes()
+            if name == "index.html":
+                # one substitution point; the static snapshot keeps the raw file and
+                # app.js falls back to the defaults when the placeholders survive.
+                body = (
+                    body.decode()
+                    .replace("{{OPSBRAIN_HTTP}}", OPSBRAIN_HTTP)
+                    .replace("{{OPSBRAIN_HTTPS}}", OPSBRAIN_HTTPS)
+                    .encode()
+                )
         except OSError as exc:
             self._text(f"500 cannot read {name}: {exc}\n", code=500)
             return

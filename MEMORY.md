@@ -59,19 +59,22 @@ TRUE now, measured on the live host (details in
   `/root/.hermes/scripts/opsbrain-telegram-relay.py`: CRITICAL-only, deduped per condition per hour,
   and it says so when OpsBrain has stopped writing. The old job `63fef345340a` was DELETED on
   2026-11-14, so this is a new job, not a resume.
-- **Tests:** 428 passing (`.venv/bin/python -m pytest -q`), up from the 355 baseline; 30 of them
+- **Tests:** 432 passing (`.venv/bin/python -m pytest -q`), up from the 355 baseline; 34 of them
   are `tests/test_hermes_dash.py` for the 9130 cron dashboard.
 
 ## Hermes cron dashboard — second surface, port 9130 (added 2026-11-25)
 
 `hermes_dash/` is a SECOND, independent page: three tabs (the OpsBrain page as Home via an
-iframe, `dockerVM — Hermes`, `Mac Studio — Hermes`). It is deliberately not part of
-`ui/`: it binds **127.0.0.1:9130 only** (`hermes-dash.service`, no Caddy route, no LAN
-exposure), answers **GET only**, refuses any `Host` that is not its own listen address
-(421 — that is the DNS-rebinding gate), and serves a linked file only when its REAL path
-is inside `cron/output`, `logs`, `state` (`.log`), or `reports` — so `.env`,
-`config.yaml`, `auth.json`, `state.db`, `jobs.json` and any `*.json`/`*.db` answer 403
-with a reason. Full contract + the operator's view: `hermes_dash/README.md`.
+iframe, `dockerVM — Hermes`, `Mac Studio — Hermes`). Not part of `ui/`. It **binds
+127.0.0.1:9130 only** (`hermes-dash.service`) and is reachable from the LAN **only through
+the door**: `hermesjobs.home`, CaddyUI row **70**, `internal_tls=1`, `basic_auth admin`
+(same credential as `opsbrain.home`), homepage tile *Hermes jobs*. The process accepts only
+its own names in `Host` (`127.0.0.1:9130`, `localhost:9130`, `HERMES_DASH_PUBLIC_HOSTS`,
+default `hermesjobs.home`) — anything else is **421**, the DNS-rebinding gate. `GET` only
+(405 otherwise), and a linked file is served only when its REAL path is inside
+`cron/output`, `logs`, `state` (`.log`), or `reports` — `.env`, `config.yaml`, `auth.json`,
+`state.db`, `jobs.json` and any `*.json`/`*.db` answer 403 with a reason. Full contract +
+the operator's view: `hermes_dash/README.md`.
 
 **No model, no cron job.** A refresh is one GET against stdlib readers (jobs.json,
 `executions.db` mode=ro, `cron_incidents`, `cron/output`, log tails, gateway/ticker
@@ -95,11 +98,22 @@ Gotchas paid for on the first build:
 - **Logs cross 1 MB within a day**, so a size cap in the allow-list made `errors.log`
   unservable. Logs are served as the last 300 kB with an explicit "N bytes omitted"
   banner; only non-log files are refused for size.
-- **The Mac tab is aggregate only and says so.** `logs/macstudio_node.json` (the Mac's own
-  15-min producer) carries `hermes_cron` counts, `failing[]`, `overdue[]`,
-  `max_age_period_ratio`, alerts and the gateway beat — not per-job rows, run history or
-  output files, which live in `/Users/ron/.hermes` on the Mac. Connecting that needs
-  either a producer extension (preferred) or a read-only SSH key; both are Ron's call.
+- **The Mac tab is aggregate only until the Mac ships schema 3, and the page says so.**
+  `logs/macstudio_node.json` (the Mac's own 15-min producer) carries `hermes_cron` counts,
+  `failing[]`, `overdue[]`, `max_age_period_ratio`, alerts and the gateway beat — not
+  per-job rows, run history or output text, which live in `/Users/ron/.hermes` on the Mac
+  (no SSH key, no share). A `task_request` on the Mac-VM queue —
+  **`20261125T141718Z-c02ab9c4`** — asks for `hermes_cron.{jobs[],runs[],incidents[],
+  outputs[],logs[]}` in schema 3 with every existing key unchanged so OpsBrain's federation
+  reader keeps working. **The consumer half is already built** (`collect_macstudio` passes
+  the rows through capped; the tab grows a jobs/runs/incidents/outputs/detail view) and is
+  tested against that shape, so the page lights up when their file changes — no work owed
+  here except re-measuring the acceptance list in the ask.
+- **The `failing`/`overdue` aggregate lists carry objects today but bare job ids in some
+  producer builds** — render both, resolving an id through the per-job rows.
+- **A route means the Host gate needs the public name too.** Keep `PUBLIC_HOSTS` in step
+  with the Caddy row, or the door's proxy gets 421 and the page reads broken through
+  `https://hermesjobs.home` while `:9130` is fine.
 - Layout rule learned here: a card's width class must be re-applied on every render, not
   only at creation, or a card added before a layout change stays half width forever.
 

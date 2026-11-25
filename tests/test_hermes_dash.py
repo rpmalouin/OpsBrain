@@ -339,6 +339,93 @@ def test_mac_staleness_tiers(tree, age_hours, expected):
     assert C.collect_macstudio()["state"] == expected
 
 
+def _schema3_mac():
+    """The shape asked for on 2026-11-25 (message 20261125T141718Z-c02ab9c4)."""
+    return {
+        "schema": 3,
+        "generated_at_utc": ts(-3),
+        "producer": "hermes-mac cron mac-node-snapshot",
+        "interval_minutes": 15,
+        "hermes_cron": {
+            "jobs_total": 2,
+            "jobs_enabled": 2,
+            "jobs_paused": 0,
+            "failing": [],
+            "overdue": [],
+            "max_age_period_ratio": 0.5,
+            "jobs": [
+                {"id": "aaaa11112222", "name": "mac hourly", "enabled": True, "no_agent": True,
+                 "schedule_display": "13 * * * *", "last_status": "ok", "last_run_at": ts(-30),
+                 "next_run_at": ts(30), "failure_streak": 0, "last_error": None},
+                {"id": "bbbb33334444", "name": "mac failing", "enabled": True, "no_agent": False,
+                 "schedule_display": "every 1m", "last_status": "error", "last_run_at": ts(-4),
+                 "next_run_at": ts(1), "failure_streak": 2, "last_error": "Script exited with code 1"},
+            ],
+            "runs": [
+                {"job_id": "bbbb33334444", "status": "failed", "claimed_at": ts(-4),
+                 "started_at": ts(-4), "finished_at": ts(-3.9), "source": "builtin",
+                 "error": "Script exited with code 1"},
+                {"job_id": "aaaa11112222", "status": "completed", "claimed_at": ts(-30),
+                 "started_at": ts(-30), "finished_at": ts(-29.9), "source": "builtin", "error": None},
+            ],
+            "incidents": [
+                {"job_id": "bbbb33334444", "state": "detected", "failure_type": "script",
+                 "first_seen_at": ts(-120), "last_seen_at": ts(-4), "error": "boom"},
+            ],
+            "outputs": [
+                {"job_id": "aaaa11112222", "name": "2026-11-25_13-00-00.md", "mtime": ts(-30),
+                 "size": 812, "text": "# Cron Job: mac hourly\n\nall good\n"},
+            ],
+            "logs": [
+                {"name": "agent.log", "path": "/Users/ron/.hermes/logs/agent.log", "size": 4096,
+                 "mtime": ts(-1)},
+            ],
+        },
+        "gateway": {"present": True, "age_seconds": 3.0, "pid": 1},
+        "alerts": [],
+        "host": {"model": "Mac17,14", "os": "27.0.1", "cpu_cores": 18, "uptime_hours": 5.0},
+        "time_machine": {"latest_backup_age_hours": 0.2, "mount_point_mounted": True},
+        "mounts": [],
+        "disks": [],
+    }
+
+
+def test_mac_schema3_detail_is_carried_through(tree):
+    C.MAC_SNAPSHOT.write_text(json.dumps(_schema3_mac()))
+    doc = C.collect_macstudio()
+    assert doc["detail_present"] is True
+    assert doc["schema"] == 3
+    assert [j["name"] for j in doc["jobs"]] == ["mac hourly", "mac failing"]
+    assert len(doc["runs"]) == 2
+    assert doc["incidents"][0]["state"] == "detected"
+    assert doc["outputs"][0]["text"].startswith("# Cron Job")
+    assert doc["logs"][0]["name"] == "agent.log"
+    # the aggregate view must survive alongside the rows
+    assert doc["counts"]["jobs"] == 2
+    assert doc["cron"]["max_age_period_ratio"] == 0.5
+    # only the log BYTES are still unreachable, not the job detail
+    assert len(doc["not_connected"]) == 1
+    assert "log file contents" in doc["not_connected"][0]
+
+
+def test_mac_schema2_still_reports_the_gap(tree):
+    doc = C.collect_macstudio()
+    assert doc["detail_present"] is False
+    assert "no SSH key" in doc["not_connected"][0]
+
+
+def test_mac_detail_fields_are_capped(tree):
+    doc = _schema3_mac()
+    doc["hermes_cron"]["jobs"][0]["last_error"] = "x" * 5000
+    doc["hermes_cron"]["outputs"][0]["text"] = "y" * 20000
+    doc["hermes_cron"]["runs"] = [{"job_id": "a", "status": "ok"}] * 900
+    C.MAC_SNAPSHOT.write_text(json.dumps(doc))
+    out = C.collect_macstudio()
+    assert len(out["jobs"][0]["last_error"]) == 600
+    assert len(out["outputs"][0]["text"]) == 4000
+    assert len(out["runs"]) == 500, "a runaway producer must not balloon the payload"
+
+
 def test_mac_missing_file_is_not_health(tree, monkeypatch):
     monkeypatch.setattr(C, "MAC_SNAPSHOT", Path("/nonexistent/mac.json"))
     doc = C.collect_macstudio()
@@ -460,6 +547,17 @@ def test_server_serves_an_allowed_output(http, tree):
     out = next((tree["home"] / "cron" / "output" / "aaaa11112222").glob("*.md"))
     code, body = _get(base + "/api/file?path=" + str(out))
     assert code == 200 and "healthy hourly" in body
+
+
+def test_server_accepts_the_configured_public_host(http):
+    """The caddy route proxies with Host: hermesjobs.home — that one must pass, all else 421."""
+    base, _ = http
+    code, body = _get(base + "/", host="hermesjobs.home")
+    assert code == 200 and "Hermes jobs" in body
+    assert _get(base + "/", host="hermesjobs.home:443")[0] == 200
+    assert _get(base + "/api/state", host="hermesjobs.home")[0] == 200
+    for foreign in ("jobs.home", "hermes.home", "hermesjobs.home.evil.com", "evil.example"):
+        assert _get(base + "/", host=foreign)[0] == 421, foreign
 
 
 def test_server_rejects_unknown_host_param(http):

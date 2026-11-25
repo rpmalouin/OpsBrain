@@ -14,7 +14,19 @@
   var REFRESH_MS = 30000;
   var HOSTS = ["dockervm", "macstudio"];
   var STATIC = !!window.__HERMES_STATIC__;
-  var OPSBRAIN_URL = window.__OPSBRAIN_URL__ || "http://127.0.0.1:9120/";
+
+  // The Home tab embeds the OpsBrain page. Over the caddy route this page is https, so
+  // an http:// iframe would be blocked as mixed content — pick by our own scheme.
+  // A static snapshot keeps the raw placeholders, hence the defaults.
+  function opsbrainUrl() {
+    var body = document.body ? document.body.dataset : {};
+    var http = body.opsbrainHttp && body.opsbrainHttp.indexOf("{{") === -1
+      ? body.opsbrainHttp : "http://127.0.0.1:9120/";
+    var https = body.opsbrainHttps && body.opsbrainHttps.indexOf("{{") === -1
+      ? body.opsbrainHttps : "https://opsbrain.home/";
+    return location.protocol === "https:" ? https : http;
+  }
+  var OPSBRAIN_URL = opsbrainUrl();
 
   var ui = {
     tab: "home",
@@ -94,6 +106,19 @@
     else if (s === "missed" || s === "unknown" || s === "cancelled") cls += " warn";
     else if (s === "running" || s === "claimed") cls += " info";
     return '<span class="' + cls + '">' + esc(s || "—") + "</span>";
+  }
+
+  // Text that arrives INSIDE the payload (the Mac's job outputs) cannot be fetched from
+  // this server, so it is registered here and shown in the same overlay the static
+  // snapshot uses for its inlined files.
+  var INLINE = {};
+  var inlineSeq = 0;
+
+  function inlineText(text, label) {
+    if (!text) return '<span class="muted">' + esc(label || "—") + "</span>";
+    var key = "t" + inlineSeq++;
+    INLINE[key] = text;
+    return '<a href="#" class="link" data-inline-key="' + key + '">' + esc(label) + "</a>";
   }
 
   function fileLink(path, label, extraClass) {
@@ -533,12 +558,24 @@
     }
     var failing = cron.failing || [];
     var overdue = cron.overdue || [];
+    // the aggregate lists carry objects today and bare job ids in some producer builds —
+    // render either, resolving an id through the per-job rows when they exist
+    function nameFor(f) {
+      if (typeof f === "string") {
+        var hit = (doc.jobs || []).filter(function (j) { return j.id === f; })[0];
+        return hit ? hit.name : f;
+      }
+      return f.name || f.job_id || "";
+    }
+    function errFor(f) {
+      return typeof f === "string" ? "" : String(f.last_error || f.error || "");
+    }
     if (failing.length) {
       body += '<div class="muted"><strong>Failing jobs</strong></div>';
       failing.forEach(function (f) {
         body += '<div class="row"><span class="chip crit">!</span><div class="grow"><strong>' +
-          esc(f.name || f.job_id || JSON.stringify(f)) + "</strong>" +
-          (f.last_error || f.error ? '<div class="muted">' + esc(String(f.last_error || f.error).slice(0, 200)) + "</div>" : "") +
+          esc(nameFor(f)) + "</strong>" +
+          (errFor(f) ? '<div class="muted">' + esc(errFor(f).slice(0, 200)) + "</div>" : "") +
           "</div></div>";
       });
     }
@@ -546,7 +583,7 @@
       body += '<div class="muted"><strong>Overdue jobs</strong></div>';
       overdue.forEach(function (f) {
         body += '<div class="row"><span class="chip warn">·</span><div class="grow"><strong>' +
-          esc(f.name || f.job_id || JSON.stringify(f)) + "</strong>" +
+          esc(nameFor(f)) + "</strong>" +
           (f.overdue_hours ? '<div class="muted">' + esc(f.overdue_hours) + " h past due</div>" : "") + "</div></div>";
       });
     }
@@ -559,6 +596,87 @@
       "<dt>oldest overdue</dt><dd>" + esc(cron.oldest_overdue_hours === null || cron.oldest_overdue_hours === undefined ? "none" : cron.oldest_overdue_hours + " h") + "</dd>" +
       "</dl>";
     putCard(grid, "cron", cardTitle("Cron health (as reported)") + body, { wide: true });
+
+    if (doc.detail_present) {
+      // schema 3: the producer now carries the rows, so this tab drills down like dockerVM
+      var mJobs = doc.jobs || [];
+      var mRuns = doc.runs || [];
+      var mName = {};
+      mJobs.forEach(function (j) { mName[j.id] = j.name; });
+
+      var jt = '<table><thead><tr><th>Job</th><th>Schedule</th><th>Last run</th><th>Next</th><th class="n">Runs</th><th class="n">Out</th></tr></thead><tbody>';
+      mJobs.forEach(function (job) {
+        var flags = "";
+        if (job.enabled === false) flags += ' <span class="tag warn">paused</span>';
+        if (job.failure_streak) flags += ' <span class="tag crit">streak ' + esc(job.failure_streak) + "</span>";
+        var mine = mRuns.filter(function (r) { return r.job_id === job.id; });
+        var outs = (doc.outputs || []).filter(function (o) { return o.job_id === job.id; });
+        jt += '<tr class="clickable" data-goto="macstudio/' + esc(job.id) + '">' +
+          "<td><strong>" + esc(job.name) + "</strong>" + flags +
+          '<div class="muted mono">' + esc(job.id) + (job.no_agent ? " · script" : "") + "</div></td>" +
+          '<td class="nowrap">' + esc(job.schedule_display || job.schedule || "") + "</td>" +
+          '<td class="nowrap">' + statusTag(job.last_status) + ' <span class="muted">' + esc(fmtAgo(job.last_run_at)) + "</span></td>" +
+          '<td class="nowrap">' + esc(job.next_run_at ? fmtClock(job.next_run_at) : "—") + "</td>" +
+          '<td class="n">' + mine.length + "</td>" +
+          '<td class="n">' + (outs.length || 0) + "</td></tr>";
+      });
+      jt += "</tbody></table>";
+      putCard(grid, "mac-jobs", cardTitle("Jobs", mJobs.length) + '<div class="tbl-scroll">' + jt + "</div>", { wide: true });
+
+      var rt = '<table><thead><tr><th>When</th><th>Job</th><th>Status</th><th class="n">Took</th><th>Error</th></tr></thead><tbody>';
+      mRuns.slice(0, 60).forEach(function (run) {
+        var took = (run.started_at && run.finished_at)
+          ? Math.round((Date.parse(run.finished_at) - Date.parse(run.started_at)) / 1000) + "s" : "—";
+        rt += '<tr class="clickable" data-goto="macstudio/' + esc(run.job_id) + '">' +
+          '<td class="nowrap">' + esc(fmtClock(run.started_at || run.claimed_at)) + '<div class="muted">' + esc(fmtAgo(run.started_at || run.claimed_at)) + "</div></td>" +
+          "<td>" + esc(mName[run.job_id] || run.job_id) + "</td>" +
+          "<td>" + statusTag(run.status) + "</td>" +
+          '<td class="n nowrap">' + esc(took) + "</td>" +
+          '<td class="muted">' + esc(String(run.error || "").split("\n")[0].slice(0, 100)) + "</td></tr>";
+      });
+      if (!mRuns.length) rt += '<tr><td colspan="5" class="empty">no run rows in this snapshot</td></tr>';
+      rt += "</tbody></table>";
+      putCard(grid, "mac-runs", cardTitle("Run history", mRuns.length) + '<div class="tbl-scroll">' + rt + "</div>", { wide: true });
+
+      var inc = doc.incidents || [];
+      var it = '<table><thead><tr><th>Job</th><th>State</th><th>Type</th><th class="n">Last seen</th><th>Error</th></tr></thead><tbody>';
+      inc.forEach(function (i) {
+        it += '<tr class="clickable" data-goto="macstudio/' + esc(i.job_id) + '"><td>' + esc(mName[i.job_id] || i.job_id) + "</td>" +
+          "<td>" + statusTag(i.state) + '</td><td class="nowrap">' + esc(i.failure_type) + "</td>" +
+          '<td class="n nowrap">' + esc(fmtAgo(i.last_seen_at)) + "</td>" +
+          '<td class="muted">' + esc(String(i.error || "").split("\n")[0].slice(0, 100)) + "</td></tr>";
+      });
+      if (!inc.length) it += '<tr><td colspan="5" class="empty good">no open incident on that node</td></tr>';
+      it += "</tbody></table>";
+      putCard(grid, "mac-incidents", cardTitle("Incidents", inc.length) + '<div class="tbl-scroll">' + it + "</div>", { wide: true });
+
+      var outs = doc.outputs || [];
+      var ot = '<table><thead><tr><th>Written</th><th>Job</th><th>File</th><th class="n">Size</th></tr></thead><tbody>';
+      outs.slice(0, 30).forEach(function (o) {
+        ot += '<tr><td class="nowrap">' + esc(fmtClock(o.mtime)) + '<div class="muted">' + esc(fmtAgo(o.mtime)) + "</div></td>" +
+          "<td>" + esc(mName[o.job_id] || o.job_id) + "</td>" +
+          "<td>" + inlineText(o.text, o.name) + "</td>" +
+          '<td class="n">' + Math.max(1, Math.round((o.size || 0) / 1024)) + " kB</td></tr>";
+      });
+      if (!outs.length) ot += '<tr><td colspan="4" class="empty">no output text in this snapshot</td></tr>';
+      ot += "</tbody></table>" +
+        '<div class="muted" style="margin-top:.4rem">Text previews ride in the snapshot (first 2000 chars). The files themselves stay on the Mac.</div>';
+      putCard(grid, "mac-outputs", cardTitle("Job outputs", outs.length) + '<div class="tbl-scroll">' + ot + "</div>", { wide: true });
+
+      var logs = doc.logs || [];
+      if (logs.length) {
+        var lt = '<table><thead><tr><th>Log</th><th class="n">Size</th><th class="n">Age</th></tr></thead><tbody>';
+        logs.forEach(function (l) {
+          lt += '<tr><td class="mono" style="overflow-wrap:anywhere">' + esc(l.name || l.path) + "</td>" +
+            '<td class="n">' + Math.max(1, Math.round((l.size || 0) / 1024)) + " kB</td>" +
+            '<td class="n nowrap">' + esc(fmtAge((Date.now() - Date.parse(l.mtime)) / 1000)) + "</td></tr>";
+        });
+        lt += "</tbody></table>";
+        putCard(grid, "mac-logs", cardTitle("Log files on that node", logs.length) +
+          '<div class="tbl-scroll">' + lt + "</div>" +
+          '<div class="muted" style="margin-top:.4rem">Listed, not readable: the bytes stay on the Mac.</div>', { wide: true });
+      }
+    }
 
     var alerts = doc.alerts || [];
     var at = "";
@@ -628,6 +746,28 @@
         " in the current data. It may have been deleted since this snapshot.</div>", { wide: true });
       return;
     }
+    if (doc.host_id === "macstudio") {
+      // the Mac's rows arrive raw from its producer: derive the same fields dockerVM's
+      // collector computes, so one detail view renders both hosts
+      job.recent_runs = (doc.runs || [])
+        .filter(function (r) { return r.job_id === job.id; })
+        .slice(0, 20)
+        .map(function (r) {
+          var d = Object.assign({}, r);
+          if (r.started_at && r.finished_at) {
+            d.duration_s = Math.round((Date.parse(r.finished_at) - Date.parse(r.started_at)) / 100) / 10;
+          }
+          return d;
+        });
+      job.outputs = (doc.outputs || []).filter(function (o) { return o.job_id === job.id; });
+      job.runs_seen = job.recent_runs.length;
+      job.schedule_display = job.schedule_display || job.schedule || "";
+      job.schedule_kind = job.schedule_kind || "";
+      if (job.next_in_s === undefined && job.next_run_at) {
+        job.next_in_s = (Date.parse(job.next_run_at) - Date.now()) / 1000;
+      }
+      if (job.last_status === undefined) job.last_status = job.status;
+    }
     var info = '<dl class="kv">' +
       "<dt>id</dt><dd class=\"mono\">" + esc(job.id) + "</dd>" +
       "<dt>schedule</dt><dd>" + esc(job.schedule_display) + " (" + esc(job.schedule_kind) + ")</dd>" +
@@ -657,7 +797,8 @@
     var outs = job.outputs || [];
     var ot = '<div class="row" style="flex-wrap:wrap;gap:.35rem .9rem">';
     outs.forEach(function (out) {
-      ot += '<span class="nowrap">' + fileLink(out.path, out.name) + ' <span class="muted">' + Math.max(1, Math.round((out.size || 0) / 1024)) + " kB</span></span>";
+      var link = out.text ? inlineText(out.text, out.name) : fileLink(out.path, out.name);
+      ot += '<span class="nowrap">' + link + ' <span class="muted">' + Math.max(1, Math.round((out.size || 0) / 1024)) + " kB</span></span>";
     });
     if (!outs.length) ot += '<span class="empty">no output files on disk for this job</span>';
     ot += "</div>";
@@ -736,14 +877,15 @@
   }
 
   // ---------------------------------------------------------------- events
-  function showInline(path) {
-    var files = window.__STATIC_FILES__ || {};
-    var text = files[path];
+  function showInline(path, head) {
+    var text = Object.prototype.hasOwnProperty.call(INLINE, path)
+      ? INLINE[path]
+      : (window.__STATIC_FILES__ || {})[path];
     if (text === undefined) return;
     var overlay = document.createElement("div");
     overlay.className = "overlay";
     overlay.innerHTML =
-      '<div class="box"><header><span class="mono">' + esc(path) + '</span><button class="back" data-close="1">close</button></header>' +
+      '<div class="box"><header><span class="mono">' + esc(head || path) + '</span><button class="back" data-close="1">close</button></header>' +
       "<pre>" + esc(text) + "</pre></div>";
     overlay.addEventListener("click", function (ev) {
       if (ev.target === overlay || ev.target.getAttribute("data-close")) overlay.remove();
@@ -772,6 +914,13 @@
     if (ev.target.id === "backBtn") {
       setHash(ui.tab);
       onRoute();
+      return;
+    }
+    var inlineKey = ev.target.closest ? ev.target.closest("[data-inline-key]") : null;
+    if (inlineKey) {
+      ev.preventDefault();
+      var k = inlineKey.getAttribute("data-inline-key");
+      showInline(k, (INLINE[k] ? inlineKey.textContent : k));
       return;
     }
     var inline = ev.target.closest ? ev.target.closest("[data-inline]") : null;

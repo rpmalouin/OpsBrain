@@ -774,6 +774,33 @@ def collect_macstudio(ref: datetime | None = None) -> dict:
     alerts = doc.get("alerts") or []
     gateway = doc.get("gateway") or {}
 
+    # Schema 3 (asked for 2026-11-25, message 20261125T141718Z-c02ab9c4) adds the per-job
+    # rows. Every field is optional and capped here as well, because this arrives over SMB
+    # from another host: a producer bug must not be able to balloon the page payload.
+    def _rows(key, cap):
+        raw = cron.get(key) or []
+        return [r for r in raw if isinstance(r, dict)][:cap] if isinstance(raw, list) else []
+
+    mac_jobs = _rows("jobs", 200)
+    mac_runs = _rows("runs", 500)
+    mac_incidents = _rows("incidents", 100)
+    mac_outputs = _rows("outputs", 200)
+    mac_logs = _rows("logs", 100)
+    for row in mac_jobs:
+        for key in ("last_error", "error"):
+            if row.get(key):
+                row[key] = str(row[key])[:600]
+    for row in mac_runs:
+        if row.get("error"):
+            row["error"] = str(row["error"])[:300]
+    for row in mac_incidents:
+        if row.get("error"):
+            row["error"] = str(row["error"])[:600]
+    for row in mac_outputs:
+        if row.get("text"):
+            row["text"] = str(row["text"])[:4000]
+    detail_present = bool(mac_jobs)
+
     base.update(
         state=state,
         as_of=doc.get("generated_at_utc"),
@@ -805,6 +832,13 @@ def collect_macstudio(ref: datetime | None = None) -> dict:
         disks=doc.get("disks") or [],
         services=doc.get("services") or [],
     )
+    base["jobs"] = mac_jobs
+    base["runs"] = mac_runs
+    base["incidents"] = mac_incidents
+    base["outputs"] = mac_outputs
+    base["logs"] = mac_logs
+    base["detail_present"] = detail_present
+    base["schema"] = doc.get("schema")
     base["counts"] = {
         "jobs": cron.get("jobs_total"),
         "enabled": cron.get("jobs_enabled"),
@@ -814,11 +848,19 @@ def collect_macstudio(ref: datetime | None = None) -> dict:
         "alerts": len(alerts),
         "open_incidents": len([a for a in alerts if (a.get("severity") or "").upper() in ("CRITICAL", "ERROR")]),
     }
-    base["not_connected"] = [
-        "per-job names, run history and job output files live in /Users/ron/.hermes on the Mac"
-        " and are not reachable from dockerVM (no SSH key, no share of that folder)",
-        "log file links are not available for this node for the same reason",
-    ]
+    if detail_present:
+        # the producer now carries the rows; only the log BYTES stay on that host
+        base["not_connected"] = [
+            "log file contents stay on the Mac — this page lists the files and their ages,"
+            " it cannot open them",
+        ]
+    else:
+        base["not_connected"] = [
+            "per-job names, run history and job output files live in /Users/ron/.hermes on the Mac"
+            " and are not reachable from dockerVM (no SSH key, no share of that folder)."
+            " An ask for them went out 2026-11-25 (message 20261125T141718Z-c02ab9c4).",
+            "log file links are not available for this node for the same reason",
+        ]
     return base
 
 

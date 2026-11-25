@@ -98,17 +98,20 @@ Gotchas paid for on the first build:
 - **Logs cross 1 MB within a day**, so a size cap in the allow-list made `errors.log`
   unservable. Logs are served as the last 300 kB with an explicit "N bytes omitted"
   banner; only non-log files are refused for size.
-- **The Mac tab is aggregate only until the Mac ships schema 3, and the page says so.**
-  `logs/macstudio_node.json` (the Mac's own 15-min producer) carries `hermes_cron` counts,
-  `failing[]`, `overdue[]`, `max_age_period_ratio`, alerts and the gateway beat — not
-  per-job rows, run history or output text, which live in `/Users/ron/.hermes` on the Mac
-  (no SSH key, no share). A `task_request` on the Mac-VM queue —
-  **`20261125T141718Z-c02ab9c4`** — asks for `hermes_cron.{jobs[],runs[],incidents[],
-  outputs[],logs[]}` in schema 3 with every existing key unchanged so OpsBrain's federation
-  reader keeps working. **The consumer half is already built** (`collect_macstudio` passes
-  the rows through capped; the tab grows a jobs/runs/incidents/outputs/detail view) and is
-  tested against that shape, so the page lights up when their file changes — no work owed
-  here except re-measuring the acceptance list in the ask.
+- **Schema 3 shipped 2026-11-25T14:22:41Z and the Mac tab is per-job now** (receipt
+  `20261125T142241Z-8154cbc2`; the Mac closed the ask itself). The document went 15,086 →
+  155,037 B: 29 jobs, 200 runs, 87 outputs with text, 58 log entries, 0 incidents, and every
+  schema-2 key untouched. The consumer half needed no change — it was built against the
+  contract — so if a future producer build drops a key the page degrades to the old aggregate
+  view instead of breaking. **Two surfaces read that one file now:** this page (per-job) and
+  OpsBrain's federation digest, which deliberately carries ONLY the normalised verdicts +
+  `incidents()` (155,668 B in → 185 B digest) because jobs/runs/outputs would bloat every
+  cluster snapshot. If the doc grows again, check the digest size, not just this page.
+  Before that it was aggregate only: `hermes_cron` counts, `failing[]`, `overdue[]`,
+  `max_age_period_ratio`, alerts and the gateway beat, because per-job rows live in
+  `/Users/ron/.hermes` on the Mac (no SSH key, no share). The ask that changed it was
+  `20261125T141718Z-c02ab9c4`. **Only the log BYTES are still unreachable** — the page lists
+  the 58 log files with sizes and ages and says so.
 - **The `failing`/`overdue` aggregate lists carry objects today but bare job ids in some
   producer builds** — render both, resolving an id through the per-job rows.
 - **A route means the Host gate needs the public name too.** Keep `PUBLIC_HOSTS` in step

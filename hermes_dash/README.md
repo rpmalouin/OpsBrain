@@ -74,11 +74,16 @@ executions), `incidents[]`, `outputs[]` (up to 3 files per job with the first 20
 text) and `logs[]` (name/size/mtime), with **every existing key unchanged** so OpsBrain's
 federation reader keeps working.
 
-The consumer half is already built and tested against that shape
-(`tests/test_hermes_dash.py::test_mac_schema3_detail_is_carried_through`): the moment the
-Mac publishes schema 3, this tab grows a job table, run history, incidents, an outputs card
-whose text opens in the same overlay as a local file, and a job drill-down — with no change
-here. Until then it says exactly that, and names the message id on the page.
+**Answered and live on 2026-11-25T14:22:41Z** (receipt `20261125T142241Z-8154cbc2`, ask closed
+by the Mac's own `ingest.py`): the producer publishes schema 3 and the document is now
+**155,037 B** (was 15,086). Measured on the live file: 29 jobs, 200 runs, 87 output files with
+text, 58 log entries, 0 incidents, every schema-2 key untouched. The tab grew the job table,
+run history, incidents, the outputs card (text opens in the same overlay as a local file) and a
+per-job drill-down with **no change to this repo** — the consumer half was already built and
+tested against that shape (`test_mac_schema3_detail_is_carried_through`).
+
+Only the log BYTES remain unreachable: the page lists the 58 log files with sizes and ages and
+says it cannot open them.
 
 ## Turning it off
 

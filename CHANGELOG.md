@@ -31,7 +31,11 @@ milestone).
   ships schema 3 (`hermes_cron.{jobs[],runs[],incidents[],outputs[],logs[]}` — asked for in
   `task_request` `20261125T141718Z-c02ab9c4`); the consumer half already passes those rows
   through (capped) and renders a jobs/runs/incidents/outputs card set plus a job drill-down
-  with the output text in the same overlay, tested against that shape. +34 tests
+  with the output text in the same overlay, tested against that shape. That shipped the same
+  afternoon (receipt `20261125T142241Z-8154cbc2`, document 15,086 → 155,037 B, 29 jobs / 200
+  runs / 87 outputs / 58 logs) and the tab went per-job with no change here; OpsBrain's
+  federation digest deliberately keeps carrying only the normalised verdicts and incidents
+  (155,668 B in → 185 B out). +34 tests
   (`tests/test_hermes_dash.py`), 398 → 432 passing. Operator view: `hermes_dash/README.md`.
 - **The dashboard renders every GPU card, and tracks each one's trend.** `ui/static/app.js` read
   `gpu.gpus[0]` in four places, so with two cards the panel showed card 0 only — a second-GPU flag
